@@ -5,7 +5,7 @@ project:
   base_branch: main           # branch that PRs target
 
 commands:
-  test: ""                    # e.g. pnpm test
+  test: ""                    # e.g. npm test
   lint: ""
   build: ""
 

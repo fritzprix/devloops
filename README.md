@@ -18,9 +18,9 @@ human          -> merge
 | Path | Purpose |
 | --- | --- |
 | `skills/` | Skills. Each skill has `SKILL.md`, `references/`, `scripts/`. |
-| `lib/` | Shared code: tick gate (lock, TTL, NOOP, state), issue filing, dedup. |
+| `lib/` | Shared code: tick gate (lock, TTL, NOOP, state), configuration, doctor, PR status. |
 | `templates/` | Files that a target project copies, for example `devloops.config.yaml`. |
-| `scripts/install.sh` | Copies or links the skills into a target project. |
+| `scripts/install.sh` | Copies or links the skills and shared lib into a target project. |
 | `tests/` | Tests for `lib/` and the skill scripts. |
 
 ## Use in a project
@@ -28,6 +28,12 @@ human          -> merge
 ```sh
 ~/my_works/devloops/scripts/install.sh /path/to/project
 # then edit /path/to/project/devloops.config.yaml
+```
+
+## Testing
+
+```sh
+python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
 ## Rules

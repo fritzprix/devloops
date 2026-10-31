@@ -13,4 +13,9 @@ for s in "$SRC"/skills/*/; do
   if [ "$MODE" = "--link" ]; then ln -s "$s" "$target"; else cp -r "$s" "$target"; fi
   echo "installed $name"
 done
+target_lib="$DEST/.agents/lib"
+if [ ! -e "$target_lib" ]; then
+  if [ "$MODE" = "--link" ]; then ln -s "$SRC/lib" "$target_lib"; else cp -r "$SRC/lib" "$target_lib"; fi
+  echo "installed lib"
+fi
 [ -e "$DEST/devloops.config.yaml" ] || cp "$SRC/templates/devloops.config.yaml" "$DEST/"
