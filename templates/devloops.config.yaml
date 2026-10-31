@@ -1,0 +1,27 @@
+# devloops project config. Copy to the project root and edit.
+project:
+  repo: owner/name            # GitHub repo
+  default_branch: main
+  base_branch: main           # branch that PRs target
+
+commands:
+  test: ""                    # e.g. pnpm test
+  lint: ""
+  build: ""
+
+protected_paths: []           # findings only, no edits without explicit approval
+
+state_dir: .devloops          # state.json and tick.lock per loop
+
+labels:
+  producer: auto:producer
+  validated: validated
+  rejected: rejected
+  approved: approved
+
+producer:
+  default_period: 24h
+  max_new_issues_per_run: 3
+  tasks: [security, e2e, uiux, regression, usage-logs, doc-drift, cleanup]
+
+scheduler: shell              # shell | cron | harness-specific adapter
