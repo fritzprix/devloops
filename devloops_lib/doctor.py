@@ -24,12 +24,12 @@ from pathlib import Path
 
 # Support running directly or as module
 try:
-    from lib.config import load_config
+    from devloops_lib.config import load_config
 except ImportError:
     _root = Path(__file__).resolve().parent.parent
     if str(_root) not in sys.path:
         sys.path.insert(0, str(_root))
-    from lib.config import load_config
+    from devloops_lib.config import load_config
 
 NETWORK_TIMEOUT_SECONDS = 5
 

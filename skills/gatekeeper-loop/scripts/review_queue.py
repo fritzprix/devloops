@@ -32,13 +32,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Add project root and devloops lib to sys.path
+# Add project root and devloops_lib to sys.path
 _script_dir = Path(__file__).resolve().parent
 for _candidate in (_script_dir.parents[2], _script_dir.parents[3], _script_dir.parents[3] / ".agents"):
-    if (_candidate / "lib").is_dir() and str(_candidate) not in sys.path:
+    if (_candidate / "devloops_lib").is_dir() and str(_candidate) not in sys.path:
         sys.path.insert(0, str(_candidate))
 
-from lib.config import get_state_path, load_config
+from devloops_lib.config import get_state_path, load_config
 
 MAX_ROUNDS = 5
 # Loop markers must appear at the very start of the comment (ignoring optional UTF-8 BOM and leading whitespace).

@@ -29,13 +29,13 @@ from pathlib import Path
 
 # Support running directly or as module
 try:
-    from lib.config import get_state_path
+    from devloops_lib.config import get_state_path
 except ImportError:
     # Walk up to find repo root
     _root = Path(__file__).resolve().parent.parent
     if str(_root) not in sys.path:
         sys.path.insert(0, str(_root))
-    from lib.config import get_state_path
+    from devloops_lib.config import get_state_path
 
 EXIT_RUN = 0
 EXIT_NOOP = 1

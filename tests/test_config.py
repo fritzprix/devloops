@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Tests for lib/config.py."""
+"""Tests for devloops_lib/config.py."""
 import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 
-from lib import config
+from devloops_lib import config
 
 
 class ConfigTest(unittest.TestCase):

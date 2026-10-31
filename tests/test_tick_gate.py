@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from lib import tick_gate
+from devloops_lib import tick_gate
 
 
 class TickGateTest(unittest.TestCase):
@@ -55,7 +55,7 @@ class TickGateTest(unittest.TestCase):
         self.assertFalse(tick_gate.check_lock(self.lock_file))
 
     def test_gh_failure_raises_gh_error(self):
-        with patch("lib.tick_gate.subprocess.run") as mock_run:
+        with patch("devloops_lib.tick_gate.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stderr="Bad credentials", stdout="")
             with self.assertRaises(tick_gate.GhError):
                 tick_gate.gh("api", "user")
