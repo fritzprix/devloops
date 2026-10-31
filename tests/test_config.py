@@ -24,11 +24,14 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(cfg["commands"]["lint"], "")
         self.assertEqual(cfg["commands"]["build"], "")
         self.assertEqual(cfg["protected_paths"], [])
+        self.assertEqual(cfg["cleanup"]["protected_branches"], ["main", "master", "develop", "release"])
         self.assertEqual(cfg["state_dir"], ".devloops")
         self.assertEqual(cfg["labels"]["producer"], "auto:producer")
         self.assertEqual(cfg["labels"]["validated"], "validated")
         self.assertEqual(cfg["labels"]["rejected"], "rejected")
         self.assertEqual(cfg["labels"]["approved"], "approved")
+        self.assertEqual(cfg["producer"]["task_periods"]["cleanup"], "7d")
+        self.assertEqual(cfg["producer"]["default_period"], "24h")
         self.assertEqual(cfg["scheduler"], "shell")
 
     def test_parse_yaml_subset(self):
@@ -127,6 +130,30 @@ commands:
         with unittest.mock.patch.dict(os.environ, {"LOOP_STATE_DIR": str(custom_env)}):
             state_p = config.get_state_path("worker-loop", start_dir=self.tmp_dir)
             self.assertEqual(state_p, custom_env / "worker-loop" / "state.json")
+
+    def test_new_config_keys_parsing(self):
+        yaml_text = """
+cleanup:
+  protected_branches: [main, staging]
+
+producer:
+  task_skills:
+    security: code-audit-expert
+  task_periods:
+    cleanup: 7d
+    security: 12h
+  task_max_new_issues:
+    cleanup: 1
+    security: 5
+"""
+        parsed = config.parse_yaml_subset(yaml_text)
+        merged = config.deep_merge(config.DEFAULT_CONFIG, parsed)
+        self.assertEqual(merged["cleanup"]["protected_branches"], ["main", "staging"])
+        self.assertEqual(merged["producer"]["task_skills"]["security"], "code-audit-expert")
+        self.assertEqual(merged["producer"]["task_periods"]["cleanup"], "7d")
+        self.assertEqual(merged["producer"]["task_periods"]["security"], "12h")
+        self.assertEqual(merged["producer"]["task_max_new_issues"]["cleanup"], 1)
+        self.assertEqual(merged["producer"]["task_max_new_issues"]["security"], 5)
 
 
 if __name__ == "__main__":

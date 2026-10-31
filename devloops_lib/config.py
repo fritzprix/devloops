@@ -24,6 +24,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "build": "",
     },
     "protected_paths": [],
+    "cleanup": {
+        "protected_branches": ["main", "master", "develop", "release"],
+    },
     "state_dir": ".devloops",
     "labels": {
         "producer": "auto:producer",
@@ -43,6 +46,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "doc-drift",
             "cleanup",
         ],
+        "task_skills": {},
+        "task_periods": {
+            "cleanup": "7d",
+        },
+        "task_max_new_issues": {},
     },
     "scheduler": "shell",
 }

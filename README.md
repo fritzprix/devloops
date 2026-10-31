@@ -17,8 +17,8 @@ human          -> merge
 
 | Path | Purpose |
 | --- | --- |
-| `skills/` | Skills. Each skill has `SKILL.md`, `references/`, `scripts/`. |
-| `devloops_lib/` | Shared code: tick gate (lock, TTL, NOOP, state), configuration, doctor, PR status. |
+| `skills/` | Skills (`worker-loop`, `gatekeeper-loop`, `producer-loop`). Each skill has `SKILL.md`, `references/`, `scripts/`. |
+| `devloops_lib/` | Shared code: tick gates, producer tasks, issue queue, configuration, doctor, PR status. |
 | `templates/` | Files that a target project copies, for example `devloops.config.yaml`. |
 | `scripts/install.sh` | Copies or links the skills and shared devloops_lib into a target project. |
 | `tests/` | Tests for `devloops_lib/` and the skill scripts. |

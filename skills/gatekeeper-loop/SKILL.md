@@ -120,9 +120,35 @@ Post the verdict with `gh pr comment N --body-file <tmp>` using the exact marker
 gh pr edit N --add-label gatekeeper:changes-requested --remove-label gatekeeper:approved,gatekeeper:escalated
 ```
 
-### 4. Report
+### 4. Issue Validation (Post PR Review)
 
-1–2 sentences per reviewed PR: PR link, round, verdict, and the count of required findings. When nothing is reviewed, give one line **per open PR** with its `status` and `reason` from the script so stalls are visible.
+After completing PR reviews, validate at most **one** issue that has `labels.producer` (default `auto:producer`) and neither `labels.validated` nor `labels.rejected`:
+
+1. Find the next unjudged issue:
+   ```bash
+   python3 skills/gatekeeper-loop/scripts/issue_queue.py --next
+   ```
+   If output is `NOOP`, skip to Step 5.
+2. **Fresh session & independence**: Validate the finding independently against the current checkout on `project.base_branch`. Confirm or refute the claim with concrete `file:line` evidence.
+3. Settle verdict:
+   ```bash
+   python3 skills/gatekeeper-loop/scripts/issue_queue.py \
+     --issue <number> \
+     --verdict <validated|rejected> \
+     --reason "<explanation>" \
+     --evidence "<file:line>" \
+     --apply
+   ```
+   - Adds label `labels.validated` or `labels.rejected`.
+   - Appends verdict, reason, and evidence to the issue body.
+   - Records validated/rejected counts per producer task in `state.json` under `producerStats`.
+   - **Never add `labels.approved`**.
+   - **Never close issues**.
+   - **Never change code**.
+
+### 5. Report
+
+1–2 sentences per reviewed PR and validated issue: PR link, round, verdict, and count of required findings; or issue number, producer task, and validation verdict. When nothing is reviewed or validated, give one line **per open PR** with its `status` and `reason` from the script so stalls are visible.
 
 ## Hard rules
 
@@ -131,6 +157,7 @@ gh pr edit N --add-label gatekeeper:changes-requested --remove-label gatekeeper:
 - **Do not re-review diff in await-ci**: for an `await-ci` PR, verify only whether the head changed or CI completed. If green, approve.
 - **A push after an approve requires re-review.** An approve only covers the head, base and CI state it was issued for.
 - **Approve requires Checked section**: every approve verdict must contain a non-empty `### Checked` section citing `file:line` for all acceptance criteria.
+- **Issue validation limits**: Validate at most one producer issue per tick. Never add `approved`, never close issues, and never change code.
 - Never push, commit, edit code, merge, enable auto-merge, close PRs/issues, or resolve the worker's threads. The gatekeeper only comments and labels.
 - Findings must be concrete: file:line, problem, expected fix or acceptance check. No vague "consider improving".
 - Do not move the goalposts: later rounds only re-check previous findings and new diffs (except blockers).
