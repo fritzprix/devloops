@@ -17,7 +17,11 @@ status values:
   approved   - approve verdict exists for the current head, base unchanged, CI
                not failing, no newer owner comment.
   escalate   - round limit reached or unresolvable dispute; hand to the user.
-  human-only - touches the gatekeeper's own skill; left to the human.
+  needs-human - blocked on a person, not on code: reviewed clean at the current
+               head but no CI runs exist when CI is expected. No re-review until
+               a new head or genuinely new input arrives.
+  human-only - touches the gatekeeper's own skill; never reviewed or approved by
+               the loop, but surfaced to the human via `gatekeeper:needs-human`.
 
 The list is sorted by priority (worker response / new head / owner comment
 first), then oldest PR first. Every entry carries a one-line `reason`.
@@ -98,6 +102,18 @@ def parse_markers(comments: list[dict], me: str) -> tuple[list[dict], list[dict]
     return verdicts, responses
 
 
+def split_markers(markers: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+    """Split gatekeeper markers into (verdicts, clean, needs-human).
+
+    Only markers with an explicit ``verdict`` key count as verdicts, so
+    ``kind=needs-human`` markers never inflate review rounds.
+    """
+    verdicts = [m for m in markers if m.get("verdict") and m["verdict"] != "clean"]
+    cleans = [m for m in markers if m.get("verdict") == "clean"]
+    needs = [m for m in markers if m.get("kind") == "needs-human"]
+    return verdicts, cleans, needs
+
+
 def owner_comments_after(comments: list[dict], me: str, since: str | None) -> list[dict]:
     """Unmarked comments from the owner/@me newer than the last marker comment."""
     found = []
@@ -152,6 +168,7 @@ def classify(
     reviewed_base: str | None = None,
     rebased: bool = False,
     owner_comment: bool = False,
+    total_checks: int | None = None,
     config: dict | None = None,
 ) -> tuple[str, str, int]:
     """Return (status, one-line reason, priority). Lower priority number is handled first."""
@@ -184,18 +201,25 @@ def classify(
 
     if rebased:
         return "review", "head was rebased/force-pushed since last verdict; full review or range-diff", 0
-    if last_verdict:
-        return "review", "new head since last verdict", 0
 
-    # Never given a verdict at this head. A clean marker on GitHub (or, as a
-    # fallback, state.json) means the code review is already done.
+    # A clean marker on GitHub (or, as a fallback, state.json) means the code
+    # review for *this head* is already done. It outranks older verdicts: a
+    # current-head clean must not lose to a verdict issued at an earlier head.
     reviewed_clean = clean_head == head or (
         state_reviewed_head == head and state_pending_ci and not has_open_findings
     )
-    if reviewed_clean and ci_applies and pending_checks and not failing_checks:
-        return "await-ci", "reviewed clean; waiting for pending CI", 9
+    if last_verdict and not reviewed_clean:
+        return "review", "new head since last verdict", 0
+
     if reviewed_clean:
+        if failing_checks and ci_applies:
+            return "review", "clean at head but CI failing; diagnose and request changes", 1
+        if ci_applies and pending_checks:
+            return "await-ci", "reviewed clean; waiting for pending CI", 9
+        if ci_applies and total_checks == 0:
+            return "needs-human", "reviewed clean but no CI runs on the head (no CI on head)", 9
         return "review", "reviewed clean; CI done or not applicable, issue the verdict", 1
+
     if failing_checks and ci_applies:
         return "review", "not reviewed yet; CI failing", 1
     return "review", "not reviewed yet", 1
@@ -204,6 +228,38 @@ def classify(
 def determine_status(**kwargs) -> str:
     """Status only; see classify() for the arguments."""
     return classify(**kwargs)[0]
+
+
+def needs_human_guidance(
+    *,
+    status: str,
+    own_skill: bool,
+    sensitive: list[str],
+    labels: list[str],
+    needs_comment_present: bool,
+) -> dict | None:
+    """What the gatekeeper should post/keep for human attention, or None.
+
+    Idempotency lives here: `commentPresent`/`labelPresent` tell the tick to skip
+    work it already did. `staleLabel` marks a `gatekeeper:needs-human` label whose
+    reason no longer applies; labels this loop did not add are never removed.
+    """
+    label_present = "gatekeeper:needs-human" in labels
+    if status == "human-only":
+        reason = "changes loop skill files"
+    elif status == "needs-human":
+        reason = "no CI on head"
+    elif sensitive:
+        reason = "security-sensitive paths"
+    else:
+        reason = None
+    if reason is None:
+        if not label_present:
+            return None
+        return {"reason": None, "labelPresent": True,
+                "commentPresent": needs_comment_present, "staleLabel": True}
+    return {"reason": reason, "labelPresent": label_present,
+            "commentPresent": needs_comment_present, "staleLabel": False}
 
 
 def summarize(number: int, me: str, state: dict | None = None, config: dict | None = None) -> dict:
@@ -219,8 +275,7 @@ def summarize(number: int, me: str, state: dict | None = None, config: dict | No
     pending = [c.get("name") or c.get("context") for c in checks if check_state(c) in PENDING]
     comments = pr.get("comments") or []
     markers, responses = parse_markers(comments, me)
-    verdicts = [m for m in markers if m.get("verdict") != "clean"]
-    cleans = [m for m in markers if m.get("verdict") == "clean"]
+    verdicts, cleans, needs = split_markers(markers)
 
     head = pr["headRefOid"]
     last = verdicts[-1] if verdicts else None
@@ -274,10 +329,17 @@ def summarize(number: int, me: str, state: dict | None = None, config: dict | No
         reviewed_base=(last or {}).get("base"),
         rebased=rebased,
         owner_comment=bool(owner),
+        total_checks=len(checks),
         config=cfg,
     )
     if own_skill:
         status, reason, priority = "human-only", "changes loop skill files; left to the human", 9
+
+    needs_at_head = next((m for m in reversed(needs) if m.get("head") == head), None)
+    needs_human = needs_human_guidance(
+        status=status, own_skill=own_skill, sensitive=sensitive,
+        labels=labels, needs_comment_present=bool(needs_at_head),
+    )
 
     if status != "review" or not reviewed_head or reviewed_head == head:
         review_mode = "full" if status == "review" and not reviewed_head else "incremental"
@@ -304,6 +366,7 @@ def summarize(number: int, me: str, state: dict | None = None, config: dict | No
         "securitySensitive": sensitive,
         "labels": labels,
         "staleApprovedLabel": "gatekeeper:approved" in labels and status != "approved",
+        "needsHuman": needs_human,
         "url": pr["url"],
         "base": base,
         "draft": pr["isDraft"],

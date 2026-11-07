@@ -58,13 +58,14 @@ The script output is already sorted: priority 0 first (worker response, new head
 
 - **Never empty or skip a tick due to pending CI**: select PRs that actually have reviewable work in this tick.
 - PRs in `status: await-ci` have a `verdict=clean` marker for the current head and are only waiting for CI; do not re-review them.
-- `human-only` PRs (they change loop skills) are never reviewed or labelled; leave them to the human.
+- `human-only` PRs (they change loop skills) are never reviewed or approved by the loop, but stay visible: ensure the `gatekeeper:needs-human` label and one `kind=needs-human` marker comment (reason `changes loop skill files`) exist. Use `needsHuman` in the queue output (`labelPresent`/`commentPresent`) so unchanged ticks post nothing.
 - Use each entry's `reviewMode`: `full` (first review), `incremental` (`git diff reviewedHead..head`), `range-diff` (rebased; see step 2).
 - Stacked PRs (whose `base` is not the primary base branch from config) do not run CI: ignore `ciPending` and review normally. When approving, add the condition: _"CI requires verification after retargeting"_.
 
 Other statuses:
 
 - `await-ci` — a `verdict=clean` marker exists for this head; waiting only for CI completion. Remove any stale `gatekeeper:changes-requested` label (e.g. `gh pr edit N --remove-label gatekeeper:changes-requested`). If CI turned green, post `approve` and remove any stale `gatekeeper:changes-requested` label (e.g. `gh pr edit N --add-label gatekeeper:approved --remove-label gatekeeper:changes-requested,gatekeeper:escalated`); if failed, diagnose failure and post `changes-requested`.
+- `needs-human` — the current head was reviewed clean but no CI runs exist on it (`no CI on head`). Do not re-review and do not approve. Ensure the `gatekeeper:needs-human` label and one `kind=needs-human` marker comment exist (check `needsHuman` in the queue output; never duplicate them). When CI runs appear or the head changes, the status clears; then remove `gatekeeper:needs-human` only if `needsHuman.staleLabel` is true and no security-sensitive or human-only reason remains.
 - `wait-worker` — worker's turn (changes requested at current head without response, or merge conflicts).
 - `approved` — nothing to do; make sure the label is `gatekeeper:approved`. For any PR with `staleApprovedLabel: true` (status no longer `approved`), swap the label right away (`gatekeeper:changes-requested` if CI is failing, otherwise remove `gatekeeper:approved`) before reviewing, so a stale approve is never visible. The script already turns an approve back into `review` when the head changed (a push after an approve **always requires re-review**), CI fails, the base changed (e.g. stacked PR retargeted), or the owner commented.
 - `escalate` — post an `escalate` verdict if none exists yet and swap the label to `gatekeeper:escalated`. Note: An owner comment on an escalated PR resets status to `review` so the gatekeeper can incorporate owner direction.
@@ -162,6 +163,7 @@ After completing PR reviews, validate at most **one** issue that has `labels.pro
 - **Do not re-review diff in await-ci**: for an `await-ci` PR, verify only whether the head changed or CI completed. If green, approve.
 - **A push after an approve requires re-review.** An approve only covers the head, base and CI state it was issued for.
 - **Approve requires Checked section**: every approve verdict must contain a non-empty `### Checked` section citing `file:line` for all acceptance criteria.
+- **Needs-human visibility, never self-review**: the loop never reviews or approves its own skill files and never auto-approves blocked PRs, but a human must always see *why* a PR is waiting: keep the `gatekeeper:needs-human` label and a single `kind=needs-human` marker comment per reason+head, and remove the label once its reason no longer applies. Only labels this loop added are ever removed; unrelated labels are untouched.
 - **Issue validation limits**: Validate at most one producer issue per tick. Never add `approved`, never close issues, and never change code.
 - Never push, commit, edit code, merge, enable auto-merge, close PRs/issues, or resolve the worker's threads. The gatekeeper only comments and labels.
 - Findings must be concrete: file:line, problem, expected fix or acceptance check. No vague "consider improving".
