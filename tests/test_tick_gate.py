@@ -41,6 +41,7 @@ class TickGateTest(unittest.TestCase):
         # Current process PID is alive
         tick_gate.acquire_lock(self.lock_file, pid=os.getpid())
         self.assertTrue(tick_gate.check_lock(self.lock_file))
+        tick_gate.release_lock(self.lock_file)
 
         # Dead PID is recognized as stale
         dead_pid = 9999999
@@ -262,6 +263,32 @@ class TickGateTest(unittest.TestCase):
             tick_gate.main()
         self.assertEqual(cm.exception.code, tick_gate.EXIT_RUN)
 
+
+
+    def test_concurrent_lock_attempts(self):
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            f1 = executor.submit(tick_gate.acquire_lock, self.lock_file)
+            f2 = executor.submit(tick_gate.acquire_lock, self.lock_file)
+            results = [f1.result(), f2.result()]
+
+        self.assertEqual(results.count(True), 1)
+        self.assertEqual(results.count(False), 1)
+        self.assertTrue(tick_gate.check_lock(self.lock_file))
+
+    def test_atomic_state_write_failure_preserves_old_state(self):
+        old_state = {"current": None, "lastFingerprint": "initial"}
+        tick_gate.save_state(self.state_file, old_state)
+
+        new_state = {"current": 101, "lastFingerprint": "corrupted"}
+        with patch.object(Path, "replace", side_effect=OSError("Simulated replace error")):
+            with self.assertRaises(OSError):
+                tick_gate.save_state(self.state_file, new_state)
+
+        # Old state.json is intact
+        loaded = tick_gate.load_state(self.state_file)
+        self.assertEqual(loaded, old_state)
 
 if __name__ == "__main__":
     unittest.main()

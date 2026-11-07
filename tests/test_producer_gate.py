@@ -118,6 +118,7 @@ class ProducerGateTest(unittest.TestCase):
             self.assertIn("BUSY", mock_out.getvalue())
 
         # 3. Stale lock by dead PID
+        release_lock(self.lock_file)
         dead_pid = 9999999
         acquire_lock(self.lock_file, pid=dead_pid)
         self.assertFalse(check_lock(self.lock_file))
@@ -134,6 +135,21 @@ class ProducerGateTest(unittest.TestCase):
             self.assertEqual(exit_code, producer.EXIT_RUN)
             self.assertFalse(check_lock(self.lock_file))
             self.assertIn("UNLOCKED", mock_out.getvalue())
+
+    def test_task_without_lock_prints_task(self):
+        """--task without --lock exits EXIT_RUN and prints the task name."""
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            exit_code = producer_gate_main(["--task", "security", "--state-file", str(self.state_file)])
+            self.assertEqual(exit_code, producer.EXIT_RUN)
+            self.assertEqual(mock_out.getvalue().strip(), "security")
+
+    def test_task_with_lock_prints_task_and_locks(self):
+        """--task with --lock exits EXIT_RUN, prints the task name, and acquires the lock."""
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            exit_code = producer_gate_main(["--task", "security", "--lock", "--state-file", str(self.state_file)])
+            self.assertEqual(exit_code, producer.EXIT_RUN)
+            self.assertEqual(mock_out.getvalue().strip(), "security")
+            self.assertTrue(check_lock(self.lock_file))
 
     def test_mark_task_done(self):
         """--done updates the task's lastRun timestamp in state.json."""

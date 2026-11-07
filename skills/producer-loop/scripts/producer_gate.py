@@ -79,20 +79,26 @@ def main(argv: list[str] | None = None) -> int:
                 return EXIT_NOOP
 
             if args.lock:
-                acquire_lock(lock_path, pid=args.pid)
+                if not acquire_lock(lock_path, pid=args.pid):
+                    print("BUSY (tick in progress)")
+                    return EXIT_BUSY
             print(task)
             return EXIT_RUN
 
         # 5. Handle specific task
         if args.task:
             if args.lock:
-                acquire_lock(lock_path, pid=args.pid)
+                if not acquire_lock(lock_path, pid=args.pid):
+                    print("BUSY (tick in progress)")
+                    return EXIT_BUSY
             print(args.task)
             return EXIT_RUN
 
         # 6. Lock-only
         if args.lock:
-            acquire_lock(lock_path, pid=args.pid)
+            if not acquire_lock(lock_path, pid=args.pid):
+                print("BUSY (tick in progress)")
+                return EXIT_BUSY
             print("LOCKED")
             return EXIT_RUN
 

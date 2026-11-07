@@ -32,7 +32,7 @@ Talks to the gatekeeper reviewer only through PR comments. See [references/sched
 }
 ```
 
-Keep `history` to at most 50 entries; move older entries to `<state_dir>/worker-loop/history.log` (JSONL). If `current` is set, resume it instead of picking new work.
+Keep `history` to at most 50 entries; move older entries to `<state_dir>/worker-loop/history.log` (JSONL). If `current` is set, resume it instead of picking new work. State writes must be atomic (write to a temporary file in the same directory, then replace).
 
 ## Worktree
 
