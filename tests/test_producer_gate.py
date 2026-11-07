@@ -17,7 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from devloops_lib import producer
-from devloops_lib.tick_gate import acquire_lock, check_lock, release_lock
+from devloops_lib.tick_gate import WRAPPER_PID_ENV, acquire_lock, check_lock, release_lock
 
 # Import CLI main
 import importlib.util
@@ -150,6 +150,29 @@ class ProducerGateTest(unittest.TestCase):
             self.assertEqual(exit_code, producer.EXIT_RUN)
             self.assertEqual(mock_out.getvalue().strip(), "security")
             self.assertTrue(check_lock(self.lock_file))
+
+    def test_gate_under_wrapper_keeps_the_wrapper_lock(self):
+        acquire_lock(self.lock_file, pid=os.getpid())
+        before = self.lock_file.read_text(encoding="utf-8")
+        with patch.dict(os.environ, {WRAPPER_PID_ENV: str(os.getpid())}), \
+                patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            self.assertEqual(
+                producer_gate_main(["--task", "security", "--lock", "--state-file", str(self.state_file)]),
+                producer.EXIT_RUN,
+            )
+            self.assertEqual(
+                producer_gate_main(["--done", "security", "--unlock", "--state-file", str(self.state_file)]),
+                producer.EXIT_RUN,
+            )
+            self.assertIn("LOCK KEPT", mock_out.getvalue())
+        self.assertEqual(self.lock_file.read_text(encoding="utf-8"), before)
+
+        with patch.dict(os.environ, {WRAPPER_PID_ENV: str(os.getpid() + 1)}), \
+                patch("sys.stdout", new_callable=io.StringIO):
+            self.assertEqual(
+                producer_gate_main(["--task", "security", "--lock", "--state-file", str(self.state_file)]),
+                producer.EXIT_BUSY,
+            )
 
     def test_mark_task_done(self):
         """--done updates the task's lastRun timestamp in state.json."""

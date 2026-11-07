@@ -67,10 +67,16 @@ human ───────────► merge
 
 ### Tick gate
 
-A scheduler starts each loop in **ticks**. Before a worker tick starts the agent,
-`tick_gate.py` decides if there is anything to do:
+A scheduler starts each loop in **ticks**, through `devloops tick <loop> --agent-cmd '...'`.
+The wrapper takes `tick.lock`, starts the agent, and releases the lock on every exit path.
+If another tick holds the lock, it prints `BUSY`. For the worker, it first runs a
+fingerprint check, and it does not start the agent when nothing changed.
 
-1. `--lock` takes `tick.lock`. If another tick holds the lock, it prints `BUSY`.
+Inside the agent, or when you start a tick without the wrapper, `tick_gate.py`
+decides if there is anything to do:
+
+1. `--lock` takes `tick.lock`. Under the wrapper, it leaves the wrapper's lock in place.
+   If another tick holds the lock, it prints `BUSY`.
 2. It computes a fingerprint with one GitHub GraphQL request (your open PRs:
    head, mergeable state, CI state, last update, last comment; candidate issues:
    last update). It keeps this tick-start fingerprint.
@@ -79,6 +85,8 @@ A scheduler starts each loop in **ticks**. Before a worker tick starts the agent
 4. At the end of the tick:
    - idle or needsUser tick: `--update --unlock` saves the **tick-start** fingerprint;
    - tick that did work, or failed: `--unlock` only. The next tick runs again.
+
+   Under the wrapper, `--unlock` keeps the lock, and the wrapper releases it on exit.
 
 So a change that happens during a tick is never hidden, and only an idle,
 unchanged state gives `NOOP`.

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from devloops_lib.config import get_state_path, load_config
 from devloops_lib.tick_gate import (
+    WRAPPER_PID_ENV,
     acquire_lock_token,
     check_lock,
     load_state,
@@ -231,7 +232,9 @@ def tick_command(
         cmd_to_run = agent_cmd or os.environ.get("DEVLOOPS_AGENT_CMD") or os.environ.get("AGENT_CMD")
         if cmd_to_run:
             print(f"Executing agent command: {cmd_to_run}")
-            res = subprocess.run(cmd_to_run, shell=True)
+            # Tell the agent's gate commands that this process holds the lock.
+            agent_env = {**os.environ, WRAPPER_PID_ENV: str(os.getpid())}
+            res = subprocess.run(cmd_to_run, shell=True, env=agent_env)
             return res.returncode
         return 0
     finally:

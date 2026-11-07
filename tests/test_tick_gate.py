@@ -220,6 +220,46 @@ class TickGateTest(unittest.TestCase):
         self.assertNotIn("tickStartFingerprint", saved)
         self.assertFalse(tick_gate.check_lock(self.lock_file))
 
+    def _run_gate(self, *flags):
+        with patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), *flags]), \
+             self.assertRaises(SystemExit) as cm:
+            tick_gate.main()
+        return cm.exception.code
+
+    def test_gate_under_wrapper_keeps_the_wrapper_lock(self):
+        tick_gate.acquire_lock(self.lock_file, pid=os.getpid())
+        before = self.lock_file.read_text(encoding="utf-8")
+        tick_gate.save_state(self.state_file, {"current": None, "lastFingerprint": "old_fp"})
+
+        with patch.dict(os.environ, {tick_gate.WRAPPER_PID_ENV: str(os.getpid())}), \
+             patch.object(tick_gate, "preflight_decision", return_value=("new_fp", [])):
+            self.assertEqual(self._run_gate("--lock"), tick_gate.EXIT_RUN)
+            self.assertEqual(tick_gate.load_state(self.state_file)["tickStartFingerprint"], "new_fp")
+            # An idle tick still saves its fingerprint, so a later unchanged tick is NOOP.
+            self.assertEqual(self._run_gate("--update", "--unlock"), tick_gate.EXIT_RUN)
+
+        self.assertEqual(tick_gate.load_state(self.state_file)["lastFingerprint"], "new_fp")
+        self.assertEqual(self.lock_file.read_text(encoding="utf-8"), before)
+
+    def test_wrapper_variable_must_match_the_pid_in_the_lock(self):
+        env = {tick_gate.WRAPPER_PID_ENV: str(os.getpid() + 1)}
+        # Lock owned by another live tick: a mismatched variable does not bypass it.
+        tick_gate.acquire_lock(self.lock_file, pid=os.getpid())
+        with patch.dict(os.environ, env):
+            self.assertFalse(tick_gate.held_by_wrapper(self.lock_file))
+            self.assertEqual(self._run_gate("--lock"), tick_gate.EXIT_BUSY)
+
+        tick_gate.release_lock(self.lock_file)
+        for payload in ("", "null", '{"time": 1}', '{"pid": "x"}'):
+            with self.subTest(payload=payload), patch.dict(os.environ, env):
+                self.lock_file.write_text(payload, encoding="utf-8")
+                self.assertFalse(tick_gate.held_by_wrapper(self.lock_file))
+
+        # The real --unlock releases a lock that the wrapper does not hold.
+        with patch.dict(os.environ, env):
+            self.assertEqual(self._run_gate("--unlock"), tick_gate.EXIT_RUN)
+        self.assertFalse(self.lock_file.exists())
+
     def test_update_and_unlock_gh_error_releases_lock(self):
         tick_gate.acquire_lock(self.lock_file)
         self.assertTrue(tick_gate.check_lock(self.lock_file))

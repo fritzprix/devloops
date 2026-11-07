@@ -2,6 +2,7 @@
 """Tests for devloops CLI and install command."""
 import contextlib
 import io
+import json
 import os
 import sys
 import tempfile
@@ -210,6 +211,35 @@ class CliInstallTest(unittest.TestCase):
             self.assertEqual(cli.main(["tick", "worker", "--state-file", str(state_file)]), 0)
 
         self.assertNotEqual(acquire_flock.call_args[0][0], state_file.parent / "tick.lock")
+
+    def test_agent_under_wrapper_can_run_its_gate_commands(self):
+        # The agent follows SKILL.md: gate --lock at the start, --unlock at the end.
+        # It must not get BUSY from the wrapper's own lock or release that lock.
+        state_file = self.tmp_dir / "worker-loop" / "state.json"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text('{"current": 101}', encoding="utf-8")
+        lock_file = state_file.parent / "tick.lock"
+        results_file = self.tmp_dir / "results.json"
+        gate = Path(cli.__file__).resolve().parent.parent / "skills" / "worker-loop" / "scripts" / "tick_gate.py"
+        agent = self.tmp_dir / "agent.py"
+        agent.write_text(
+            "import json, subprocess, sys\n"
+            "from pathlib import Path\n"
+            "def gate(flag):\n"
+            f"    r = subprocess.run([sys.executable, {str(gate)!r}, flag, '--state-file', {str(state_file)!r}],\n"
+            "                       capture_output=True, text=True)\n"
+            f"    return [r.returncode, r.stdout.strip(), Path({str(lock_file)!r}).exists()]\n"
+            f"Path({str(results_file)!r}).write_text(json.dumps([gate('--lock'), gate('--unlock')]))\n",
+            encoding="utf-8",
+        )
+
+        rc = cli.main(["tick", "worker", "--agent-cmd", f'"{sys.executable}" "{agent}"', "--state-file", str(state_file)])
+
+        self.assertEqual(rc, 0)
+        locked, unlocked = json.loads(results_file.read_text())
+        self.assertEqual(locked, [0, "RUN (current work in progress)", True])
+        self.assertEqual(unlocked, [0, "LOCK KEPT (held by devloops tick)", True])
+        self.assertFalse(lock_file.exists())
 
 
 if __name__ == "__main__":

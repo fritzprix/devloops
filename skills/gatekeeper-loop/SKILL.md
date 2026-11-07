@@ -31,14 +31,14 @@ Worker and gatekeeper share one GitHub account, so GitHub's Approve / Request ch
 
 ### Schedulers
 
-Arm via shell loop adapter:
+Arm via shell loop adapter. The `devloops tick` wrapper holds the lock for the whole tick, so a slow tick cannot overlap the next one:
 - **Bash (Linux/macOS)**:
   ```bash
-  while true; do sleep 600; echo 'AGENT_LOOP_TICK_gatekeeper_loop {"prompt":"/gatekeeper-loop"}'; done
+  while true; do devloops tick gatekeeper --agent-cmd 'agent "/gatekeeper-loop"'; sleep 600; done
   ```
 - **PowerShell (Windows)**:
   ```powershell
-  while ($true) { Start-Sleep -Seconds 600; Write-Output 'AGENT_LOOP_TICK_gatekeeper_loop {"prompt":"/gatekeeper-loop"}' }
+  while ($true) { devloops tick gatekeeper --agent-cmd 'agent "/gatekeeper-loop"'; Start-Sleep -Seconds 600 }
   ```
 Record the PID in state. Alternatively, a cron schedule or a harness-specific scheduler adapter can be used as configured in `devloops.config.yaml`.
 

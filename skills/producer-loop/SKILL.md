@@ -64,6 +64,8 @@ Lock file: `<state_dir>/producer-loop/tick.lock` (lock TTL: 30 minutes, 1800s).
 ## Tick procedure
 
 ### 0. Gate Check & Lock
+Under `devloops tick producer`, the wrapper already holds the lock. The `--lock` and `--unlock` flags detect this and leave the lock to the wrapper, so the commands in this procedure do not change.
+
 1. Run preflight gate:
    ```bash
    python3 "$SKILL_DIR/scripts/producer_gate.py" --next --lock

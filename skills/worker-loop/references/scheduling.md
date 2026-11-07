@@ -23,7 +23,9 @@ Run a background shell process that periodically triggers the tick via the `devl
   while ($true) { devloops tick worker --agent-cmd 'agent "/worker-loop"'; Start-Sleep -Seconds 600 }
   ```
 
-The wrapper owns the lock and releases it safely on every exit path.
+The wrapper owns the lock and releases it safely on every exit path. It exports `DEVLOOPS_TICK_WRAPPER_PID` to the agent, so the `--lock` and `--unlock` gate flags in a SKILL leave the wrapper's lock in place.
+
+The gatekeeper and producer use the same form: `devloops tick gatekeeper --agent-cmd 'agent "/gatekeeper-loop"'` and `devloops tick producer --agent-cmd 'agent "/producer-loop"'`. Only the worker gets the wrapper's fingerprint check. The producer selects its task inside the agent, with `producer_gate.py`.
 
 ### 2. Cron Schedule
 Schedule via cron using `devloops tick` (which performs the gate check, holds the lock, runs the command, and unlocks on exit):
