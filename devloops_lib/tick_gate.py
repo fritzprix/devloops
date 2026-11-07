@@ -762,7 +762,9 @@ def main(argv: list[str] | None = None) -> None:
                     "an operator can use --force-unlock\n"
                 )
                 sys.exit(EXIT_ERROR)
-            if not token_holds_lock(lock_path, token):
+            # Renewing (not just reading the token) keeps the lock live for a TTL, so
+            # nobody can reclaim it between this check and the state write below.
+            if not renew_lock(lock_path, token):
                 # A tick that lost its lock must not write the slot's state either.
                 print(f"LOST ({describe_lock(lock_path)})")
                 sys.exit(EXIT_LOST)

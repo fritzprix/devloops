@@ -190,6 +190,17 @@ class ProducerGateTest(unittest.TestCase):
                 producer.EXIT_BUSY,
             )
 
+    def test_done_with_a_lost_lock_marks_nothing(self):
+        acquire_lock_token(self.lock_file)
+        self.state_file.write_text(json.dumps({"lastRun": {"security": 100}}), encoding="utf-8")
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            exit_code = producer_gate_main(["--done", "security", "--unlock", "--token", "not-mine",
+                                            "--state-file", str(self.state_file)])
+        self.assertEqual(exit_code, producer.EXIT_LOST)
+        self.assertIn("LOST", mock_out.getvalue())
+        self.assertEqual(json.loads(self.state_file.read_text(encoding="utf-8"))["lastRun"]["security"], 100)
+        self.assertTrue(check_lock(self.lock_file))
+
     def test_mark_task_done(self):
         """--done updates the task's lastRun timestamp in state.json."""
         state = {"lastRun": {"security": 100}}

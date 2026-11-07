@@ -38,6 +38,7 @@ from devloops_lib.tick_gate import (
     held_by_wrapper,
     load_state,
     release_lock,
+    renew_lock,
     take_tick_lock,
     token_holds_lock,
 )
@@ -101,7 +102,8 @@ def main(argv: list[str] | None = None) -> int:
 
         # 1. Handle --done <task>
         if args.done:
-            if args.unlock and not wrapper_held and not token_holds_lock(lock_path, token or ""):
+            # Renewing keeps the lock live until drop_lock, so nobody reclaims it in between.
+            if args.unlock and not wrapper_held and not renew_lock(lock_path, token or ""):
                 # A tick that lost its lock must not record the task as done either.
                 return drop_lock()
             mark_task_done(args.done, state_path)

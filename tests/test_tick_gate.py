@@ -266,10 +266,12 @@ class TickGateTest(unittest.TestCase):
             os.environ.pop(tick_gate.TOKEN_ENV, None)
             self.assertEqual(self._run_gate("--unlock"), tick_gate.EXIT_ERROR)
         self.assertTrue(self.lock_file.exists())
+        tick_gate.save_state(self.state_file, {"lastFingerprint": "old", "tickStartFingerprint": "new"})
         with patch("sys.stdout", new_callable=io.StringIO) as out:
-            self.assertEqual(self._run_gate("--unlock", "--token", "not-mine"), tick_gate.EXIT_LOST)
+            self.assertEqual(self._run_gate("--update", "--unlock", "--token", "not-mine"), tick_gate.EXIT_LOST)
         self.assertIn("LOST", out.getvalue())
         self.assertEqual(self._held_token(), token)
+        self.assertEqual(tick_gate.load_state(self.state_file)["lastFingerprint"], "old")
         with patch("sys.stdout", new_callable=io.StringIO):
             self.assertEqual(self._run_gate("--force-unlock"), tick_gate.EXIT_RUN)
         self.assertFalse(self.lock_file.exists())
