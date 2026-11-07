@@ -102,5 +102,113 @@ class IssueCandidatesRule3Test(unittest.TestCase):
         self.assertEqual(result["candidates"][0]["number"], 5)
 
 
+def _issue(number, body=""):
+    return {"number": number, "title": f"Issue {number}", "body": body, "labels": [], "assignees": []}
+
+
+def _pr(number, head, base="main", title="PR", body="", author="me", **fields):
+    return {
+        "number": number, "title": title, "body": body, "headRefName": head,
+        "baseRefName": base, "author": {"login": author}, **fields,
+    }
+
+
+class DependencyTest(unittest.TestCase):
+    def _candidates(self, issues, prs=()):
+        result = filter_and_rank_issues(issues, list(prs), "me", config={})
+        return {c["number"]: c for c in result["candidates"]}, [c["number"] for c in result["candidates"]]
+
+    def test_parse_depends_on_reads_lines_only(self):
+        body = (
+            "Depends on #1\n"
+            "- depends on: #2, #3 and #4\n"
+            "The original issue depended on #5, and this depends on #6 in a sentence.\n"
+            "DEPENDS ON #7\n"
+            "Depends on #9\n"
+        )
+        self.assertEqual(_module.parse_depends_on(body, 9), [1, 2, 3, 4, 7])
+        self.assertEqual(_module.parse_depends_on("no deps", 9), [])
+
+    def test_no_dependency_and_closed_dependency(self):
+        by_number, _ = self._candidates([_issue(10), _issue(11, "Depends on #99")])
+        self.assertEqual(by_number[10]["dependency"]["status"], "none")
+        self.assertEqual(by_number[11]["dependency"]["status"], "ready")
+
+    def test_open_dependency_without_a_pr_waits_and_ranks_last(self):
+        by_number, order = self._candidates([_issue(1), _issue(10, "Depends on #1"), _issue(11)])
+        self.assertEqual(by_number[10]["dependency"]["status"], "wait")
+        self.assertEqual(by_number[10]["dependency"]["open"], [1])
+        self.assertIsNone(by_number[10]["dependency"]["stackOn"])
+        self.assertEqual(order[-1], 10)
+
+    def test_dependency_with_a_pr_can_stack_for_every_way_a_pr_links_to_it(self):
+        prs = {
+            "head suffix": _pr(20, "feat/x-1"),
+            "closing keyword": _pr(20, "feat/x", body="Fixes #1"),
+            "part of": _pr(20, "feat/x", body="Part of #1"),
+        }
+        for name, pr in prs.items():
+            with self.subTest(name):
+                # A closing PR excludes #1 itself, so #10 alone is the candidate under test.
+                by_number, _ = self._candidates([_issue(1), _issue(10, "Depends on #1")], [pr])
+                dependency = by_number[10]["dependency"]
+                self.assertEqual(dependency["status"], "stack")
+                self.assertEqual(dependency["stackOn"], {"pr": 20, "head": pr["headRefName"], "approved": False})
+
+    def test_dependency_on_a_pr_number_stacks_on_it(self):
+        by_number, _ = self._candidates([_issue(10, "Depends on #20")], [_pr(20, "feat/x")])
+        self.assertEqual(by_number[10]["dependency"]["stackOn"]["pr"], 20)
+
+    def test_an_approved_pr_is_offered_before_an_unapproved_one(self):
+        prs = [
+            _pr(20, "feat/old", body="Part of #1", reviewDecision="APPROVED"),
+            _pr(21, "feat/new", body="Part of #1"),
+        ]
+        by_number, _ = self._candidates([_issue(1), _issue(10, "Depends on #1")], prs)
+        self.assertEqual(by_number[10]["dependency"]["stackOn"], {"pr": 20, "head": "feat/old", "approved": True})
+
+    def test_gatekeeper_label_counts_as_approved(self):
+        prs = [_pr(20, "feat/x", body="Part of #1", labels=[{"name": "gatekeeper:approved"}])]
+        by_number, _ = self._candidates([_issue(1), _issue(10, "Depends on #1")], prs)
+        self.assertTrue(by_number[10]["dependency"]["stackOn"]["approved"])
+
+    def test_a_stacked_pr_is_not_offered(self):
+        # Stacking on it would reach depth 2.
+        prs = [_pr(21, "feat/y", base="feat/x", body="Part of #1")]
+        by_number, _ = self._candidates([_issue(1), _issue(10, "Depends on #1")], prs)
+        self.assertEqual(by_number[10]["dependency"]["status"], "wait")
+
+    def test_two_open_dependencies_wait_because_a_branch_has_one_base(self):
+        prs = [_pr(20, "feat/x-1"), _pr(21, "feat/y-2")]
+        by_number, _ = self._candidates([_issue(1), _issue(2), _issue(10, "Depends on #1\nDepends on #2")], prs)
+        self.assertEqual(by_number[10]["dependency"]["status"], "wait")
+        self.assertEqual(by_number[10]["dependency"]["open"], [1, 2])
+
+    def test_rank_order_is_free_then_approved_stack_then_unapproved_stack_then_wait(self):
+        issues = [_issue(1), _issue(2), _issue(3),
+                  _issue(10, "Depends on #3"), _issue(11, "Depends on #2"), _issue(12, "Depends on #1"), _issue(13)]
+        prs = [_pr(20, "feat/a", body="Part of #1"),
+               _pr(21, "feat/b", body="Part of #2", reviewDecision="APPROVED")]
+        _, order = self._candidates(issues, prs)
+        self.assertLess(order.index(13), order.index(12))
+        self.assertLess(order.index(11), order.index(12))
+        self.assertLess(order.index(12), order.index(10))
+
+
+class OpenPrLimitTest(unittest.TestCase):
+    def test_counts_only_my_unapproved_prs(self):
+        prs = [_pr(n, f"feat/{n}") for n in range(1, 5)] + [
+            _pr(5, "feat/5", reviewDecision="APPROVED"),
+            _pr(6, "feat/6", labels=[{"name": "gatekeeper:approved"}]),
+            _pr(7, "feat/7", author="someone-else"),
+        ]
+        self.assertEqual(_module.open_pr_limit(prs, "me"), {"unapproved": 4, "limit": 5, "reached": False})
+
+    def test_limit_is_reached_at_five(self):
+        prs = [_pr(n, f"feat/{n}") for n in range(1, 6)]
+        result = filter_and_rank_issues([], prs, "me", config={})
+        self.assertEqual(result["openPRLimit"], {"unapproved": 5, "limit": 5, "reached": True})
+
+
 if __name__ == "__main__":
     unittest.main()

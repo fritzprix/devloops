@@ -30,9 +30,83 @@ EXTERNAL_REF_PATTERN = re.compile(r"\b[\w.-]+/[\w.-]+#\d+\b")
 CLOSING_PATTERN = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b", re.I)
 BLOCKED_PATTERN = re.compile(r"\b(blocked by|depends on|waiting (?:for|on)|after #\d+ (?:merges|lands))\b", re.I)
 UMBRELLA_PATTERN = re.compile(r"\b(umbrella|tracking issue|epic)\b", re.I)
+# A "Depends on #1, #3" line. A mention inside a sentence is not a dependency.
+DEPENDS_ON_PATTERN = re.compile(r"^[ \t]*(?:[-*][ \t]+)?depends on:?[ \t]+(#\d+(?:(?:,|[ \t]+and)?[ \t]*#\d+)*)", re.I | re.M)
+PART_OF_PATTERN = re.compile(r"\bpart of\s+#(\d+)\b", re.I)
+HEAD_ISSUE_PATTERN = re.compile(r"-(\d+)$")
+APPROVED_PR_LABEL = "gatekeeper:approved"
+OPEN_PR_LIMIT = 5
 
 
 # gh helper is imported from devloops_lib.gh
+
+
+def parse_depends_on(body: str, number: int) -> list[int]:
+    """Return the issue or PR numbers in the body's "Depends on" lines."""
+    found = set()
+    for match in DEPENDS_ON_PATTERN.findall(body):
+        found |= {int(n) for n in re.findall(r"#(\d+)", match)}
+    return sorted(found - {number})
+
+
+def _pr_is_approved(pr: dict) -> bool:
+    labels = {label["name"] if isinstance(label, dict) else label for label in pr.get("labels") or []}
+    return pr.get("reviewDecision") == "APPROVED" or APPROVED_PR_LABEL in labels
+
+
+def _prs_working_on(open_prs: list[dict]) -> dict[int, list[dict]]:
+    """Map each issue number to the open PRs that carry its work."""
+    result: dict[int, list[dict]] = {}
+    for pr in open_prs:
+        text = f"{pr['title']} {pr.get('body') or ''}"
+        issues = {int(n) for n in CLOSING_PATTERN.findall(text)} | {int(n) for n in PART_OF_PATTERN.findall(text)}
+        match = HEAD_ISSUE_PATTERN.search(pr.get("headRefName") or "")
+        if match:
+            issues.add(int(match.group(1)))
+        for issue in issues:
+            result.setdefault(issue, []).append(pr)
+    return result
+
+
+def resolve_dependency(
+    depends_on: list[int],
+    open_issue_numbers: set[int],
+    open_prs: list[dict],
+    prs_working_on: dict[int, list[dict]],
+    base_branch: str,
+) -> dict:
+    """Decide how an issue can start, given its dependencies. Recomputed on every run.
+
+    Status: none (no dependencies), ready (all closed), stack (one open dependency
+    with a PR to branch from), or wait (an open dependency with no such PR, or more
+    than one open dependency, because a branch has only one base). A PR that is
+    itself stacked is not offered: stacking on it would reach depth 2.
+    """
+    prs_by_number = {pr["number"]: pr for pr in open_prs}
+    unfinished = [d for d in depends_on if d in open_issue_numbers or d in prs_by_number]
+    result = {"status": "none" if not depends_on else "ready", "dependsOn": depends_on, "open": unfinished, "stackOn": None}
+    if not unfinished:
+        return result
+    result["status"] = "wait"
+    if len(unfinished) > 1:
+        return result
+    dep = unfinished[0]
+    prs = [prs_by_number[dep]] if dep in prs_by_number else prs_working_on.get(dep, [])
+    options = [pr for pr in prs if (pr.get("baseRefName") or base_branch) == base_branch]
+    if options:
+        pr = max(options, key=lambda p: (_pr_is_approved(p), p["number"]))
+        result["status"] = "stack"
+        result["stackOn"] = {"pr": pr["number"], "head": pr.get("headRefName", ""), "approved": _pr_is_approved(pr)}
+    return result
+
+
+def open_pr_limit(open_prs: list[dict], me: str) -> dict:
+    """Count my unapproved open PRs against the limit. Approved PRs wait only for a merge."""
+    unapproved = sum(
+        1 for pr in open_prs
+        if (pr.get("author") or {}).get("login") == me and not _pr_is_approved(pr)
+    )
+    return {"unapproved": unapproved, "limit": OPEN_PR_LIMIT, "reached": unapproved >= OPEN_PR_LIMIT}
 
 
 def filter_and_rank_issues(
@@ -47,6 +121,8 @@ def filter_and_rank_issues(
 
     open_issue_numbers = {i["number"] for i in issues}
     open_pr_numbers = {p["number"] for p in open_prs}
+    base_branch = cfg.get("project", {}).get("base_branch", "main")
+    prs_working_on = _prs_working_on(open_prs)
 
     closing_pr: dict[int, list[int]] = {}
     mentioned_by_pr: dict[int, list[int]] = {}
@@ -93,6 +169,9 @@ def filter_and_rank_issues(
             "refsOpenPRs": [r for r in refs if r in open_pr_numbers],
             "mentionedByOpenPRs": mentioned_by_pr.get(number, []),
             "externalRefs": sorted(set(EXTERNAL_REF_PATTERN.findall(body))),
+            "dependency": resolve_dependency(
+                parse_depends_on(body, number), open_issue_numbers, open_prs, prs_working_on, base_branch
+            ),
             "blockedHint": bool(BLOCKED_PATTERN.search(body)),
             "umbrellaHint": bool(UMBRELLA_PATTERN.search(issue["title"])),
             "updatedAt": issue.get("updatedAt", ""),
@@ -102,8 +181,15 @@ def filter_and_rank_issues(
             continue
         candidates.append(entry)
 
+    def dependency_rank(dependency: dict) -> int:
+        if dependency["status"] == "wait":
+            return 2
+        stack_on = dependency["stackOn"]
+        return 1 if stack_on and not stack_on["approved"] else 0
+
     def rank(entry: dict) -> tuple:
         return (
+            dependency_rank(entry["dependency"]),
             not entry["assignedToMe"],
             entry["blockedHint"],
             entry["umbrellaHint"],
@@ -115,7 +201,7 @@ def filter_and_rank_issues(
         )
 
     candidates.sort(key=rank)
-    return {"candidates": candidates, "excluded": excluded}
+    return {"openPRLimit": open_pr_limit(open_prs, me), "candidates": candidates, "excluded": excluded}
 
 
 def main() -> None:
@@ -130,7 +216,8 @@ def main() -> None:
                "number,title,labels,assignees,body,createdAt,updatedAt,url")
         )
         open_prs = json.loads(
-            gh("pr", "list", "--state", "open", "--limit", "100", "--json", "number,title,body,headRefName")
+            gh("pr", "list", "--state", "open", "--limit", "100", "--json",
+               "number,title,body,headRefName,baseRefName,reviewDecision,labels,author")
         )
 
         result = filter_and_rank_issues(issues, open_prs, me)
