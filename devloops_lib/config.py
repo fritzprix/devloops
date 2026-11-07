@@ -52,6 +52,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
         "task_max_new_issues": {},
     },
+    "worker": {
+        "max_items_per_tick": 1,
+    },
     "scheduler": "shell",
 }
 
