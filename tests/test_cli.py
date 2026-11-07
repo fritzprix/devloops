@@ -46,12 +46,19 @@ class CliInstallTest(unittest.TestCase):
         self.assertIn("devloops installed into:", output)
         # Guidance must use a stable command form, not the install-time interpreter
         # (under `uvx --from` that is an ephemeral cache path that breaks later).
-        self.assertIn("python3 ", output)
+        doctor = target.resolve() / ".agents" / "skills" / "worker-loop" / "scripts" / "doctor.py"
+        self.assertIn(f'     python3 "{doctor}"', output)
         self.assertNotIn(sys.executable, output)
 
     def test_install_target_with_spaces(self):
         target = self.tmp_dir / "my project with spaces"
-        ret = cli.main(["install", "--target", str(target)])
+        stdout_buf = io.StringIO()
+        with contextlib.redirect_stdout(stdout_buf):
+            ret = cli.main(["install", "--target", str(target)])
+        output = stdout_buf.getvalue()
+        # G1.1: the doctor next step must be paste-able: quoted full path
+        doctor = target.resolve() / ".agents" / "skills" / "worker-loop" / "scripts" / "doctor.py"
+        self.assertIn(f'     python3 "{doctor}"', output)
         self.assertEqual(ret, 0)
         self.assertTrue((target / ".agents" / "skills" / "worker-loop" / "SKILL.md").is_file())
         self.assertTrue((target / "devloops.config.yaml").is_file())

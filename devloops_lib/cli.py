@@ -137,7 +137,8 @@ def install_command(target_dir: Path) -> int:
     print(f"     {config_dest}")
     print("  3. Diagnostics: Verify prerequisites and installation by running")
     print("     (any Python 3.8+ on PATH; use `python` on Windows if `python3` is absent):")
-    print(f"     python3 {lib_dest / 'doctor.py'}")
+    doctor_path = skills_dest / "worker-loop" / "scripts" / "doctor.py"
+    print(f'     python3 "{doctor_path}"')
 
     return 0
 
