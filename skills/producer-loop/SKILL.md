@@ -8,7 +8,9 @@ description: 'Autonomous producer loop that periodically audits codebase areas (
 Autonomous loop that scans the repository across specialized audit areas and files deduplicated, high-signal candidate issues.
 Issues are tagged with `labels.producer` (`auto:producer`) and task labels (`auto:<task>`), ready for the gatekeeper loop to validate.
 
-See [skills/worker-loop/references/scheduling.md](../../worker-loop/references/scheduling.md) for background scheduling adapters (shell loop, cron, harness adapters) which are reused directly by reference.
+See [`$SKILL_DIR/../worker-loop/references/scheduling.md`](../../worker-loop/references/scheduling.md) for background scheduling adapters (shell loop, cron, harness adapters) which are reused directly by reference.
+
+**Path convention**: `$SKILL_DIR` denotes the directory containing this SKILL.md (skill loaders report it on load). All script commands below use `"$SKILL_DIR/scripts/..."`, so they resolve from any current directory — in a repo checkout or in the installed `.agents/skills/` layout.
 
 ## Commands
 
@@ -64,14 +66,14 @@ Lock file: `<state_dir>/producer-loop/tick.lock` (lock TTL: 30 minutes, 1800s).
 ### 0. Gate Check & Lock
 1. Run preflight gate:
    ```bash
-   python3 skills/producer-loop/scripts/producer_gate.py --next --lock
+   python3 "$SKILL_DIR/scripts/producer_gate.py" --next --lock
    ```
    - If output is `BUSY`: another tick is currently in progress. Stop immediately. Never unlock a lock this tick did not acquire.
    - If output is `NOOP`: all tasks are within their scheduled periods. Output `Idle: no tasks due.` and exit.
    - If a task name is returned (e.g. `security`): proceed with that task.
    - If a specific task was requested via CLI (`/producer-loop <task>`):
      ```bash
-     python3 skills/producer-loop/scripts/producer_gate.py --task <task> --lock
+     python3 "$SKILL_DIR/scripts/producer_gate.py" --task <task> --lock
      ```
 
 ### 1. Execute Task Audit
@@ -88,7 +90,7 @@ Lock file: `<state_dir>/producer-loop/tick.lock` (lock TTL: 30 minutes, 1800s).
 1. For each finding, compute fingerprint = `sha256(task + stable finding key)`.
 2. File issues using `scripts/file_issue.py`:
    ```bash
-   python3 skills/producer-loop/scripts/file_issue.py \
+   python3 "$SKILL_DIR/scripts/file_issue.py" \
      --task <task> \
      --key "<stable-finding-key>" \
      --title "<ASD-STE100 title>" \
@@ -97,7 +99,7 @@ Lock file: `<state_dir>/producer-loop/tick.lock` (lock TTL: 30 minutes, 1800s).
    ```
    Or in batch:
    ```bash
-   python3 skills/producer-loop/scripts/file_issue.py --task <task> --findings findings.json --create
+   python3 "$SKILL_DIR/scripts/file_issue.py" --task <task> --findings findings.json --create
    ```
    - The script skips if the fingerprint is already in `state.json`.
    - The script skips if any open or closed issue contains `<!-- producer:fp=<sha> -->`.
@@ -107,7 +109,7 @@ Lock file: `<state_dir>/producer-loop/tick.lock` (lock TTL: 30 minutes, 1800s).
 ### 3. Complete Task & Release Lock
 1. Mark task completed and release lock:
    ```bash
-   python3 skills/producer-loop/scripts/producer_gate.py --done <task> --unlock
+   python3 "$SKILL_DIR/scripts/producer_gate.py" --done <task> --unlock
    ```
 2. Report summary: 1–2 sentences stating task name, number of candidate issues created, and number skipped.
 

@@ -17,6 +17,8 @@ worker opens PR ─► gatekeeper verdict (changes-requested, G-items)
 
 Worker and gatekeeper share one GitHub account, so GitHub's Approve / Request changes buttons are unavailable. Verdicts are PR comments with a hidden marker plus a `gatekeeper:*` label. Read [references/comment-format.md](references/comment-format.md) before posting the first verdict.
 
+**Path convention**: `$SKILL_DIR` denotes the directory containing this SKILL.md (skill loaders report it on load). All script commands below use `"$SKILL_DIR/scripts/..."`, so they resolve from any current directory — in a repo checkout or in the installed `.agents/skills/` layout.
+
 ## Invocation
 
 | Command                          | Behavior                                     |
@@ -51,7 +53,7 @@ Record the PID in state. Alternatively, a cron schedule or a harness-specific sc
 ### 1. Queue
 
 ```bash
-python3 skills/gatekeeper-loop/scripts/review_queue.py [--pr N]
+python3 "$SKILL_DIR/scripts/review_queue.py" [--pr N]
 ```
 
 The script output is already sorted: priority 0 first (worker response, new head, rebase, owner comment, base change, CI failure after approve), then never-reviewed PRs, oldest first. Process **every** `status: review` PR in that order, at most **5 per tick**; leftovers carry over and keep their priority.
@@ -132,13 +134,13 @@ After completing PR reviews, validate at most **one** issue that has `labels.pro
 
 1. Find the next unjudged issue:
    ```bash
-   python3 skills/gatekeeper-loop/scripts/issue_queue.py --next
+   python3 "$SKILL_DIR/scripts/issue_queue.py" --next
    ```
    If output is `NOOP`, skip to Step 5.
 2. **Fresh session & independence**: Validate the finding independently against the current checkout on `project.base_branch`. Confirm or refute the claim with concrete `file:line` evidence.
 3. Settle verdict:
    ```bash
-   python3 skills/gatekeeper-loop/scripts/issue_queue.py \
+   python3 "$SKILL_DIR/scripts/issue_queue.py" \
      --issue <number> \
      --verdict <validated|rejected> \
      --reason "<explanation>" \
