@@ -211,8 +211,10 @@ def tick_command(
                 # If network fails or repo cannot be reached, do not exit NOOP
                 sys.stderr.write(f"Preflight error: {e}\n")
 
-    # Acquire lock (with flock on POSIX and atomic O_EXCL + PID on Windows/portable)
-    flock_fd = acquire_flock(lock_path)
+    # Hold flock on POSIX, then publish the portable lock. The flock needs its own
+    # file: opening tick.lock would create the empty file that publishing must not
+    # find, and a fresh empty lock counts as a live owner.
+    flock_fd = acquire_flock(lock_path.with_name(f"{lock_path.name}.flock"))
     if sys.platform != "win32" and flock_fd is None:
         print("BUSY (tick in progress)")
         return 2

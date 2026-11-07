@@ -22,6 +22,8 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -51,6 +53,17 @@ EXIT_ERROR = 3
 
 # Lock TTL is 30 minutes; ticks with lengthy builds can exceed 15 minutes.
 LOCK_TTL_SECONDS = 1800
+
+# The removal guard is held only for a validate-and-unlink, so a release can
+# wait briefly for it; reclaim never waits (a guard holder means "busy").
+GUARD_RELEASE_WAIT_SECONDS = 1.0
+# Windows refuses to delete a file another process has open for reading.
+UNLINK_WAIT_SECONDS = 0.2
+RETRY_INTERVAL_SECONDS = 0.01
+# os.link errors meaning "this filesystem has no hard links".
+LINK_UNSUPPORTED_ERRNOS = frozenset(
+    {errno.EPERM, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL}
+)
 
 # Matches issue_candidates.py default (--limit 100): a starved approved issue is by
 # definition not recently updated, so a small window would drop it from backlog detection.
@@ -167,15 +180,25 @@ def _is_stale_payload(data: dict, ttl_seconds: int) -> bool:
 
 
 def _read_lock_raw(lock_file: Path) -> str | None:
-    """Read lock payload text verbatim. Returns None when the file is missing."""
+    """Read lock payload text verbatim. Returns None when the file is missing.
+
+    PermissionError counts as missing: on Windows a file being deleted cannot
+    be opened. Publication stays exclusive, so a wrong guess only means busy.
+    """
     try:
         return lock_file.read_text(encoding="utf-8")
-    except FileNotFoundError:
+    except (FileNotFoundError, PermissionError):
         return None
 
 
 def check_lock(lock_file: Path, ttl_seconds: int = LOCK_TTL_SECONDS) -> bool:
-    """Return True if an active, non-stale lock exists.
+    """Return True if an active, non-stale lock exists."""
+    raw = _read_lock_raw(lock_file)
+    return raw is not None and _raw_is_live(lock_file, raw, ttl_seconds)
+
+
+def _raw_is_live(lock_file: Path, raw: str, ttl_seconds: int = LOCK_TTL_SECONDS) -> bool:
+    """Return True if the payload read from lock_file describes a live owner.
 
     Incomplete/corrupt payload policy: a lock file whose JSON cannot be parsed
     (empty, partial, or corrupt) is treated as an in-progress acquisition while
@@ -183,9 +206,6 @@ def check_lock(lock_file: Path, ttl_seconds: int = LOCK_TTL_SECONDS) -> bool:
     owner for a stale lock and never steals it. Only a corrupt lock older than
     the TTL is reclaimed as stale.
     """
-    raw = _read_lock_raw(lock_file)
-    if raw is None:
-        return False
     try:
         data = json.loads(raw)
         if not isinstance(data, dict):
@@ -206,10 +226,13 @@ def _publish_lock(lock_file: Path, data: bytes) -> bool:
     into place: link creation is atomic and exclusive (FileExistsError if the
     lock already exists), so the lock file never exists with an empty or
     partial payload. On filesystems without hard-link support, falls back to
-    O_CREAT|O_EXCL create-then-write; there, check_lock's fresh-corrupt-is-live
-    policy keeps contenders from stealing an in-progress acquisition.
+    O_CREAT|O_EXCL create-then-write; there, the fresh-corrupt-is-live policy
+    (_raw_is_live) keeps contenders from stealing an in-progress acquisition.
+
+    A PermissionError means the lock is being deleted on Windows, so it is
+    reported as busy. Other unexpected link errors propagate.
     """
-    tmp = lock_file.parent / f".{lock_file.name}.tmp.{os.getpid()}.{time.time_ns()}"
+    tmp = lock_file.parent / f".{lock_file.name}.tmp.{uuid.uuid4().hex}"
     tmp.write_bytes(data)
     try:
         try:
@@ -217,16 +240,18 @@ def _publish_lock(lock_file: Path, data: bytes) -> bool:
             return True
         except FileExistsError:
             return False
-        except OSError:
-            # Hard links unsupported on this filesystem: exclusive
-            # create-then-write fallback (see docstring).
-            try:
-                fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except FileExistsError:
+        except OSError as exc:
+            if exc.errno == errno.EACCES:
                 return False
-            with os.fdopen(fd, "wb") as f:
-                f.write(data)
-            return True
+            if exc.errno not in LINK_UNSUPPORTED_ERRNOS:
+                raise
+        try:
+            fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except (FileExistsError, PermissionError):
+            return False
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        return True
     finally:
         try:
             tmp.unlink()
@@ -234,45 +259,99 @@ def _publish_lock(lock_file: Path, data: bytes) -> bool:
             pass
 
 
+def _try_os_lock(fd: int) -> None:
+    """Take a non-blocking exclusive OS lock on fd; raise OSError if unavailable."""
+    if sys.platform == "win32":
+        import msvcrt
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _os_unlock(fd: int) -> None:
+    if sys.platform == "win32":
+        import msvcrt
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    # POSIX: closing the descriptor drops the flock.
+
+
+@contextlib.contextmanager
+def _removal_guard(lock_file: Path, wait_seconds: float = 0.0):
+    """Serialize every removal of lock_file; yield whether the guard is held.
+
+    Publishing needs the lock file to be absent, so while this guard is held
+    the payload can only change if the holder removes it. Validate-then-unlink
+    inside the guard is therefore atomic with respect to other reclaimers and
+    releasers, and cannot delete a newer owner's lock.
+
+    The guard is an OS lock on a sibling file that is never deleted. The kernel
+    drops it when the holder dies, so it has no TTL or stale state of its own.
+    Where OS locks are unavailable the guard is never held, so callers fail
+    closed: a stale lock then needs an operator `--unlock`.
+    """
+    guard_path = lock_file.parent / f"{lock_file.name}.guard"
+    try:
+        fd = os.open(str(guard_path), os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError:
+        yield False
+        return
+    held = False
+    deadline = time.monotonic() + wait_seconds
+    try:
+        while True:
+            try:
+                _try_os_lock(fd)
+                held = True
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(RETRY_INTERVAL_SECONDS)
+        yield held
+    finally:
+        if held:
+            try:
+                _os_unlock(fd)
+            except OSError:
+                pass
+        os.close(fd)
+
+
+def _unlink_lock(lock_file: Path) -> bool:
+    """Delete the lock file; return True once it is gone."""
+    deadline = time.monotonic() + UNLINK_WAIT_SECONDS
+    while True:
+        try:
+            lock_file.unlink()
+            return True
+        except FileNotFoundError:
+            return True
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(RETRY_INTERVAL_SECONDS)
+        except OSError:
+            return False
+
+
 def _reclaim_stale(lock_file: Path) -> bool:
     """Remove a lock only after proving it is stale; return True when it is
     safe to attempt publishing.
 
-    Ownership-safe: the payload is re-read immediately before unlinking and
-    must still equal the bytes validated as stale. If another caller replaced
-    the lock in the meantime, the replacement is never unlinked.
+    Validation and removal both happen inside the removal guard. A contender
+    that finds the guard taken backs off as busy; one that gets it after a
+    reclaim finds the file absent or a fresh lock, which is never removed.
     """
-    for _ in range(3):
+    with _removal_guard(lock_file) as held:
+        if not held:
+            return False
         raw = _read_lock_raw(lock_file)
         if raw is None:
             return True
-        try:
-            data = json.loads(raw)
-            if not isinstance(data, dict):
-                raise ValueError("lock payload must be a JSON object")
-        except Exception:
-            # Corrupt/partial payload: stale only when older than TTL. A fresh
-            # one may belong to an in-progress owner and is never reclaimed.
-            try:
-                if time.time() - lock_file.stat().st_mtime <= LOCK_TTL_SECONDS:
-                    return False
-            except FileNotFoundError:
-                continue
-        else:
-            if not _is_stale_payload(data, LOCK_TTL_SECONDS):
-                return False
-        # Re-validate immediately before removal: delete only the exact payload
-        # observed as stale, never a replacement owned by another caller.
-        if _read_lock_raw(lock_file) != raw:
-            continue
-        try:
-            lock_file.unlink()
-        except FileNotFoundError:
-            continue
-        except OSError:
+        if _raw_is_live(lock_file, raw):
             return False
-        return True
-    return False
+        return _unlink_lock(lock_file)
 
 
 def acquire_lock_token(lock_file: Path, pid: int | None = None) -> str | None:
@@ -307,25 +386,25 @@ def release_lock(lock_file: Path, token: str | None = None) -> None:
 
     With a token: ownership-safe release. The lock is unlinked only when its
     current payload carries the same token, so a late release by an old owner
-    never deletes a replacement lock. Without a token: unconditional operator
-    release (CLI --unlock and legacy callers).
+    never deletes a replacement lock. If the removal guard stays busy the lock
+    is left in place and recovers through the TTL. Without a token:
+    unconditional operator release (CLI --unlock and legacy callers), which
+    still removes the lock when the guard cannot be taken.
     """
-    if token is not None:
-        raw = _read_lock_raw(lock_file)
-        if raw is None:
-            return
-        try:
-            data = json.loads(raw)
-        except Exception:
-            return  # cannot prove ownership of a corrupt payload: leave it
-        if not isinstance(data, dict) or data.get("token") != token:
-            return
-    try:
-        lock_file.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError:
-        pass
+    with _removal_guard(lock_file, wait_seconds=GUARD_RELEASE_WAIT_SECONDS) as held:
+        if token is not None:
+            if not held:
+                return
+            raw = _read_lock_raw(lock_file)
+            if raw is None:
+                return
+            try:
+                data = json.loads(raw)
+            except Exception:
+                return  # cannot prove ownership of a corrupt payload: leave it
+            if not isinstance(data, dict) or data.get("token") != token:
+                return
+        _unlink_lock(lock_file)
 
 
 CLOSING_PATTERN = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b", re.I)

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for tick_gate logic."""
+import errno
 import json
 import os
 import subprocess
@@ -356,11 +357,69 @@ class LockPublicationTest(unittest.TestCase):
     def _payload(self):
         return json.loads(self.lock_file.read_text(encoding="utf-8"))
 
+    def _write_stale_lock(self, token="old-owner"):
+        self.lock_file.write_text(
+            json.dumps({"time": time.time() - (tick_gate.LOCK_TTL_SECONDS + 10), "token": token}),
+            encoding="utf-8",
+        )
+
+    def _pause_thread_before_unlink(self, thread_name):
+        """Patch _unlink_lock so thread_name pauses after validating, before removal."""
+        validated = threading.Event()
+        resume = threading.Event()
+        self.addCleanup(resume.set)
+        original = tick_gate._unlink_lock
+
+        def paused_unlink(lock_file):
+            if threading.current_thread().name == thread_name:
+                validated.set()
+                resume.wait(10)
+            return original(lock_file)
+
+        patcher = patch.object(tick_gate, "_unlink_lock", side_effect=paused_unlink)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return validated, resume
+
+    def test_contender_cannot_steal_lock_during_create_before_payload(self):
+        # Issue #22's reported window, which exists only on the no-hard-link
+        # fallback: A is paused between the exclusive create and the payload
+        # write while B runs the full contested path. Events only; no sleeps.
+        created = threading.Event()
+        resume = threading.Event()
+        self.addCleanup(resume.set)
+        original_fdopen = os.fdopen
+
+        def paused_fdopen(fd, *args, **kwargs):
+            if threading.current_thread().name == "A":
+                created.set()
+                resume.wait(10)
+            return original_fdopen(fd, *args, **kwargs)
+
+        outcomes = {}
+        owner = threading.Thread(
+            name="A",
+            target=lambda: outcomes.update(a=tick_gate.acquire_lock_token(self.lock_file)),
+        )
+        unsupported = OSError(errno.ENOTSUP, "hard links unsupported")
+        with patch.object(tick_gate.os, "link", side_effect=unsupported), \
+                patch.object(tick_gate.os, "fdopen", side_effect=paused_fdopen):
+            owner.start()
+            self.assertTrue(created.wait(10))
+            self.assertEqual(self.lock_file.read_text(encoding="utf-8"), "")
+            inode = self.lock_file.stat().st_ino
+            outcomes["b"] = tick_gate.acquire_lock(self.lock_file)
+            resume.set()
+            owner.join(10)
+
+        self.assertIs(outcomes["b"], False)
+        self.assertIsNotNone(outcomes.get("a"))
+        self.assertEqual(self._payload()["token"], outcomes["a"])
+        self.assertEqual(self.lock_file.stat().st_ino, inode)
+
     def test_contender_cannot_steal_lock_published_during_acquire(self):
-        # Deterministic interleaving for the create-before-payload window:
-        # owner A publishes atomically and is paused before acquire returns;
-        # contender B runs the contested path while A's acquisition is still
-        # in progress. B must not steal A's live lock nor unlink it.
+        # Hard-link path: owner A has published and is paused before acquire
+        # returns; contender B must not steal or unlink A's live lock.
         # Synchronization is event-based; no sleeps.
         published = threading.Event()
         resume = threading.Event()
@@ -418,11 +477,101 @@ class LockPublicationTest(unittest.TestCase):
         self.assertTrue(tick_gate.acquire_lock(self.lock_file))
         self.assertIn("token", self._payload())
 
-    def test_genuinely_stale_lock_is_reclaimed_exactly_once(self):
-        self.lock_file.write_text(
-            json.dumps({"time": time.time() - (tick_gate.LOCK_TTL_SECONDS + 10), "token": "old-owner"}),
-            encoding="utf-8",
+    def test_reclaimer_paused_before_removal_cannot_delete_newer_owner(self):
+        # C validates the stale lock and pauses before removing it. B then runs
+        # the full contested path. If B could reclaim and publish here, C would
+        # delete B's live lock on resume and both would own the lock.
+        self._write_stale_lock()
+        validated, resume = self._pause_thread_before_unlink("C")
+        tokens = {}
+        reclaimer = threading.Thread(
+            name="C",
+            target=lambda: tokens.update(c=tick_gate.acquire_lock_token(self.lock_file)),
         )
+        reclaimer.start()
+        self.assertTrue(validated.wait(10))
+        tokens["b"] = tick_gate.acquire_lock_token(self.lock_file)
+        resume.set()
+        reclaimer.join(10)
+
+        winners = [token for token in tokens.values() if token is not None]
+        self.assertEqual(len(winners), 1, msg=f"tokens={tokens}")
+        self.assertEqual(self._payload()["token"], winners[0])
+        self.assertTrue(tick_gate.check_lock(self.lock_file))
+
+    def test_late_release_cannot_open_a_gap_during_reclaim(self):
+        # The old owner's release must not remove the validated lock under a
+        # paused reclaimer, or a third caller could publish into the gap and
+        # then be deleted by the reclaimer.
+        self._write_stale_lock(token="old-owner")
+        validated, resume = self._pause_thread_before_unlink("C")
+        tokens = {}
+        reclaimer = threading.Thread(
+            name="C",
+            target=lambda: tokens.update(c=tick_gate.acquire_lock_token(self.lock_file)),
+        )
+        reclaimer.start()
+        self.assertTrue(validated.wait(10))
+        with patch.object(tick_gate, "GUARD_RELEASE_WAIT_SECONDS", 0):
+            tick_gate.release_lock(self.lock_file, token="old-owner")
+        self.assertEqual(self._payload()["token"], "old-owner")
+        resume.set()
+        reclaimer.join(10)
+
+        self.assertIsNotNone(tokens.get("c"))
+        self.assertEqual(self._payload()["token"], tokens["c"])
+
+    def test_guard_left_by_a_dead_holder_does_not_block_reclaim(self):
+        code = (
+            "import os, sys;"
+            "from pathlib import Path;"
+            "sys.path.insert(0, sys.argv[1]);"
+            "from devloops_lib import tick_gate;"
+            "guard = tick_gate._removal_guard(Path(sys.argv[2]));"
+            "held = guard.__enter__();"
+            "os._exit(0 if held else 1)"
+        )
+        proc = subprocess.run([sys.executable, "-c", code, str(REPO_ROOT), str(self.lock_file)], timeout=60)
+        self.assertEqual(proc.returncode, 0)
+        self.assertTrue(self.lock_file.with_name("tick.lock.guard").exists())
+        self._write_stale_lock()
+        self.assertIsNotNone(tick_gate.acquire_lock_token(self.lock_file))
+
+    def test_unavailable_guard_fails_closed(self):
+        self._write_stale_lock(token="old-owner")
+        before = self.lock_file.read_text(encoding="utf-8")
+        with patch.object(tick_gate, "_try_os_lock", side_effect=OSError(errno.ENOLCK, "no locks")), \
+                patch.object(tick_gate, "GUARD_RELEASE_WAIT_SECONDS", 0):
+            self.assertFalse(tick_gate.acquire_lock(self.lock_file))
+            tick_gate.release_lock(self.lock_file, token="old-owner")
+            self.assertEqual(self.lock_file.read_text(encoding="utf-8"), before)
+            # The operator's unconditional --unlock remains the escape hatch.
+            tick_gate.release_lock(self.lock_file)
+        self.assertFalse(self.lock_file.exists())
+
+    def test_publish_falls_back_only_when_hard_links_are_unsupported(self):
+        cases = [
+            (errno.EACCES, "busy"),
+            (errno.EIO, "raises"),
+            (errno.EPERM, "fallback"),
+            (errno.ENOTSUP, "fallback"),
+        ]
+        for code, expected in cases:
+            with self.subTest(errno=errno.errorcode[code]), \
+                    patch.object(tick_gate.os, "link", side_effect=OSError(code, "link failed")):
+                if self.lock_file.exists():
+                    self.lock_file.unlink()
+                if expected == "raises":
+                    with self.assertRaises(OSError):
+                        tick_gate._publish_lock(self.lock_file, b"{}")
+                else:
+                    self.assertEqual(tick_gate._publish_lock(self.lock_file, b"{}"), expected == "fallback")
+                self.assertEqual(self.lock_file.exists(), expected == "fallback")
+
+    def test_stale_lock_with_concurrent_contenders_has_one_winner(self):
+        # Scheduling-dependent stress check; the deterministic interleavings
+        # are covered by the paused-reclaimer tests above.
+        self._write_stale_lock()
         import concurrent.futures
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:

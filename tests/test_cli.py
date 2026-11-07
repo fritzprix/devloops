@@ -198,5 +198,19 @@ class CliInstallTest(unittest.TestCase):
         r3 = cli.main(["tick", "worker", "--state-file", str(state_file)])
         self.assertEqual(r3, 0)
 
+    def test_tick_flock_does_not_open_the_lock_file(self):
+        # Opening tick.lock for flock creates an empty file, which reads as a
+        # live owner and makes every POSIX tick report BUSY against itself.
+        state_file = self.tmp_dir / "worker-loop" / "state.json"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text('{"current": 101}', encoding="utf-8")
+
+        with patch.object(cli, "acquire_flock", return_value=1) as acquire_flock, \
+                patch.object(cli, "release_flock"):
+            self.assertEqual(cli.main(["tick", "worker", "--state-file", str(state_file)]), 0)
+
+        self.assertNotEqual(acquire_flock.call_args[0][0], state_file.parent / "tick.lock")
+
+
 if __name__ == "__main__":
     unittest.main()
