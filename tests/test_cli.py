@@ -14,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from devloops_lib import cli
+from devloops_lib import cli, tick_gate
 
 
 class CliInstallTest(unittest.TestCase):
@@ -240,6 +240,37 @@ class CliInstallTest(unittest.TestCase):
         self.assertEqual(locked, [0, "RUN (current work in progress)", True])
         self.assertEqual(unlocked, [0, "LOCK KEPT (held by devloops tick)", True])
         self.assertFalse(lock_file.exists())
+
+    def test_tick_agent_id_scopes_the_lock_and_reaches_the_agent(self):
+        base = self.tmp_dir / "state" / "worker-loop" / "agents"
+        for agent_id in ("a", "b"):
+            (base / agent_id).mkdir(parents=True)
+            (base / agent_id / "state.json").write_text('{"current": 101}', encoding="utf-8")
+        seen = self.tmp_dir / "seen.txt"
+        agent = self.tmp_dir / "agent.py"
+        agent.write_text(
+            "import os\n"
+            f"open({str(seen)!r}, 'w').write(os.environ['DEVLOOPS_AGENT_ID'])\n",
+            encoding="utf-8",
+        )
+        # Agent a holds its lock, so a is busy and b is not.
+        tick_gate.acquire_lock(base / "a" / "tick.lock", pid=os.getpid())
+        agent_cmd = f'"{sys.executable}" "{agent}"'
+
+        with patch.dict(os.environ, {"LOOP_STATE_DIR": str(self.tmp_dir / "state")}):
+            busy = cli.main(["tick", "worker", "--agent-id", "a", "--agent-cmd", agent_cmd])
+            self.assertFalse(seen.exists())
+            free = cli.main(["tick", "worker", "--agent-id", "b", "--agent-cmd", agent_cmd])
+
+        self.assertEqual((busy, free), (2, 0))
+        self.assertEqual(seen.read_text(encoding="utf-8"), "b")
+        self.assertTrue((base / "a" / "tick.lock").exists())
+        self.assertFalse((self.tmp_dir / "state" / "worker-loop" / "tick.lock").exists())
+
+    def test_tick_rejects_an_unsafe_agent_id(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+            cli.main(["tick", "worker", "--agent-id", "../x"])
+        self.assertEqual(cm.exception.code, 2)
 
 
 if __name__ == "__main__":

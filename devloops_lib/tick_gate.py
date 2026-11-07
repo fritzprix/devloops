@@ -36,14 +36,14 @@ from pathlib import Path
 
 # Support running directly or as module
 try:
-    from devloops_lib.config import get_state_path, load_config
+    from devloops_lib.config import add_agent_id_argument, get_state_path, load_config
     from devloops_lib.gh import GhError, gh
 except ImportError:
     # Walk up to find repo root
     _root = Path(__file__).resolve().parent.parent
     if str(_root) not in sys.path:
         sys.path.insert(0, str(_root))
-    from devloops_lib.config import get_state_path, load_config
+    from devloops_lib.config import add_agent_id_argument, get_state_path, load_config
     from devloops_lib.gh import GhError, gh
 
 EXIT_RUN = 0
@@ -551,6 +551,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--loop", default="worker-loop", help="Loop name (default: worker-loop)")
     parser.add_argument("--state-file", type=Path, default=None, help="Path to state.json")
+    add_agent_id_argument(parser)
     parser.add_argument("--update", action="store_true", help="Update lastFingerprint in state.json after a successful tick")
     parser.add_argument("--lock", action="store_true", help="Acquire tick.lock before exiting 0")
     parser.add_argument("--pid", type=int, default=None, help="Process ID of the tick owner to store in tick.lock")

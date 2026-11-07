@@ -141,7 +141,7 @@ Edit `<project>/devloops.config.yaml`:
 | `commands.test`, `commands.lint`, `commands.build` | Project commands that the loops use to verify |
 | `protected_paths` | Paths that need explicit human approval. Producer: findings only. Gatekeeper: `gatekeeper:needs-human`. |
 | `cleanup.protected_branches` | Branches that the `cleanup` task never proposes to delete |
-| `state_dir` | Directory for each loop's `state.json` and `tick.lock` (default `.devloops`). `$LOOP_STATE_DIR` overrides it. |
+| `state_dir` | Directory for each loop's `state.json` and `tick.lock` (default `.devloops`). `$LOOP_STATE_DIR` overrides it. `--agent-id` scopes the paths to one agent (see `scheduling.md`). |
 | `labels.producer` / `validated` / `rejected` / `approved` | Label names for the issue flow |
 | `producer.default_period` | Default period for each producer task (e.g. `24h`) |
 | `producer.max_new_issues_per_run` | Limit of new issues per run |

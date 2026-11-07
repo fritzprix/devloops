@@ -22,7 +22,7 @@ for _candidate in (_script_dir.parents[2], _script_dir.parents[3], _script_dir.p
     if (_candidate / "devloops_lib").is_dir() and str(_candidate) not in sys.path:
         sys.path.insert(0, str(_candidate))
 
-from devloops_lib.config import get_state_path, load_config
+from devloops_lib.config import add_agent_id_argument, get_state_path, load_config
 from devloops_lib.issue_queue import apply_verdict, list_unjudged_issues
 from devloops_lib.tick_gate import GhError
 
@@ -38,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task", type=str, default=None, help="Producer task override (default: inferred from label)")
     parser.add_argument("--apply", action="store_true", help="Apply changes via gh and update state (default: dry run)")
     parser.add_argument("--state-file", type=Path, default=None, help="Path to gatekeeper state.json")
+    add_agent_id_argument(parser)
     args = parser.parse_args(argv)
 
     cfg = load_config()

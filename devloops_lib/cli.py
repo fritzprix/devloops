@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-from devloops_lib.config import get_state_path, load_config
+from devloops_lib.config import add_agent_id_argument, get_state_path, load_config
 from devloops_lib.tick_gate import (
     WRAPPER_PID_ENV,
     acquire_lock_token,
@@ -262,6 +262,7 @@ def main(argv: list[str] | None = None) -> int:
     tick_parser.add_argument("loop", choices=["worker", "worker-loop", "producer", "producer-loop", "gatekeeper", "gatekeeper-loop"], help="Loop name to tick")
     tick_parser.add_argument("--agent-cmd", type=str, default=None, help="Agent command to execute while holding lock")
     tick_parser.add_argument("--state-file", type=Path, default=None, help="Path to state.json")
+    add_agent_id_argument(tick_parser)
 
     args = parser.parse_args(argv)
 
