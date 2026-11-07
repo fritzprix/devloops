@@ -41,7 +41,7 @@ def copy_tree_safe(src: Path, dest: Path, exclude_names: set[str] | None = None)
     Returns list of (status, dest_path) where status is 'installed' or 'skipped (already exists)'.
     """
     results: list[tuple[str, Path]] = []
-    excludes = exclude_names or {"__pycache__", "assets", ".git"}
+    excludes = exclude_names if exclude_names is not None else {"__pycache__", ".git"}
 
     for root, dirs, files in os.walk(src):
         dirs[:] = [d for d in dirs if d not in excludes and not d.endswith(".egg-info")]
@@ -93,11 +93,11 @@ def install_command(target_dir: Path) -> int:
 
     log_entries: list[tuple[str, Path]] = []
 
-    # 1. Install skills
-    log_entries.extend(copy_tree_safe(skills_src, skills_dest))
+    # 1. Install skills (skills can contain their own assets/ dir; exclude only cache/git)
+    log_entries.extend(copy_tree_safe(skills_src, skills_dest, exclude_names={"__pycache__", ".git"}))
 
-    # 2. Install devloops_lib
-    log_entries.extend(copy_tree_safe(lib_src, lib_dest, exclude_names={"__pycache__", "assets"}))
+    # 2. Install devloops_lib (exclude internal packaging assets and cache)
+    log_entries.extend(copy_tree_safe(lib_src, lib_dest, exclude_names={"__pycache__", "assets", ".git"}))
 
     # 3. Install config (root config copied only if absent)
     if config_dest.exists():
@@ -123,7 +123,8 @@ def install_command(target_dir: Path) -> int:
     print("  2. Project config: Review and customize:")
     print(f"     {config_dest}")
     print("  3. Diagnostics: Verify prerequisites and installation by running:")
-    print(f"     python3 {lib_dest / 'doctor.py'}")
+    py_cmd = sys.executable or "python3"
+    print(f"     {py_cmd} {lib_dest / 'doctor.py'}")
 
     return 0
 
