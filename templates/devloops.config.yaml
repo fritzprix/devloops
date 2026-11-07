@@ -39,4 +39,4 @@ producer:
   task_max_new_issues:        # per-task cap on new issues per run
     cleanup: 1
 
-scheduler: shell              # shell | cron | harness-specific adapter
+# scheduler: shell            # documentation only: shell | cron | harness-specific adapter

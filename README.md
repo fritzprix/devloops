@@ -85,6 +85,15 @@ The producer has its own gate, `producer_gate.py`. It picks the most overdue tas
 
 ## Install
 
+The recommended way to install devloops into a project is via `uvx`:
+
+```sh
+uvx devloops install                      # install into current project
+uvx devloops install --target /path/to/project
+```
+
+Alternatively, from a local checkout:
+
 ```sh
 git clone https://github.com/fritzprix/devloops.git
 devloops/scripts/install.sh /path/to/project          # copy
@@ -120,7 +129,7 @@ Edit `<project>/devloops.config.yaml`:
 | `producer.task_skills` | Optional project skill or command for each task |
 | `producer.task_periods` | Period for each task (e.g. `cleanup: 7d`) |
 | `producer.task_max_new_issues` | Limit of new issues for each task |
-| `scheduler` | `shell`, `cron`, or a harness-specific adapter |
+| `scheduler` | Documentation only: `shell`, `cron`, or a harness-specific adapter |
 
 ## Run
 
@@ -142,10 +151,10 @@ Then tell your agent:
 `/gatekeeper-loop` and `/producer-loop` use the same forms. `/gatekeeper-loop 10m --pr N`
 reviews one PR. `/producer-loop <task>` runs one producer task.
 
-A cron example that starts the agent only when the gate says RUN:
+A cron example that starts the agent only when the gate says RUN (using the `devloops tick` wrapper):
 
 ```cron
-*/10 * * * * cd /path/to/project && python3 .agents/skills/worker-loop/scripts/tick_gate.py --lock && /path/to/agent-runner "/worker-loop"
+*/10 * * * * cd /path/to/project && devloops tick worker --agent-cmd '/path/to/agent-runner "/worker-loop"'
 ```
 
 See `skills/worker-loop/references/scheduling.md` for the shell-loop and harness adapters.
