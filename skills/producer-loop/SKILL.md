@@ -8,7 +8,7 @@ description: 'Autonomous producer loop that periodically audits codebase areas (
 Autonomous loop that scans the repository across specialized audit areas and files deduplicated, high-signal candidate issues.
 Issues are tagged with `labels.producer` (`auto:producer`) and task labels (`auto:<task>`), ready for the gatekeeper loop to validate.
 
-See [`$SKILL_DIR/../worker-loop/references/scheduling.md`](../../worker-loop/references/scheduling.md) for background scheduling adapters (shell loop, cron, harness adapters) which are reused directly by reference.
+See [`$SKILL_DIR/../worker-loop/references/scheduling.md`](../worker-loop/references/scheduling.md) for background scheduling adapters (shell loop, cron, harness adapters) which are reused directly by reference.
 
 **Path convention**: `$SKILL_DIR` denotes the directory containing this SKILL.md (skill loaders report it on load). All script commands below use `"$SKILL_DIR/scripts/..."`, so they resolve from any current directory — in a repo checkout or in the installed `.agents/skills/` layout.
 
