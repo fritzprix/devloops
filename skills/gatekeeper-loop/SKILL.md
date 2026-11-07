@@ -117,6 +117,14 @@ Decide:
 - **clean, await CI** — code review completed with zero open required findings, but CI checks are still running (`ciPending` not empty on primary-targeted PR). Post a `verdict=clean head=<sha>` marker comment, remove any stale `gatekeeper:changes-requested` label (e.g. `gh pr edit N --remove-label gatekeeper:changes-requested`; does not count as a round), optionally mirror it in state, and move on to the next PR. On a later tick the script reports `await-ci`; once CI completes it reports `review` again: do not re-review the diff, just post `approve` if green (and remove any stale `gatekeeper:changes-requested` label) or diagnose the failure.
 - **escalate** — round limit (5) reached, a repeated dispute, or the right answer is a product/security/data decision for the user.
 
+Immediately before posting, re-check the PR, because a review takes time and the PR can move during it:
+
+```bash
+python3 "$SKILL_DIR/scripts/review_queue.py" --check-head N --head <headSha> --base <base>
+```
+
+If it exits `1` (`CHANGED`), the head, base, or state moved. Do not post the verdict or change labels: the PR returns to the queue on the next tick. If it exits `3`, do not post, and report the error.
+
 Post the verdict with `gh pr comment N --body-file <tmp>` using the exact marker format (`head=` is the full `headSha` you reviewed, `base=` the PR's current base branch), then swap labels:
 
 ```bash
@@ -130,13 +138,13 @@ gh pr edit N --add-label gatekeeper:approved --remove-label gatekeeper:changes-r
 
 ### 4. Issue Validation (Post PR Review)
 
-After completing PR reviews, validate at most **one** issue that has `labels.producer` (default `auto:producer`) and neither `labels.validated` nor `labels.rejected`:
+After completing PR reviews, validate up to `gatekeeper.max_issue_validations_per_tick` issues (default 1) that have `labels.producer` (default `auto:producer`) and neither `labels.validated` nor `labels.rejected`:
 
-1. Find the next unjudged issue:
+1. Find this tick's unjudged issues:
    ```bash
-   python3 "$SKILL_DIR/scripts/issue_queue.py" --next
+   python3 "$SKILL_DIR/scripts/issue_queue.py" --batch
    ```
-   If output is `NOOP`, skip to Step 5.
+   If output is `NOOP`, skip to Step 5. Otherwise, do steps 2 and 3 for each issue in the list.
 2. **Fresh session & independence**: Validate the finding independently against the current checkout on `project.base_branch`. Confirm or refute the claim with concrete `file:line` evidence.
 3. Settle verdict:
    ```bash
@@ -166,7 +174,7 @@ After completing PR reviews, validate at most **one** issue that has `labels.pro
 - **A push after an approve requires re-review.** An approve only covers the head, base and CI state it was issued for.
 - **Approve requires Checked section**: every approve verdict must contain a non-empty `### Checked` section citing `file:line` for all acceptance criteria.
 - **Needs-human visibility, never self-review**: the loop never reviews or approves its own skill files and never auto-approves blocked PRs, but a human must always see *why* a PR is waiting: keep the `gatekeeper:needs-human` label and a single `kind=needs-human` marker comment per reason+head, and remove the label once its reason no longer applies. Only labels this loop added are ever removed; unrelated labels are untouched.
-- **Issue validation limits**: Validate at most one producer issue per tick. Never add `approved`, never close issues, and never change code.
+- **Issue validation limits**: Validate at most `gatekeeper.max_issue_validations_per_tick` producer issues per tick (default 1). Never add `approved`, never close issues, and never change code.
 - Never push, commit, edit code, merge, enable auto-merge, close PRs/issues, or resolve the worker's threads. The gatekeeper only comments and labels.
 - Findings must be concrete: file:line, problem, expected fix or acceptance check. No vague "consider improving".
 - Do not move the goalposts: later rounds only re-check previous findings and new diffs (except blockers).

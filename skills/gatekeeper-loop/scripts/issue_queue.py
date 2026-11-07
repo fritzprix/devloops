@@ -27,10 +27,17 @@ from devloops_lib.issue_queue import apply_verdict, list_unjudged_issues
 from devloops_lib.tick_gate import GhError
 
 
+def validation_batch(issues: list[dict], config: dict) -> list[dict]:
+    """Return the issues to validate this tick, up to the configured cap (at least 1)."""
+    cap = int(config.get("gatekeeper", {}).get("max_issue_validations_per_tick", 1))
+    return issues[:max(1, cap)]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list", action="store_true", help="List unjudged producer issues (default)")
     parser.add_argument("--next", action="store_true", help="Print the next unjudged issue JSON or NOOP")
+    parser.add_argument("--batch", action="store_true", help="Print this tick's issues as a JSON list, up to the configured cap, or NOOP")
     parser.add_argument("--issue", type=int, default=None, help="Issue number to judge")
     parser.add_argument("--verdict", type=str, choices=["validated", "rejected"], default=None, help="Validation verdict")
     parser.add_argument("--reason", type=str, default="", help="Validation reason")
@@ -61,6 +68,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{mode}] Issue #{res['issue']} marked as {res['verdict']} (task: {res['task']})")
             print(f"  Reason: {res['reason']}")
             print(f"  Evidence: {res['evidence']}")
+            return 0
+
+        if args.batch:
+            issues = list_unjudged_issues(config=cfg)
+            if not issues:
+                print("NOOP")
+                return 1
+            print(json.dumps(validation_batch(issues, cfg), indent=2))
             return 0
 
         # If --next requested
