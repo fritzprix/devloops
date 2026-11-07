@@ -56,6 +56,18 @@ Clean, waiting for CI (no label change, not a round; lets any tick or machine se
 <1–2 lines: what was reviewed, zero open required findings>
 ```
 
+Needs human (not a verdict, does not count as a round; post once per reason+head, never duplicate):
+
+```markdown
+<!-- gatekeeper-loop: kind=needs-human reason=no-ci-on-head head=<sha> -->
+
+## Gatekeeper · needs human · no CI on head
+
+<1–2 lines: what is blocked and what a human should do>
+```
+
+Reasons: `no CI on head`, `changes loop skill files`, `security-sensitive paths`.
+
 Escalate (round limit or unresolved disagreement):
 
 ```markdown
@@ -89,7 +101,7 @@ Every `G` item must be answered as **fixed** or **declined**. Suggestions may be
 | `gatekeeper:changes-requested` | gatekeeper | Latest verdict requests changes                                                          |
 | `gatekeeper:approved`          | gatekeeper | Approved at the current head; ready for a human merge                                    |
 | `gatekeeper:escalated`         | gatekeeper | Needs a maintainer decision                                                              |
-| `gatekeeper:needs-human`       | gatekeeper | Security-sensitive; a human must confirm before merge (kept alongside the verdict label) |
+| `gatekeeper:needs-human`       | gatekeeper | Blocked on a human: security-sensitive change, loop-skill (human-only) change, or clean head with no CI. Kept alongside the verdict label; removed when its reason no longer applies |
 
 Unmarked comments from the repo owner (or `@me`) posted after the last marker are read as required items and trigger a review.
 

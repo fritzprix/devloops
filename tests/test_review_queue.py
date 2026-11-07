@@ -24,6 +24,8 @@ is_dev_base = _module.is_dev_base
 is_rebased = _module.is_rebased
 owner_comments_after = _module.owner_comments_after
 parse_markers = _module.parse_markers
+needs_human_guidance = _module.needs_human_guidance
+split_markers = _module.split_markers
 
 
 def base_args(**over):
@@ -364,6 +366,123 @@ class GapTests(unittest.TestCase):
             base_args(total_verdicts=5, last_verdict={"head": "x", "verdict": "changes-requested"}),
         ):
             self.assertTrue(classify(**kwargs)[1])
+
+
+class Issue14ClassificationTests(unittest.TestCase):
+    """Classification matrix for issue #14: clean precedence and CI states."""
+
+    cr_at_old = {"head": "head0", "verdict": "changes-requested", "round": "1"}
+
+    def test_old_non_clean_verdict_loses_to_current_head_clean_await_ci(self) -> None:
+        # Older changes-requested + clean marker at the *current* head -> not re-reviewed.
+        status, reason, _ = classify(**base_args(
+            last_verdict=self.cr_at_old, total_verdicts=1,
+            clean_head="head1", pending_checks=["Test"], total_checks=1))
+        self.assertEqual(status, "await-ci")
+        self.assertNotIn("new head", reason)
+
+    def test_old_non_clean_verdict_with_current_clean_issues_verdict(self) -> None:
+        status, reason, _ = classify(**base_args(
+            last_verdict=self.cr_at_old, total_verdicts=1, clean_head="head1", total_checks=2))
+        self.assertEqual(status, "review")
+        self.assertIn("issue the verdict", reason)
+
+    def test_older_clean_verdict_with_new_head_is_review(self) -> None:
+        # Clean belongs to an older head; the new head has no clean marker -> review.
+        status, _, _ = classify(**base_args(
+            clean_head="head0", pending_checks=["Test"], total_checks=1))
+        self.assertEqual(status, "review")
+
+    def test_clean_head_without_ci_runs_is_needs_human(self) -> None:
+        status, reason, _ = classify(**base_args(clean_head="head1", total_checks=0))
+        self.assertEqual(status, "needs-human")
+        self.assertIn("no CI", reason)
+
+    def test_clean_head_pending_checks_is_await_ci(self) -> None:
+        status, _, _ = classify(**base_args(
+            clean_head="head1", pending_checks=["Test"], total_checks=1))
+        self.assertEqual(status, "await-ci")
+
+    def test_clean_head_green_ci_is_approve_path(self) -> None:
+        status, reason, _ = classify(**base_args(clean_head="head1", total_checks=2))
+        self.assertEqual(status, "review")
+        self.assertIn("issue the verdict", reason)
+
+    def test_clean_head_failing_ci_is_ci_repair(self) -> None:
+        status, reason, _ = classify(**base_args(
+            clean_head="head1", failing_checks=["Build"], total_checks=1))
+        self.assertEqual(status, "review")
+        self.assertIn("CI failing", reason)
+
+    def test_stacked_clean_head_without_ci_is_not_needs_human(self) -> None:
+        # CI does not apply to stacked PRs; zero checks must not block.
+        status, _, _ = classify(**base_args(
+            base="feat/stale", clean_head="head1", total_checks=0))
+        self.assertEqual(status, "review")
+
+    def test_total_checks_none_keeps_legacy_behavior(self) -> None:
+        status, _, _ = classify(**base_args(clean_head="head1"))
+        self.assertEqual(status, "review")
+
+    def test_needs_human_status_has_reason(self) -> None:
+        _, reason, _ = classify(**base_args(clean_head="head1", total_checks=0))
+        self.assertTrue(reason)
+
+
+class Issue14NeedsHumanTests(unittest.TestCase):
+    """Needs-human marker parsing, idempotency, and label guidance (issue #14)."""
+
+    def test_needs_human_marker_is_not_a_verdict(self) -> None:
+        comments = [
+            {"author": {"login": "me"}, "createdAt": "2026-01-01T00:00:00Z",
+             "body": "<!-- gatekeeper-loop: kind=needs-human reason=no-ci-on-head head=abc -->"}]
+        markers, _ = parse_markers(comments, "me")
+        verdicts, cleans, needs = split_markers(markers)
+        self.assertEqual((verdicts, cleans), ([], []))
+        self.assertEqual(needs[0]["reason"], "no-ci-on-head")
+
+    def test_running_same_head_twice_does_not_inflate_rounds(self) -> None:
+        body = "<!-- gatekeeper-loop: kind=needs-human reason=no-ci-on-head head=abc -->"
+        comments = [{"author": {"login": "me"}, "createdAt": f"2026-01-0{n}T00:00:00Z", "body": body}
+                    for n in (1, 2)]
+        markers, _ = parse_markers(comments, "me")
+        verdicts, _, needs = split_markers(markers)
+        self.assertEqual(verdicts, [])
+        self.assertEqual(len(needs), 2)  # tick sees commentPresent and posts nothing new
+
+    def test_human_only_guidance(self) -> None:
+        guidance = needs_human_guidance(status="human-only", own_skill=True, sensitive=[],
+                                        labels=["gatekeeper:needs-human"], needs_comment_present=True)
+        self.assertEqual(guidance["reason"], "changes loop skill files")
+        self.assertTrue(guidance["labelPresent"])
+        self.assertTrue(guidance["commentPresent"])
+        self.assertFalse(guidance["staleLabel"])
+
+    def test_clean_no_ci_guidance(self) -> None:
+        guidance = needs_human_guidance(status="needs-human", own_skill=False, sensitive=[],
+                                        labels=[], needs_comment_present=False)
+        self.assertEqual(guidance["reason"], "no CI on head")
+        self.assertFalse(guidance["labelPresent"])
+        self.assertFalse(guidance["commentPresent"])
+
+    def test_resolved_needs_human_label_is_stale(self) -> None:
+        guidance = needs_human_guidance(
+            status="review", own_skill=False, sensitive=[],
+            labels=["gatekeeper:needs-human", "gatekeeper:changes-requested"],
+            needs_comment_present=True)
+        self.assertTrue(guidance["staleLabel"])
+        self.assertIsNone(guidance["reason"])
+
+    def test_no_needs_human_when_clean_and_unlabelled(self) -> None:
+        self.assertIsNone(needs_human_guidance(
+            status="approved", own_skill=False, sensitive=[],
+            labels=["gatekeeper:approved"], needs_comment_present=False))
+
+    def test_security_sensitive_reason(self) -> None:
+        guidance = needs_human_guidance(
+            status="review", own_skill=False, sensitive=["src/permissions.py"],
+            labels=[], needs_comment_present=False)
+        self.assertEqual(guidance["reason"], "security-sensitive paths")
 
 
 if __name__ == "__main__":
