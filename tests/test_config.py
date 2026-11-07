@@ -2,8 +2,10 @@
 """Tests for devloops_lib/config.py."""
 import json
 import os
+import subprocess
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from devloops_lib import config
@@ -130,6 +132,84 @@ commands:
         with unittest.mock.patch.dict(os.environ, {"LOOP_STATE_DIR": str(custom_env)}):
             state_p = config.get_state_path("worker-loop", start_dir=self.tmp_dir)
             self.assertEqual(state_p, custom_env / "worker-loop" / "state.json")
+
+    def _with_agent(self, agent_id):
+        return unittest.mock.patch.dict(os.environ, {config.AGENT_ID_ENV: agent_id})
+
+    def test_two_agents_get_separate_state_lock_and_worktree_paths(self):
+        main = self.tmp_dir / "proj"
+        paths = {}
+        for agent_id in ("a", "b"):
+            with self._with_agent(agent_id):
+                paths[agent_id] = (
+                    config.get_state_path("worker-loop", start_dir=self.tmp_dir),
+                    config.get_lock_path("worker-loop", start_dir=self.tmp_dir),
+                    config.get_worktree_path(main),
+                )
+        base = (self.tmp_dir / ".devloops" / "worker-loop").resolve()
+        self.assertEqual(paths["a"][0], base / "agents" / "a" / "state.json")
+        self.assertEqual(paths["b"][1], base / "agents" / "b" / "tick.lock")
+        self.assertEqual(paths["a"][2], self.tmp_dir / "proj.worktrees" / "worker-a")
+        for first, second in zip(paths["a"], paths["b"]):
+            self.assertNotEqual(first, second)
+
+    def test_without_agent_id_paths_do_not_change(self):
+        main = self.tmp_dir / "proj"
+        with unittest.mock.patch.dict(os.environ, {config.AGENT_ID_ENV: ""}):
+            state_p = config.get_state_path("worker-loop", start_dir=self.tmp_dir)
+            worktree = config.get_worktree_path(main)
+        self.assertEqual(state_p, (self.tmp_dir / ".devloops" / "worker-loop" / "state.json").resolve())
+        self.assertEqual(worktree, self.tmp_dir / "proj.worktrees" / "worker")
+
+    def test_agent_id_applies_with_loop_state_dir_override(self):
+        custom_env = self.tmp_dir / "env_state"
+        with unittest.mock.patch.dict(os.environ, {"LOOP_STATE_DIR": str(custom_env), config.AGENT_ID_ENV: "a"}):
+            state_p = config.get_state_path("worker-loop", start_dir=self.tmp_dir)
+        self.assertEqual(state_p, custom_env / "worker-loop" / "agents" / "a" / "state.json")
+
+    def test_agent_id_must_be_one_safe_path_component(self):
+        for bad in ("..", ".", "../x", "a/b", "a\\b", ".a", "a.", "a b", "a:b"):
+            with self.subTest(agent_id=bad), self._with_agent(bad), self.assertRaises(ValueError):
+                config.get_state_path("worker-loop", start_dir=self.tmp_dir)
+        for good in ("a", "A1", "worker-1", "a.b_c"):
+            self.assertEqual(config.validate_agent_id(good), good)
+
+    def test_agent_reset_hard_does_not_touch_the_other_worktree(self):
+        def git(*args, cwd):
+            subprocess.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],
+                cwd=cwd, check=True, capture_output=True, text=True,
+            )
+
+        main = self.tmp_dir / "proj"
+        main.mkdir()
+        git("init", cwd=main)
+        (main / "file.txt").write_text("base\n", encoding="utf-8")
+        git("add", "file.txt", cwd=main)
+        git("commit", "-m", "base", cwd=main)
+        worktrees = {}
+        for agent_id in ("a", "b"):
+            with self._with_agent(agent_id):
+                worktrees[agent_id] = config.get_worktree_path(main)
+            git("worktree", "add", "--detach", str(worktrees[agent_id]), "HEAD", cwd=main)
+            (worktrees[agent_id] / "file.txt").write_text("edited\n", encoding="utf-8")
+            (worktrees[agent_id] / "new.txt").write_text("new\n", encoding="utf-8")
+
+        git("reset", "--hard", cwd=worktrees["a"])
+        git("clean", "-fd", cwd=worktrees["a"])
+
+        self.assertEqual((worktrees["a"] / "file.txt").read_text(encoding="utf-8").strip(), "base")
+        self.assertFalse((worktrees["a"] / "new.txt").exists())
+        self.assertEqual((worktrees["b"] / "file.txt").read_text(encoding="utf-8").strip(), "edited")
+        self.assertTrue((worktrees["b"] / "new.txt").exists())
+
+    def test_documented_worktree_commands_use_the_agent_suffix(self):
+        skills = Path(config.__file__).resolve().parent.parent / "skills"
+        worker = (skills / "worker-loop" / "references" / "worktree-setup.md").read_text(encoding="utf-8")
+        gatekeeper = (skills / "gatekeeper-loop" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn(".worktrees/worker${DEVLOOPS_AGENT_ID:+-$DEVLOOPS_AGENT_ID}", worker)
+        self.assertIn('.worktrees/worker$(if ($env:DEVLOOPS_AGENT_ID) { "-$env:DEVLOOPS_AGENT_ID" })', worker)
+        self.assertIn(".worktrees/gatekeeper${DEVLOOPS_AGENT_ID:+-$DEVLOOPS_AGENT_ID}", gatekeeper)
 
     def test_new_config_keys_parsing(self):
         yaml_text = """

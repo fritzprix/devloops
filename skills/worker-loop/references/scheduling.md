@@ -34,5 +34,17 @@ Schedule via cron using `devloops tick` (which performs the gate check, holds th
 */10 * * * * cd /path/to/project && devloops tick worker --agent-cmd '/path/to/agent-runner "/worker-loop"'
 ```
 
+### Agent IDs
+`--agent-id <id>` on `devloops tick` or on a loop script gives one agent its own state, lock, and worktree:
+
+| Path | Default | With `--agent-id a` |
+| --- | --- | --- |
+| State and lock | `<state_dir>/worker-loop/` | `<state_dir>/worker-loop/agents/a/` |
+| Worktree | `<project>.worktrees/worker` | `<project>.worktrees/worker-a` |
+
+The flag sets `DEVLOOPS_AGENT_ID`, which the agent started by `devloops tick` inherits. All agents keep the same GitHub account. An id can contain letters, digits, `.`, `_`, and `-`, and it must start and end with a letter or digit.
+
+**Do not run two workers on one repo yet.** Agent IDs only separate local paths. Nothing stops two workers from taking the same PR or issue until the per-item leases in issue #5 (Part 2) exist.
+
 ### 3. Harness-Specific Adapter
 A harness-specific scheduler adapter (such as an IDE agent callback, persistent worker daemon, or webhook runner) can be integrated by setting `scheduler` in `devloops.config.yaml` and implementing the corresponding callback hook.

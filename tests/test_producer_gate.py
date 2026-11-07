@@ -151,6 +151,13 @@ class ProducerGateTest(unittest.TestCase):
             self.assertEqual(mock_out.getvalue().strip(), "security")
             self.assertTrue(check_lock(self.lock_file))
 
+    def test_agent_id_flag_scopes_the_lock(self):
+        with patch.dict(os.environ, {"LOOP_STATE_DIR": str(self.tmp_dir)}), \
+                patch("sys.stdout", new_callable=io.StringIO):
+            exit_code = producer_gate_main(["--task", "security", "--lock", "--agent-id", "a"])
+        self.assertEqual(exit_code, producer.EXIT_RUN)
+        self.assertTrue(check_lock(self.tmp_dir / "producer-loop" / "agents" / "a" / "tick.lock"))
+
     def test_gate_under_wrapper_keeps_the_wrapper_lock(self):
         acquire_lock(self.lock_file, pid=os.getpid())
         before = self.lock_file.read_text(encoding="utf-8")

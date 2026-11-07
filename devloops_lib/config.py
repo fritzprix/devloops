@@ -6,11 +6,17 @@ Python stdlib only.
 """
 from __future__ import annotations
 
+import argparse
 import copy
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
+
+AGENT_ID_ENV = "DEVLOOPS_AGENT_ID"
+# One path component on every OS: no separators, no leading or trailing dots.
+AGENT_ID_PATTERN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "project": {
@@ -197,18 +203,64 @@ def load_config(start_dir: Path | str | None = None) -> dict[str, Any]:
         return copy.deepcopy(DEFAULT_CONFIG)
 
 
+def validate_agent_id(agent_id: str) -> str:
+    """Return agent_id if it is safe as one path component; raise ValueError if not."""
+    if not AGENT_ID_PATTERN.fullmatch(agent_id):
+        raise ValueError(f"invalid agent id: {agent_id!r}")
+    return agent_id
+
+
+def get_agent_id() -> str | None:
+    """Return the validated agent id from the environment, or None when not set."""
+    agent_id = os.environ.get(AGENT_ID_ENV)
+    return validate_agent_id(agent_id) if agent_id else None
+
+
+class _AgentIdAction(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        # Every path resolves through get_state_path, and child processes inherit this.
+        os.environ[AGENT_ID_ENV] = values
+
+
+def add_agent_id_argument(parser: argparse.ArgumentParser) -> None:
+    """Add --agent-id, which scopes state, lock, and worktree paths to one agent."""
+    parser.add_argument(
+        "--agent-id",
+        type=validate_agent_id,
+        action=_AgentIdAction,
+        default=None,
+        help=f"Scope state and lock paths to this agent (default: ${AGENT_ID_ENV}, or no scope)",
+    )
+
+
+def _agent_dir(loop_dir: Path) -> Path:
+    agent_id = get_agent_id()
+    return loop_dir / "agents" / agent_id if agent_id else loop_dir
+
+
 def get_state_path(loop_name: str, config: dict[str, Any] | None = None, start_dir: Path | str | None = None) -> Path:
-    """Return path to <state_dir>/<loop>/state.json."""
+    """Return path to <state_dir>/<loop>/state.json, or .../agents/<id>/state.json with an agent id."""
     env = os.environ.get("LOOP_STATE_DIR")
     if env:
         p = Path(env)
         base = p.parent if p.name == "state.json" else p
-        return (base if base.name == loop_name else base / loop_name) / "state.json"
+        return _agent_dir(base if base.name == loop_name else base / loop_name) / "state.json"
 
     cfg = config or load_config(start_dir=start_dir)
     state_dir = cfg.get("state_dir", ".devloops")
     root = find_project_root(start_dir=start_dir)
-    return (root / state_dir / loop_name / "state.json").resolve()
+    return (_agent_dir(root / state_dir / loop_name) / "state.json").resolve()
+
+
+def get_worktree_path(main: Path | str, role: str = "worker") -> Path:
+    """Return <main>/../<main name>.worktrees/<role>, or <role>-<id> with an agent id.
+
+    worktree-setup.md and the gatekeeper SKILL document the same form in shell.
+    """
+    main = Path(main)
+    agent_id = get_agent_id()
+    return main.parent / f"{main.name}.worktrees" / (f"{role}-{agent_id}" if agent_id else role)
 
 
 def get_lock_path(loop_name: str, config: dict[str, Any] | None = None, start_dir: Path | str | None = None) -> Path:
