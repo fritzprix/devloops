@@ -64,13 +64,14 @@ Lock file: `<state_dir>/producer-loop/tick.lock` (lock TTL: 30 minutes, 1800s).
 ## Tick procedure
 
 ### 0. Gate Check & Lock
-Under `devloops tick producer`, the wrapper already holds the lock. The `--lock` and `--unlock` flags detect this and leave the lock to the wrapper, so the commands in this procedure do not change.
+Under `devloops tick producer`, the wrapper already holds the lock and exports its token as `DEVLOOPS_TICK_TOKEN`. The `--lock` and `--unlock` flags recognize that token and leave the lock to the wrapper, so the commands in this procedure do not change.
 
 1. Run preflight gate:
    ```bash
    python3 "$SKILL_DIR/scripts/producer_gate.py" --next --lock
    ```
-   - If output is `BUSY`: another tick is currently in progress. Stop immediately. Never unlock a lock this tick did not acquire.
+   - With `--lock`, the output ends with `TOKEN <token>`; keep it as `$TOKEN` for the unlock.
+   - If output is `BUSY`: a tick of this producer slot holds the lock (a duplicate start or this slot's own earlier tick; not another producer). Stop immediately. Never unlock a lock this tick did not acquire.
    - If output is `NOOP`: all tasks are within their scheduled periods. Output `Idle: no tasks due.` and exit.
    - If a task name is returned (e.g. `security`): proceed with that task.
    - If a specific task was requested via CLI (`/producer-loop <task>`):
@@ -111,8 +112,9 @@ Under `devloops tick producer`, the wrapper already holds the lock. The `--lock`
 ### 3. Complete Task & Release Lock
 1. Mark task completed and release lock:
    ```bash
-   python3 "$SKILL_DIR/scripts/producer_gate.py" --done <task> --unlock
+   python3 "$SKILL_DIR/scripts/producer_gate.py" --done <task> --unlock --token "$TOKEN"
    ```
+   If it prints `LOST` (exit 4), another tick took over the lock: the task is not marked done, and nothing else changes.
 2. Report summary: 1–2 sentences stating task name, number of candidate issues created, and number skipped.
 
 ## Hard safety rules

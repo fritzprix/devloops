@@ -17,7 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from devloops_lib import producer
-from devloops_lib.tick_gate import WRAPPER_PID_ENV, acquire_lock, check_lock, release_lock
+from devloops_lib.tick_gate import TOKEN_ENV, acquire_lock, acquire_lock_token, check_lock, read_lock_payload, release_lock
 
 # Import CLI main
 import importlib.util
@@ -129,9 +129,17 @@ class ProducerGateTest(unittest.TestCase):
             self.assertEqual(exit_code, producer.EXIT_RUN)
             self.assertTrue(check_lock(self.lock_file))
 
-        # 4. Release lock with --unlock
+        # 4. Release lock with --unlock and the token printed by --lock
+        self.assertIn(f"TOKEN {read_lock_payload(self.lock_file)['token']}", mock_out.getvalue())
+        token = read_lock_payload(self.lock_file)["token"]
         with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
-            exit_code = producer_gate_main(["--unlock", "--state-file", str(self.state_file)])
+            self.assertEqual(
+                producer_gate_main(["--unlock", "--token", "not-mine", "--state-file", str(self.state_file)]),
+                producer.EXIT_LOST,
+            )
+            self.assertTrue(check_lock(self.lock_file))
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            exit_code = producer_gate_main(["--unlock", "--token", token, "--state-file", str(self.state_file)])
             self.assertEqual(exit_code, producer.EXIT_RUN)
             self.assertFalse(check_lock(self.lock_file))
             self.assertIn("UNLOCKED", mock_out.getvalue())
@@ -148,7 +156,8 @@ class ProducerGateTest(unittest.TestCase):
         with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
             exit_code = producer_gate_main(["--task", "security", "--lock", "--state-file", str(self.state_file)])
             self.assertEqual(exit_code, producer.EXIT_RUN)
-            self.assertEqual(mock_out.getvalue().strip(), "security")
+            token = read_lock_payload(self.lock_file)["token"]
+            self.assertEqual(mock_out.getvalue().splitlines(), ["security", f"TOKEN {token}"])
             self.assertTrue(check_lock(self.lock_file))
 
     def test_agent_id_flag_scopes_the_lock(self):
@@ -159,9 +168,9 @@ class ProducerGateTest(unittest.TestCase):
         self.assertTrue(check_lock(self.tmp_dir / "producer-loop" / "agents" / "a" / "tick.lock"))
 
     def test_gate_under_wrapper_keeps_the_wrapper_lock(self):
-        acquire_lock(self.lock_file, pid=os.getpid())
+        token = acquire_lock_token(self.lock_file, pid=os.getpid())
         before = self.lock_file.read_text(encoding="utf-8")
-        with patch.dict(os.environ, {WRAPPER_PID_ENV: str(os.getpid())}), \
+        with patch.dict(os.environ, {TOKEN_ENV: token}), \
                 patch("sys.stdout", new_callable=io.StringIO) as mock_out:
             self.assertEqual(
                 producer_gate_main(["--task", "security", "--lock", "--state-file", str(self.state_file)]),
@@ -174,12 +183,23 @@ class ProducerGateTest(unittest.TestCase):
             self.assertIn("LOCK KEPT", mock_out.getvalue())
         self.assertEqual(self.lock_file.read_text(encoding="utf-8"), before)
 
-        with patch.dict(os.environ, {WRAPPER_PID_ENV: str(os.getpid() + 1)}), \
+        with patch.dict(os.environ, {TOKEN_ENV: "earlier-wrapper"}), \
                 patch("sys.stdout", new_callable=io.StringIO):
             self.assertEqual(
                 producer_gate_main(["--task", "security", "--lock", "--state-file", str(self.state_file)]),
                 producer.EXIT_BUSY,
             )
+
+    def test_done_with_a_lost_lock_marks_nothing(self):
+        acquire_lock_token(self.lock_file)
+        self.state_file.write_text(json.dumps({"lastRun": {"security": 100}}), encoding="utf-8")
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            exit_code = producer_gate_main(["--done", "security", "--unlock", "--token", "not-mine",
+                                            "--state-file", str(self.state_file)])
+        self.assertEqual(exit_code, producer.EXIT_LOST)
+        self.assertIn("LOST", mock_out.getvalue())
+        self.assertEqual(json.loads(self.state_file.read_text(encoding="utf-8"))["lastRun"]["security"], 100)
+        self.assertTrue(check_lock(self.lock_file))
 
     def test_mark_task_done(self):
         """--done updates the task's lastRun timestamp in state.json."""

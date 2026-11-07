@@ -78,11 +78,32 @@ class BuildPlanTest(unittest.TestCase):
         self.assertEqual(self._keys(plan), [("pr", 3)])
 
 
+def _pr(number=3, action="fix-ci", head="h1", base="main", round_=None, verdict=None):
+    gatekeeper = None if round_ is None else {"round": round_, "verdict": verdict, "head": head, "url": f"u{round_}"}
+    return {"number": number, "nextAction": action, "headSha": head, "base": base, "gatekeeper": gatekeeper}
+
+
 class RecheckTest(unittest.TestCase):
-    def test_pr_is_valid_only_with_the_planned_action(self):
-        self.assertTrue(plan_tick.pr_item_is_current([{"nextAction": "fix-ci"}], "fix-ci"))
-        self.assertFalse(plan_tick.pr_item_is_current([{"nextAction": "none"}], "fix-ci"))
-        self.assertFalse(plan_tick.pr_item_is_current([], "fix-ci"))
+    def test_pr_is_valid_only_while_action_head_base_and_review_round_are_unchanged(self):
+        planned = _pr(round_="1", verdict="changes-requested", action="address-gatekeeper")
+        stamp = plan_tick.build_plan([planned], _candidates(), {}, 1)["items"][0]["stamp"]
+        self.assertTrue(plan_tick.pr_item_is_current([dict(planned)], stamp))
+        moved = {
+            "action": dict(planned, nextAction="resolve-conflict"),
+            "head": dict(planned, headSha="h2"),
+            "base": dict(planned, base="dev"),
+            "round": dict(planned, gatekeeper=dict(planned["gatekeeper"], round="2", url="u2")),
+            "verdict": dict(planned, gatekeeper=dict(planned["gatekeeper"], verdict="approve")),
+            "no work": dict(planned, nextAction="none"),
+        }
+        for name, fresh in moved.items():
+            with self.subTest(changed=name):
+                self.assertFalse(plan_tick.pr_item_is_current([fresh], stamp))
+        self.assertFalse(plan_tick.pr_item_is_current([], stamp))
+
+    def test_plan_items_carry_head_base_and_round(self):
+        item = plan_tick.build_plan([_pr(round_="2", verdict="changes-requested")], _candidates(), {}, 1)["items"][0]
+        self.assertEqual((item["head"], item["base"], item["gatekeeperRound"]), ("h1", "main", "2"))
 
     def test_issue_that_changed_during_the_tick_is_not_valid(self):
         fresh = _candidates(_candidate(1, updated="t1"), _candidate(2, status="wait"))
@@ -100,12 +121,17 @@ class MainTest(unittest.TestCase):
         return code, out.getvalue()
 
     def test_check_exit_codes(self):
-        with patch.object(plan_tick, "summarize_prs", return_value=[{"nextAction": "none"}]):
-            self.assertEqual(self._run("--check-pr", "3", "--action", "fix-ci"), (EXIT_NOOP, "CHANGED\n"))
+        stamp = plan_tick.pr_stamp(_pr())
+        with patch.object(plan_tick, "summarize_prs", return_value=[_pr(head="h2")]):
+            code, text = self._run("--check-pr", "3", "--stamp", stamp)
+            self.assertEqual(code, EXIT_NOOP)
+            self.assertTrue(text.startswith("CHANGED: action fix-ci, head h2"), text)
+        with patch.object(plan_tick, "summarize_prs", return_value=[_pr()]):
+            self.assertEqual(self._run("--check-pr", "3", "--stamp", stamp), (EXIT_RUN, "VALID\n"))
         with patch.object(plan_tick, "fetch_candidates", return_value=_candidates(_candidate(1))):
             self.assertEqual(self._run("--check-issue", "1", "--updated-at", "t1"), (EXIT_RUN, "VALID\n"))
         with patch.object(plan_tick, "summarize_prs", side_effect=GhError("down")):
-            self.assertEqual(self._run("--check-pr", "3", "--action", "fix-ci")[0], EXIT_ERROR)
+            self.assertEqual(self._run("--check-pr", "3", "--stamp", stamp)[0], EXIT_ERROR)
 
     def test_plan_uses_state_and_config(self):
         with tempfile.TemporaryDirectory() as tmp:

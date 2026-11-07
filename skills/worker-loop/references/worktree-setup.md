@@ -30,4 +30,8 @@ All edits, builds, commits, and pushes happen in a dedicated, persistent worktre
 - Reinstall dependencies in `$WT` when lockfiles differ from the hash stored in state (`lockHash`).
 - Ignored files are not carried over.
 - A branch checked out in `$MAIN` cannot be checked out in `$WT`. In that case, work detached on `origin/<head>` and push with `git push origin HEAD:refs/heads/<head>`.
-- `$WT` belongs to the worker: at the start of a tick with no `current`, `git -C "$WT" reset --hard && git -C "$WT" clean -fd` is allowed. Never run these against `$MAIN`.
+- `$WT` belongs to the worker slot. At the start of a tick with no `current`, reset it only with `python3 "$SKILL_DIR/scripts/guard.py" reset-worktree --token "$TOKEN" --repo "$WT"`:
+  - it refuses if this tick no longer owns its lock, and it refuses the main checkout;
+  - an unfinished rebase, merge, cherry-pick, or revert is saved as a patch under `<state_dir>/worker-loop/preserved/` and aborted;
+  - remaining uncommitted changes, untracked files included, are stashed (`git -C "$WT" stash list`) before `reset --hard` and `clean -fd`.
+- Never reset `$MAIN` or another slot's worktree (`worker-<id>`).

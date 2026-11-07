@@ -42,8 +42,9 @@ for _candidate in (_script_dir.parents[2], _script_dir.parents[3], _script_dir.p
     if (_candidate / "devloops_lib").is_dir() and str(_candidate) not in sys.path:
         sys.path.insert(0, str(_candidate))
 
-from devloops_lib.config import add_agent_id_argument, get_state_path, load_config
+from devloops_lib.config import GATEKEEPER_APPROVED_LABEL, add_agent_id_argument, get_state_path, load_config
 from devloops_lib.gh import GhError, gh
+from devloops_lib.config import run_main
 
 MAX_ROUNDS = 5
 # Loop markers must appear at the very start of the comment (ignoring optional UTF-8 BOM and leading whitespace).
@@ -365,7 +366,7 @@ def summarize(number: int, me: str, state: dict | None = None, config: dict | No
         "ownerComments": owner,
         "securitySensitive": sensitive,
         "labels": labels,
-        "staleApprovedLabel": "gatekeeper:approved" in labels and status != "approved",
+        "staleApprovedLabel": GATEKEEPER_APPROVED_LABEL in labels and status != "approved",
         "needsHuman": needs_human,
         "url": pr["url"],
         "base": base,
@@ -431,4 +432,4 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_main(main)

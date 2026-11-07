@@ -25,6 +25,7 @@ for _candidate in (_script_dir.parents[2], _script_dir.parents[3], _script_dir.p
 from devloops_lib.config import add_agent_id_argument, get_state_path, load_config
 from devloops_lib.issue_queue import apply_verdict, list_unjudged_issues
 from devloops_lib.tick_gate import GhError
+from devloops_lib.config import run_main
 
 
 def validation_batch(issues: list[dict], config: dict) -> list[dict]:
@@ -107,4 +108,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    run_main(main)

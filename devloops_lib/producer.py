@@ -16,6 +16,7 @@ from devloops_lib.config import get_state_path, load_config
 from devloops_lib.tick_gate import (
     EXIT_BUSY,
     EXIT_ERROR,
+    EXIT_LOST,
     EXIT_NOOP,
     EXIT_RUN,
     LOCK_TTL_SECONDS,

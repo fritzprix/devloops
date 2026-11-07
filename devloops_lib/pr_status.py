@@ -207,6 +207,7 @@ def summarize(number: int, owner: str, name: str, me: str) -> dict:
         "title": pr["title"],
         "url": pr["url"],
         "head": pr["headRefName"],
+        "headSha": pr["headRefOid"],
         "base": pr["baseRefName"],
         "draft": pr["isDraft"],
         "mergeable": pr.get("mergeable"),
@@ -247,4 +248,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    from devloops_lib.config import run_main
+
+    run_main(main)

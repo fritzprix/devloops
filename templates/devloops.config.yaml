@@ -43,6 +43,8 @@ gatekeeper:
   max_issue_validations_per_tick: 1   # producer issues to validate per tick
 
 worker:
-  max_items_per_tick: 1       # PRs and issues to finish per tick; long ticks can pass the 30-minute lock TTL
+  max_items_per_tick: 1       # PRs and issues to finish per tick
+  open_pr_limit: 5            # new issues wait while this many unapproved PRs (plus live issue claims without a PR) are open
+  issue_claim_ttl_minutes: 120  # an issue claim not refreshed for this long is stale and can be taken over
 
 # scheduler: shell            # documentation only: shell | cron | harness-specific adapter

@@ -3,13 +3,18 @@
 
 Usage:
   python3 producer_gate.py --next [--lock] [--pid PID]
-  python3 producer_gate.py --done <task> [--unlock]
+  python3 producer_gate.py --done <task> [--unlock --token TOKEN]
   python3 producer_gate.py --lock [--pid PID]
-  python3 producer_gate.py --unlock
+  python3 producer_gate.py --unlock --token TOKEN
+
+`--lock` prints `TOKEN <token>` after the task; `--unlock` releases only the lock
+that token owns (under `devloops tick`, the wrapper's token comes from the
+environment and the wrapper keeps the lock). `--force-unlock` is for operators.
 """
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -19,18 +24,23 @@ for _candidate in (_script_dir.parents[2], _script_dir.parents[3], _script_dir.p
     if (_candidate / "devloops_lib").is_dir() and str(_candidate) not in sys.path:
         sys.path.insert(0, str(_candidate))
 
-from devloops_lib.config import add_agent_id_argument, get_state_path, load_config
+from devloops_lib.config import add_agent_id_argument, get_state_path, load_config, run_main
 from devloops_lib.producer import mark_task_done, select_next_task
 from devloops_lib.tick_gate import (
     EXIT_BUSY,
     EXIT_ERROR,
+    EXIT_LOST,
     EXIT_NOOP,
     EXIT_RUN,
-    acquire_lock,
+    TOKEN_ENV,
     check_lock,
+    describe_lock,
     held_by_wrapper,
     load_state,
     release_lock,
+    renew_lock,
+    take_tick_lock,
+    token_holds_lock,
 )
 
 
@@ -40,7 +50,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task", type=str, default=None, help="Specific task to run")
     parser.add_argument("--done", type=str, default=None, help="Mark specified task as done")
     parser.add_argument("--lock", action="store_true", help="Acquire tick.lock before exiting 0")
-    parser.add_argument("--unlock", action="store_true", help="Release tick.lock")
+    parser.add_argument("--unlock", action="store_true", help="Release tick.lock owned by --token")
+    parser.add_argument("--token", default=None, help=f"Token printed by --lock (default: ${TOKEN_ENV})")
+    parser.add_argument("--force-unlock", action="store_true", help="Operator only: remove tick.lock whoever owns it")
     parser.add_argument("--pid", type=int, default=None, help="Process ID to record in tick.lock")
     parser.add_argument("--state-file", type=Path, default=None, help="Path to state.json")
     add_agent_id_argument(parser)
@@ -49,38 +61,63 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config()
     state_path = args.state_file or get_state_path("producer-loop", config=cfg)
     lock_path = state_path.parent / "tick.lock"
+    token = args.token or os.environ.get(TOKEN_ENV)
     # Under the wrapper, --lock and --unlock leave its lock in place.
     wrapper_held = held_by_wrapper(lock_path)
 
-    def take_lock() -> bool:
-        return wrapper_held or acquire_lock(lock_path, pid=args.pid)
+    tick_token: str | None = None
 
-    def drop_lock() -> None:
+    def take_lock() -> bool:
+        nonlocal tick_token
+        tick_token = take_tick_lock(lock_path, "producer-loop", pid=args.pid)
+        return tick_token is not None
+
+    def busy() -> int:
+        print(f"BUSY ({describe_lock(lock_path)})")
+        return EXIT_BUSY
+
+    def drop_lock() -> int:
         if wrapper_held:
             print("LOCK KEPT (held by devloops tick)")
-        else:
-            release_lock(lock_path)
-            print("UNLOCKED")
+            return EXIT_RUN
+        if not token:
+            sys.stderr.write(f"--unlock needs the token printed by --lock (--token or ${TOKEN_ENV})\n")
+            return EXIT_ERROR
+        if not token_holds_lock(lock_path, token):
+            print(f"LOST ({describe_lock(lock_path)})")
+            return EXIT_LOST
+        release_lock(lock_path, token=token)
+        print("UNLOCKED")
+        return EXIT_RUN
+
+    def print_token() -> None:
+        if tick_token:
+            print(f"TOKEN {tick_token}")
 
     try:
+        if args.force_unlock:
+            release_lock(lock_path)
+            print("UNLOCKED (forced by operator)")
+            return EXIT_RUN
+
         # 1. Handle --done <task>
         if args.done:
+            # Renewing keeps the lock live until drop_lock, so nobody reclaims it in between.
+            if args.unlock and not wrapper_held and not renew_lock(lock_path, token or ""):
+                # A tick that lost its lock must not record the task as done either.
+                return drop_lock()
             mark_task_done(args.done, state_path)
             print(f"DONE: {args.done}")
-            if args.unlock:
-                drop_lock()
-            return EXIT_RUN
+            return drop_lock() if args.unlock else EXIT_RUN
 
         # 2. Handle unlock-only
         if args.unlock and not args.next and not args.task and not args.lock:
-            drop_lock()
-            return EXIT_RUN
+            return drop_lock()
 
         # 3. Check active lock before proceeding with --lock, --next, or --task
         if args.lock or args.next or args.task:
             if check_lock(lock_path) and not wrapper_held:
-                print("BUSY (tick in progress)")
-                return EXIT_BUSY
+                return busy()
 
         # 4. Handle --next
         if args.next:
@@ -90,34 +127,31 @@ def main(argv: list[str] | None = None) -> int:
                 print("NOOP")
                 return EXIT_NOOP
 
-            if args.lock:
-                if not take_lock():
-                    print("BUSY (tick in progress)")
-                    return EXIT_BUSY
+            if args.lock and not take_lock():
+                return busy()
             print(task)
+            print_token()
             return EXIT_RUN
 
         # 5. Handle specific task
         if args.task:
-            if args.lock:
-                if not take_lock():
-                    print("BUSY (tick in progress)")
-                    return EXIT_BUSY
+            if args.lock and not take_lock():
+                return busy()
             print(args.task)
+            print_token()
             return EXIT_RUN
 
         # 6. Lock-only
         if args.lock:
             if not take_lock():
-                print("BUSY (tick in progress)")
-                return EXIT_BUSY
+                return busy()
             print("LOCKED")
+            print_token()
             return EXIT_RUN
 
         # If --unlock was specified along with other flags
         if args.unlock:
-            drop_lock()
-            return EXIT_RUN
+            return drop_lock()
 
         return EXIT_RUN
 
@@ -127,4 +161,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    run_main(main)
