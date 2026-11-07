@@ -66,7 +66,7 @@ gh pr list --author "@me" --state open --json number,title,headRefName,baseRefNa
 gh pr view <number> --json headRefOid,mergeable,reviewDecision,statusCheckRollup,comments
 ```
 
-Draft PRs are ignored until marked ready for review. Each PR has `nextAction`: `resolve-conflict` > `restack` > `address-gatekeeper` > `triage-comments` > `fix-ci` > `wait-ci` > `none`. Act on the **first** PR with an actionable status (the first five). If no PR needs action, proceed to Step 2.
+Draft PRs are ignored until marked ready for review. Each PR has `nextAction`: `resolve-conflict` > `restack` > `address-gatekeeper` > `triage-comments` > `fix-ci` > `wait-ci` > `none`. Act on the **first** PR with an actionable status (the first five) that you can claim: `python3 "$SKILL_DIR/scripts/claim.py" pr N`. If it exits `2` (`BUSY`), another agent owns the PR, so try the next one. If no PR needs action or can be claimed, proceed to Step 2.
 
 All work happens in `$WT` on the PR's head branch:
 - **resolve-conflict**: in `$WT`, `git rebase origin/<base>`, resolve only mechanical conflicts, push with `--force-with-lease`. Never merge the base into a feature branch. If intent is ambiguous, record `needsUser` and stop. Restack children if stacked (see [references/stacked-prs.md](references/stacked-prs.md)).
@@ -113,9 +113,9 @@ The `updatedAt` comes from issue metadata (via `issue_candidates.py`), and `evid
 **Owner-share check**: for entries whose reason says the rest is the owner's (bench runs, re-runs, baselines, publishing), quote the lines that define what remains. Code, script, test, dataset, or doc changes leading up to the owner's step belong to the worker: implement them now and leave only the actual run or environment-specific action to the owner.
 
 Then:
-1. `gh issue edit N --add-assignee @me`.
-2. Resolve base: read `project.base_branch` from `devloops.config.yaml` (default `main`).
-3. In `$WT`: `git switch -c <type>/<short-slug>-<N> origin/$BASE`. Set `current` in state.
+1. Resolve base: read `project.base_branch` from `devloops.config.yaml` (default `main`).
+2. Claim the issue: `python3 "$SKILL_DIR/scripts/claim.py" issue N --base "origin/$BASE" --repo "$WT"`. Exit `2` (`BUSY`): another agent owns it, so go back and pick the next candidate. Exit `1` (`OVER LIMIT`): do not start it; the claim stays on the branch for a later tick. Exit `3`: stop the tick and report the error.
+3. `gh issue edit N --add-assignee @me`. In `$WT`: `git switch -c <type>/<short-slug>-<N> origin/$BASE`. Set `current` in state.
 4. Implement per project conventions (KISS/YAGNI, match surrounding code).
 5. Verify narrowly (see [references/verification.md](references/verification.md)), commit, push.
 6. Open PR via `gh pr create`: base `$BASE`, semantic title, body with `Fixes #N`, summary, and test plan. Clear `current`.
@@ -130,6 +130,8 @@ Report `needsUser` items once when newly created.
 **Idle check**: Before ending idle, inspect each `skipped` issue against `issue_candidates.py` output:
 - **Do NOT re-read the body or comments** of a skipped issue unless its `updatedAt` changed since the recorded timestamp.
 - If `updatedAt` changed, re-read the issue to see if new decisions unblocked it.
+
+**Claim release**: if this tick claimed a PR, release it: `python3 "$SKILL_DIR/scripts/claim.py" release-pr N`. A claim left by a crash expires after 30 minutes. Issue claims stay in place, because remote branch deletion is forbidden.
 
 **Lock release**:
 Run the same commands with or without the wrapper. Under `devloops tick worker`, `--unlock` leaves the lock in place and the wrapper releases it on exit.
