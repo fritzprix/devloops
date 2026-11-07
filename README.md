@@ -149,6 +149,7 @@ Edit `<project>/devloops.config.yaml`:
 | `producer.task_skills` | Optional project skill or command for each task |
 | `producer.task_periods` | Period for each task (e.g. `cleanup: 7d`) |
 | `producer.task_max_new_issues` | Limit of new issues for each task |
+| `worker.max_items_per_tick` | PRs and issues the worker finishes per tick (default 1). A long tick can pass the 30-minute lock TTL. |
 | `scheduler` | Documentation only: `shell`, `cron`, or a harness-specific adapter |
 
 ## Run

@@ -204,24 +204,26 @@ def filter_and_rank_issues(
     return {"openPRLimit": open_pr_limit(open_prs, me), "candidates": candidates, "excluded": excluded}
 
 
+def fetch_candidates(limit: int = 100) -> dict:
+    me = gh("api", "user", "--jq", ".login").strip()
+    issues = json.loads(
+        gh("issue", "list", "--state", "open", "--limit", str(limit), "--json",
+           "number,title,labels,assignees,body,createdAt,updatedAt,url")
+    )
+    open_prs = json.loads(
+        gh("pr", "list", "--state", "open", "--limit", "100", "--json",
+           "number,title,body,headRefName,baseRefName,reviewDecision,labels,author")
+    )
+    return filter_and_rank_issues(issues, open_prs, me)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=100, help="Candidate issues limit (default: 100)")
     args = parser.parse_args()
 
     try:
-        me = gh("api", "user", "--jq", ".login").strip()
-        issues = json.loads(
-            gh("issue", "list", "--state", "open", "--limit", str(args.limit), "--json",
-               "number,title,labels,assignees,body,createdAt,updatedAt,url")
-        )
-        open_prs = json.loads(
-            gh("pr", "list", "--state", "open", "--limit", "100", "--json",
-               "number,title,body,headRefName,baseRefName,reviewDecision,labels,author")
-        )
-
-        result = filter_and_rank_issues(issues, open_prs, me)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print(json.dumps(fetch_candidates(args.limit), ensure_ascii=False, indent=2))
     except GhError as e:
         sys.exit(f"gh error: {e}")
 
