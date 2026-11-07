@@ -44,8 +44,10 @@ class CliInstallTest(unittest.TestCase):
         # Check stdout reporting (S1.3)
         self.assertIn("[installed]", output)
         self.assertIn("devloops installed into:", output)
-        expected_py = sys.executable or "python3"
-        self.assertIn(expected_py, output)
+        # Guidance must use a stable command form, not the install-time interpreter
+        # (under `uvx --from` that is an ephemeral cache path that breaks later).
+        self.assertIn("python3 ", output)
+        self.assertNotIn(sys.executable, output)
 
     def test_install_target_with_spaces(self):
         target = self.tmp_dir / "my project with spaces"
