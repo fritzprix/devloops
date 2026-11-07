@@ -80,7 +80,7 @@ The producer has its own gate, `producer_gate.py`. It picks the most overdue tas
 
 - Python 3.8 or later (no third-party packages; tested with 3.13)
 - `git`
-- GitHub CLI `gh`, logged in, with push permission to the project repo
+- GitHub CLI `gh`, logged in, with push permission to the project repo. Note: issue-only trackers (for example Linear, Jira) still need a git host for pull requests, code reviews, and CI status.
 - A coding agent that can load skills from `.agents/skills/`
 
 ## Install

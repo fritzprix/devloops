@@ -21,23 +21,18 @@ from devloops_lib.producer import (
     FP_MARKER_REGEX,
     compute_fingerprint,
 )
-from devloops_lib.tick_gate import GhError, load_state, save_state
+from devloops_lib.gh import GhError, gh
+from devloops_lib.tick_gate import load_state, save_state
 
 
 def get_existing_issue_fingerprints(repo: str | None = None) -> set[str]:
     """Query gh for open and closed issues and extract producer fingerprint markers."""
-    cmd = ["gh", "issue", "list", "--state", "all", "--limit", "1000", "--json", "number,body"]
+    cmd = ["issue", "list", "--state", "all", "--limit", "1000", "--json", "number,body"]
     if repo:
         cmd.extend(["--repo", repo])
+    res_stdout = gh(*cmd)
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
-    except Exception as e:
-        raise GhError(f"Failed to execute gh issue list: {e}") from e
-    if res.returncode != 0:
-        raise GhError(f"gh issue list failed (code {res.returncode}): {res.stderr.strip()}")
-
-    try:
-        issues = json.loads(res.stdout) if res.stdout.strip() else []
+        issues = json.loads(res_stdout) if res_stdout.strip() else []
     except json.JSONDecodeError as e:
         raise GhError(f"Failed to parse gh issue list output: {e}") from e
 
@@ -76,19 +71,13 @@ def create_github_issue(
     repo: str | None = None,
 ) -> str:
     """Invoke gh issue create and return stdout."""
-    cmd = ["gh", "issue", "create", "--title", title, "--body", body]
+    cmd = ["issue", "create", "--title", title, "--body", body]
     for lbl in labels:
         cmd.extend(["--label", lbl])
     if repo:
         cmd.extend(["--repo", repo])
 
-    try:
-        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
-    except Exception as e:
-        raise GhError(f"Failed to execute gh issue create: {e}") from e
-    if res.returncode != 0:
-        raise GhError(f"gh issue create failed (code {res.returncode}): {res.stderr.strip()}")
-    return res.stdout.strip()
+    return gh(*cmd).strip()
 
 
 def file_producer_issues(

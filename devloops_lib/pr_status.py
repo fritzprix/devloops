@@ -15,6 +15,7 @@ import json
 import re
 import subprocess
 import sys
+from devloops_lib.gh import GhError, gh
 from pathlib import Path
 
 # Support running directly or as module
@@ -53,11 +54,7 @@ FAILED = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STAR
 PENDING = {"PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "EXPECTED", "REQUESTED"}
 
 
-def gh(*args: str) -> str:
-    result = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8")
-    if result.returncode != 0:
-        sys.exit(f"gh {' '.join(args)} failed: {result.stderr.strip()}")
-    return result.stdout
+# gh helper is imported from devloops_lib.gh
 
 
 def short(text: str | None, limit: int = 240) -> str:
@@ -234,13 +231,16 @@ def main() -> None:
     owner, name = repo["owner"]["login"], repo["name"]
     me = gh("api", "user", "--jq", ".login").strip()
 
-    if args.pr:
-        numbers = [args.pr]
-    else:
-        listed = json.loads(gh("pr", "list", "--author", "@me", "--state", "open", "--json", "number,isDraft"))
-        numbers = [p["number"] for p in listed if not p.get("isDraft")]
+    try:
+        if args.pr:
+            numbers = [args.pr]
+        else:
+            listed = json.loads(gh("pr", "list", "--author", "@me", "--state", "open", "--json", "number,isDraft"))
+            numbers = [p["number"] for p in listed if not p.get("isDraft")]
 
-    print(json.dumps([summarize(n, owner, name, me) for n in numbers], ensure_ascii=False, indent=2))
+        print(json.dumps([summarize(n, owner, name, me) for n in numbers], ensure_ascii=False, indent=2))
+    except GhError as e:
+        sys.exit(f"gh error: {e}")
 
 
 if __name__ == "__main__":
