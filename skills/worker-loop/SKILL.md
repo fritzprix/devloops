@@ -46,7 +46,7 @@ See [references/worktree-setup.md](references/worktree-setup.md) for setup comma
 
 ### 0. Preflight
 
-1. When started via `devloops tick worker`, the wrapper holds the tick lock. If run standalone: check gate and lock: `python3 "$SKILL_DIR/scripts/tick_gate.py" --lock`.
+1. Check gate and lock: `python3 "$SKILL_DIR/scripts/tick_gate.py" --lock`. Under `devloops tick worker`, the wrapper already holds the lock; the command detects this and does not take it again.
    - If output is `BUSY`: another tick is currently in progress. Stop immediately.
    - If output is `NOOP`: no PR or issue state changed. Output `Idle: no changes.` and stop.
 2. `git -C "$MAIN" fetch origin --prune`.
@@ -127,8 +127,7 @@ Report `needsUser` items once when newly created.
 - If `updatedAt` changed, re-read the issue to see if new decisions unblocked it.
 
 **Lock release**:
-When started via `devloops tick worker`, the wrapper releases the lock automatically upon completion or error.
-When run standalone:
+Run the same commands with or without the wrapper. Under `devloops tick worker`, `--unlock` leaves the lock in place and the wrapper releases it on exit.
 - If idle or needsUser: `python3 "$SKILL_DIR/scripts/tick_gate.py" --update --unlock`
 - If work completed or error: `python3 "$SKILL_DIR/scripts/tick_gate.py" --unlock`
 - A tick that stopped with `BUSY` did not acquire the lock and must NOT run `--unlock` (it would delete another tick's lock). Unlock only a lock this tick acquired.

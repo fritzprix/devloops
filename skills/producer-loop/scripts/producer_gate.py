@@ -28,6 +28,7 @@ from devloops_lib.tick_gate import (
     EXIT_RUN,
     acquire_lock,
     check_lock,
+    held_by_wrapper,
     load_state,
     release_lock,
 )
@@ -47,6 +48,18 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config()
     state_path = args.state_file or get_state_path("producer-loop", config=cfg)
     lock_path = state_path.parent / "tick.lock"
+    # Under the wrapper, --lock and --unlock leave its lock in place.
+    wrapper_held = held_by_wrapper(lock_path)
+
+    def take_lock() -> bool:
+        return wrapper_held or acquire_lock(lock_path, pid=args.pid)
+
+    def drop_lock() -> None:
+        if wrapper_held:
+            print("LOCK KEPT (held by devloops tick)")
+        else:
+            release_lock(lock_path)
+            print("UNLOCKED")
 
     try:
         # 1. Handle --done <task>
@@ -54,19 +67,17 @@ def main(argv: list[str] | None = None) -> int:
             mark_task_done(args.done, state_path)
             print(f"DONE: {args.done}")
             if args.unlock:
-                release_lock(lock_path)
-                print("UNLOCKED")
+                drop_lock()
             return EXIT_RUN
 
         # 2. Handle unlock-only
         if args.unlock and not args.next and not args.task and not args.lock:
-            release_lock(lock_path)
-            print("UNLOCKED")
+            drop_lock()
             return EXIT_RUN
 
         # 3. Check active lock before proceeding with --lock, --next, or --task
         if args.lock or args.next or args.task:
-            if check_lock(lock_path):
+            if check_lock(lock_path) and not wrapper_held:
                 print("BUSY (tick in progress)")
                 return EXIT_BUSY
 
@@ -79,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
                 return EXIT_NOOP
 
             if args.lock:
-                if not acquire_lock(lock_path, pid=args.pid):
+                if not take_lock():
                     print("BUSY (tick in progress)")
                     return EXIT_BUSY
             print(task)
@@ -88,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         # 5. Handle specific task
         if args.task:
             if args.lock:
-                if not acquire_lock(lock_path, pid=args.pid):
+                if not take_lock():
                     print("BUSY (tick in progress)")
                     return EXIT_BUSY
             print(args.task)
@@ -96,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
 
         # 6. Lock-only
         if args.lock:
-            if not acquire_lock(lock_path, pid=args.pid):
+            if not take_lock():
                 print("BUSY (tick in progress)")
                 return EXIT_BUSY
             print("LOCKED")
@@ -104,8 +115,7 @@ def main(argv: list[str] | None = None) -> int:
 
         # If --unlock was specified along with other flags
         if args.unlock:
-            release_lock(lock_path)
-            print("UNLOCKED")
+            drop_lock()
             return EXIT_RUN
 
         return EXIT_RUN

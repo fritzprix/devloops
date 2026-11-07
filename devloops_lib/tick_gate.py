@@ -65,6 +65,9 @@ LINK_UNSUPPORTED_ERRNOS = frozenset(
     {errno.EPERM, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL}
 )
 
+# Set by `devloops tick` for the agent it starts; see held_by_wrapper.
+WRAPPER_PID_ENV = "DEVLOOPS_TICK_WRAPPER_PID"
+
 # Matches issue_candidates.py default (--limit 100): a starved approved issue is by
 # definition not recently updated, so a small window would drop it from backlog detection.
 ISSUE_LIMIT = 100
@@ -407,6 +410,21 @@ def release_lock(lock_file: Path, token: str | None = None) -> None:
         _unlink_lock(lock_file)
 
 
+def held_by_wrapper(lock_file: Path) -> bool:
+    """Return True if this process runs under the `devloops tick` holding lock_file.
+
+    The wrapper exports its pid to the agent. It must match the pid in the lock,
+    so a gate for another loop, or a leftover variable, still sees a normal lock.
+    """
+    pid = os.environ.get(WRAPPER_PID_ENV)
+    if not pid:
+        return False
+    try:
+        return json.loads(lock_file.read_text(encoding="utf-8")).get("pid") == int(pid)
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 CLOSING_PATTERN = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b", re.I)
 # Same heuristic as issue_candidates.py: only 3+ digit branch suffixes count as closing refs.
 BRANCH_ISSUE_PATTERN = re.compile(r"-(\d{3,})\b")
@@ -541,6 +559,8 @@ def main(argv: list[str] | None = None) -> None:
 
     state_path = args.state_file or default_state_path(args.loop)
     lock_path = state_path.parent / "tick.lock"
+    # Under the wrapper, --lock and --unlock leave its lock in place.
+    wrapper_held = held_by_wrapper(lock_path)
 
     try:
         if args.update:
@@ -560,7 +580,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.update or args.unlock:
             sys.exit(EXIT_RUN)
 
-        if check_lock(lock_path):
+        if check_lock(lock_path) and not wrapper_held:
             print("BUSY (tick in progress)")
             sys.exit(EXIT_BUSY)
 
@@ -569,7 +589,7 @@ def main(argv: list[str] | None = None) -> None:
         # If currently implementing an issue or branch, always run
         if state.get("current"):
             if args.lock:
-                if not acquire_lock(lock_path, pid=args.pid):
+                if not wrapper_held and not acquire_lock(lock_path, pid=args.pid):
                     print("BUSY (tick in progress)")
                     sys.exit(EXIT_BUSY)
             print("RUN (current work in progress)")
@@ -585,7 +605,7 @@ def main(argv: list[str] | None = None) -> None:
         # State changed (or approved backlog waiting): acquire lock if requested, but DO NOT save lastFingerprint yet.
         # lastFingerprint must be saved only after a successful tick via --update.
         if args.lock:
-            if not acquire_lock(lock_path, pid=args.pid):
+            if not wrapper_held and not acquire_lock(lock_path, pid=args.pid):
                 print("BUSY (tick in progress)")
                 sys.exit(EXIT_BUSY)
             state["tickStartFingerprint"] = fp
@@ -604,8 +624,11 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(EXIT_ERROR)
     finally:
         if args.unlock:
-            release_lock(lock_path)
-            print("UNLOCKED")
+            if wrapper_held:
+                print("LOCK KEPT (held by devloops tick)")
+            else:
+                release_lock(lock_path)
+                print("UNLOCKED")
 
 
 if __name__ == "__main__":
