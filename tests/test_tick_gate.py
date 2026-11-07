@@ -2,8 +2,10 @@
 """Tests for tick_gate logic."""
 import json
 import os
+import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -342,6 +344,129 @@ class TickGateTest(unittest.TestCase):
         # Old state.json is intact
         loaded = tick_gate.load_state(self.state_file)
         self.assertEqual(loaded, old_state)
+
+class LockPublicationTest(unittest.TestCase):
+    """Issue #22: mutual exclusion across publish/reclaim/release."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.lock_file = Path(self._tmp.name) / "tick.lock"
+
+    def _payload(self):
+        return json.loads(self.lock_file.read_text(encoding="utf-8"))
+
+    def test_contender_cannot_steal_lock_published_during_acquire(self):
+        # Deterministic interleaving for the create-before-payload window:
+        # owner A publishes atomically and is paused before acquire returns;
+        # contender B runs the contested path while A's acquisition is still
+        # in progress. B must not steal A's live lock nor unlink it.
+        # Synchronization is event-based; no sleeps.
+        published = threading.Event()
+        resume = threading.Event()
+        original = tick_gate._publish_lock
+
+        def slow_publish(lock_file, data):
+            ok = original(lock_file, data)
+            if ok:
+                published.set()
+                resume.wait(10)
+            return ok
+
+        outcomes = {}
+
+        def owner():
+            outcomes["a"] = tick_gate.acquire_lock_token(self.lock_file)
+
+        def contender():
+            self.assertTrue(published.wait(10))
+            outcomes["b"] = tick_gate.acquire_lock(self.lock_file)
+
+        with patch.object(tick_gate, "_publish_lock", side_effect=slow_publish):
+            t_owner = threading.Thread(target=owner)
+            t_contender = threading.Thread(target=contender)
+            t_owner.start()
+            t_contender.start()
+            self.assertTrue(published.wait(10))
+            resume.set()
+            t_owner.join(10)
+            t_contender.join(10)
+
+        self.assertIsNotNone(outcomes.get("a"))
+        self.assertIs(outcomes.get("b"), False)
+        self.assertEqual(self._payload()["token"], outcomes["a"])
+        self.assertTrue(tick_gate.check_lock(self.lock_file))
+
+    def test_fresh_unparseable_lock_is_treated_as_in_progress(self):
+        # Empty/partial/corrupt payloads younger than TTL are an in-progress
+        # acquisition, never a stale lock to steal.
+        for bad in ("", "not json", "null"):
+            with self.subTest(payload=bad):
+                if self.lock_file.exists():
+                    self.lock_file.unlink()
+                self.lock_file.write_text(bad, encoding="utf-8")
+                self.assertTrue(tick_gate.check_lock(self.lock_file))
+                self.assertFalse(tick_gate.acquire_lock(self.lock_file))
+                # The contender must not have deleted or rewritten the lock.
+                self.assertEqual(self.lock_file.read_text(encoding="utf-8"), bad)
+
+    def test_corrupt_lock_older_than_ttl_is_reclaimable(self):
+        self.lock_file.write_text("{corrupt", encoding="utf-8")
+        old = time.time() - (tick_gate.LOCK_TTL_SECONDS + 60)
+        os.utime(self.lock_file, (old, old))
+        self.assertFalse(tick_gate.check_lock(self.lock_file))
+        self.assertTrue(tick_gate.acquire_lock(self.lock_file))
+        self.assertIn("token", self._payload())
+
+    def test_genuinely_stale_lock_is_reclaimed_exactly_once(self):
+        self.lock_file.write_text(
+            json.dumps({"time": time.time() - (tick_gate.LOCK_TTL_SECONDS + 10), "token": "old-owner"}),
+            encoding="utf-8",
+        )
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(executor.map(lambda _: tick_gate.acquire_lock(self.lock_file), range(4)))
+        self.assertEqual(results.count(True), 1)
+        self.assertTrue(tick_gate.check_lock(self.lock_file))
+
+    def test_non_owner_release_cannot_delete_replacement_lock(self):
+        token_a = tick_gate.acquire_lock_token(self.lock_file)
+        self.assertIsNotNone(token_a)
+        # A's lock goes stale and B reclaims it.
+        stale = self._payload()
+        stale["time"] = time.time() - (tick_gate.LOCK_TTL_SECONDS + 10)
+        self.lock_file.write_text(json.dumps(stale), encoding="utf-8")
+        token_b = tick_gate.acquire_lock_token(self.lock_file)
+        self.assertIsNotNone(token_b)
+        self.assertNotEqual(token_a, token_b)
+        # A's late, token-checked release must not remove B's replacement lock.
+        tick_gate.release_lock(self.lock_file, token=token_a)
+        self.assertEqual(self._payload()["token"], token_b)
+        # B releases its own lock normally.
+        tick_gate.release_lock(self.lock_file, token=token_b)
+        self.assertFalse(self.lock_file.exists())
+
+    def test_subprocess_contenders_exactly_one_winner(self):
+        code = (
+            "import sys;"
+            "from pathlib import Path;"
+            "sys.path.insert(0, sys.argv[1]);"
+            "from devloops_lib import tick_gate;"
+            "sys.stdout.write('1' if tick_gate.acquire_lock(Path(sys.argv[2])) else '0')"
+        )
+        procs = [
+            subprocess.Popen(
+                [sys.executable, "-c", code, str(REPO_ROOT), str(self.lock_file)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            for _ in range(4)
+        ]
+        outputs = [p.communicate(timeout=60) for p in procs]
+        winners = sum(1 for out, _err in outputs if out.strip() == "1")
+        self.assertEqual(winners, 1, msg=f"outputs={outputs}")
+        self.assertTrue(tick_gate.check_lock(self.lock_file))
+
 
 if __name__ == "__main__":
     unittest.main()
