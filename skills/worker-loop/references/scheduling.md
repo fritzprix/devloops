@@ -12,26 +12,24 @@
 ## Schedulers
 
 ### 1. Shell Loop Adapter (Default)
-Run a background shell process that periodically triggers the tick:
+Run a background shell process that periodically triggers the tick via the `devloops tick` wrapper:
 
 - **Bash (Linux/macOS)**:
   ```bash
-  while true; do sleep 600; echo 'AGENT_LOOP_TICK_worker_loop {"prompt":"/worker-loop"}'; done
+  while true; do devloops tick worker --agent-cmd 'agent "/worker-loop"'; sleep 600; done
   ```
 - **PowerShell (Windows)**:
   ```powershell
-  while ($true) { Start-Sleep -Seconds 600; Write-Output 'AGENT_LOOP_TICK_worker_loop {"prompt":"/worker-loop"}' }
+  while ($true) { devloops tick worker --agent-cmd 'agent "/worker-loop"'; Start-Sleep -Seconds 600 }
   ```
 
-Record the process PID in state under `scheduler: { "kind": "process", "id": pid }`. Run the first tick immediately.
-On notification, run one tick. If a tick is in progress (`python3 skills/worker-loop/scripts/tick_gate.py --lock` returns `BUSY`), ignore the notification.
-To stop: terminate the recorded PID.
+The wrapper owns the lock and releases it safely on every exit path.
 
 ### 2. Cron Schedule
-Alternatively, schedule via cron for headless environments:
+Schedule via cron using `devloops tick` (which performs the gate check, holds the lock, runs the command, and unlocks on exit):
 ```cron
 # Trigger worker-loop every 10 minutes
-*/10 * * * * cd /path/to/project && python3 skills/worker-loop/scripts/tick_gate.py --lock && /path/to/agent-runner "/worker-loop"
+*/10 * * * * cd /path/to/project && devloops tick worker --agent-cmd '/path/to/agent-runner "/worker-loop"'
 ```
 
 ### 3. Harness-Specific Adapter

@@ -163,5 +163,31 @@ class CliInstallTest(unittest.TestCase):
             )
 
 
+
+    def test_concurrent_tick_runs(self):
+        state_file = self.tmp_dir / "worker-loop" / "state.json"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text('{"current": 101}', encoding="utf-8")
+
+        import concurrent.futures
+        import time
+
+        sleep_cmd = f'"{sys.executable}" -c "import time; time.sleep(0.4)"'
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            f1 = executor.submit(cli.main, ["tick", "worker", "--agent-cmd", sleep_cmd, "--state-file", str(state_file)])
+            time.sleep(0.1)
+            f2 = executor.submit(cli.main, ["tick", "worker", "--state-file", str(state_file)])
+            r1 = f1.result()
+            r2 = f2.result()
+
+        # One ran (code 0), one got BUSY (code 2)
+        self.assertEqual(r1, 0)
+        self.assertEqual(r2, 2)
+
+        # After run ends, next run gets the lock
+        r3 = cli.main(["tick", "worker", "--state-file", str(state_file)])
+        self.assertEqual(r3, 0)
+
 if __name__ == "__main__":
     unittest.main()
