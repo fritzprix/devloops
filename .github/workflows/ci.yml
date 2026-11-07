@@ -1,0 +1,56 @@
+name: CI
+
+# Runs on every PR head and on pushes to main. Uses no secrets and only reads the
+# repository, so fork PRs are safe. Publishing is not part of CI (see RELEASE.md).
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        # requires-python = ">=3.8": the floor and the newest release.
+        python: ["3.8", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up uv and Python ${{ matrix.python }}
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+          activate-environment: true
+
+      - name: Show versions
+        run: |
+          python --version
+          git --version
+          uv --version
+
+      - name: Install test runner
+        run: uv pip install pytest
+
+      - name: Unit and multi-process tests
+        run: python -m pytest -q
+
+      - name: Build wheel and sdist
+        run: uv build --out-dir dist
+
+      - name: Relocated-install smoke test of the built wheel
+        run: python scripts/ci_smoke.py --dist dist

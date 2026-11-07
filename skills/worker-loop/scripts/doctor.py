@@ -13,6 +13,7 @@ for _candidate in (_script_dir.parents[2], _script_dir.parents[3], _script_dir.p
 
 from devloops_lib.doctor import *
 from devloops_lib.doctor import main
+from devloops_lib.config import run_main
 
 if __name__ == "__main__":
-    sys.exit(main())
+    run_main(main)

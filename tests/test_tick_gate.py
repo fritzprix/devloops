@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for tick_gate logic."""
 import errno
+import io
 import json
 import os
 import subprocess
@@ -175,13 +176,16 @@ class TickGateTest(unittest.TestCase):
         self.assertEqual(saved.get("lastFingerprint"), "new_fp_1234567890")
         self.assertNotIn("tickStartFingerprint", saved)
 
+    def _held_token(self):
+        return tick_gate.read_lock_payload(self.lock_file)["token"]
+
     def test_update_and_unlock_combined(self):
-        tick_gate.acquire_lock(self.lock_file)
+        token = tick_gate.acquire_lock_token(self.lock_file)
         self.assertTrue(tick_gate.check_lock(self.lock_file))
         state = {"current": None, "lastFingerprint": "old_fp", "tickStartFingerprint": "new_fp_combined"}
         tick_gate.save_state(self.state_file, state)
 
-        with patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--update", "--unlock"]), \
+        with patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--update", "--unlock", "--token", token]), \
              self.assertRaises(SystemExit) as cm:
             tick_gate.main()
 
@@ -205,12 +209,12 @@ class TickGateTest(unittest.TestCase):
         self.assertNotIn("tickStartFingerprint", saved)
 
     def test_unlock_alone_clears_tick_start_fingerprint_without_writing_last_fingerprint(self):
-        tick_gate.acquire_lock(self.lock_file)
+        token = tick_gate.acquire_lock_token(self.lock_file)
         self.assertTrue(tick_gate.check_lock(self.lock_file))
         state = {"current": None, "lastFingerprint": "old_fp", "tickStartFingerprint": "started_fp"}
         tick_gate.save_state(self.state_file, state)
 
-        with patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--unlock"]), \
+        with patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--unlock", "--token", token]), \
              self.assertRaises(SystemExit) as cm:
             tick_gate.main()
 
@@ -227,11 +231,11 @@ class TickGateTest(unittest.TestCase):
         return cm.exception.code
 
     def test_gate_under_wrapper_keeps_the_wrapper_lock(self):
-        tick_gate.acquire_lock(self.lock_file, pid=os.getpid())
+        token = tick_gate.acquire_lock_token(self.lock_file, pid=os.getpid())
         before = self.lock_file.read_text(encoding="utf-8")
         tick_gate.save_state(self.state_file, {"current": None, "lastFingerprint": "old_fp"})
 
-        with patch.dict(os.environ, {tick_gate.WRAPPER_PID_ENV: str(os.getpid())}), \
+        with patch.dict(os.environ, {tick_gate.TOKEN_ENV: token}), \
              patch.object(tick_gate, "preflight_decision", return_value=("new_fp", [])):
             self.assertEqual(self._run_gate("--lock"), tick_gate.EXIT_RUN)
             self.assertEqual(tick_gate.load_state(self.state_file)["tickStartFingerprint"], "new_fp")
@@ -241,31 +245,43 @@ class TickGateTest(unittest.TestCase):
         self.assertEqual(tick_gate.load_state(self.state_file)["lastFingerprint"], "new_fp")
         self.assertEqual(self.lock_file.read_text(encoding="utf-8"), before)
 
-    def test_wrapper_variable_must_match_the_pid_in_the_lock(self):
-        env = {tick_gate.WRAPPER_PID_ENV: str(os.getpid() + 1)}
-        # Lock owned by another live tick: a mismatched variable does not bypass it.
+    def test_wrapper_token_must_match_the_token_in_the_lock(self):
+        # A duplicate tick, or a variable left over from an earlier wrapper, carries
+        # another token: it is a normal contender, not a call inside the wrapper.
+        env = {tick_gate.TOKEN_ENV: "earlier-wrapper", tick_gate.WRAPPER_PID_ENV: str(os.getpid())}
         tick_gate.acquire_lock(self.lock_file, pid=os.getpid())
         with patch.dict(os.environ, env):
             self.assertFalse(tick_gate.held_by_wrapper(self.lock_file))
             self.assertEqual(self._run_gate("--lock"), tick_gate.EXIT_BUSY)
 
         tick_gate.release_lock(self.lock_file)
-        for payload in ("", "null", '{"time": 1}', '{"pid": "x"}'):
+        for payload in ("", "null", '{"time": 1}', '{"pid": "x"}', '{"token": "other"}'):
             with self.subTest(payload=payload), patch.dict(os.environ, env):
                 self.lock_file.write_text(payload, encoding="utf-8")
                 self.assertFalse(tick_gate.held_by_wrapper(self.lock_file))
 
-        # The real --unlock releases a lock that the wrapper does not hold.
-        with patch.dict(os.environ, env):
-            self.assertEqual(self._run_gate("--unlock"), tick_gate.EXIT_RUN)
+    def test_unlock_needs_the_owner_token(self):
+        token = tick_gate.acquire_lock_token(self.lock_file)
+        with patch.dict(os.environ, {}, clear=False), patch("sys.stderr", new_callable=io.StringIO):
+            os.environ.pop(tick_gate.TOKEN_ENV, None)
+            self.assertEqual(self._run_gate("--unlock"), tick_gate.EXIT_ERROR)
+        self.assertTrue(self.lock_file.exists())
+        tick_gate.save_state(self.state_file, {"lastFingerprint": "old", "tickStartFingerprint": "new"})
+        with patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(self._run_gate("--update", "--unlock", "--token", "not-mine"), tick_gate.EXIT_LOST)
+        self.assertIn("LOST", out.getvalue())
+        self.assertEqual(self._held_token(), token)
+        self.assertEqual(tick_gate.load_state(self.state_file)["lastFingerprint"], "old")
+        with patch("sys.stdout", new_callable=io.StringIO):
+            self.assertEqual(self._run_gate("--force-unlock"), tick_gate.EXIT_RUN)
         self.assertFalse(self.lock_file.exists())
 
     def test_update_and_unlock_gh_error_releases_lock(self):
-        tick_gate.acquire_lock(self.lock_file)
+        token = tick_gate.acquire_lock_token(self.lock_file)
         self.assertTrue(tick_gate.check_lock(self.lock_file))
 
         with patch.object(tick_gate, "load_state", side_effect=tick_gate.GhError("simulated gh failure")), \
-             patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--update", "--unlock"]), \
+             patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--update", "--unlock", "--token", token]), \
              self.assertRaises(SystemExit) as cm:
             tick_gate.main()
 
@@ -288,7 +304,7 @@ class TickGateTest(unittest.TestCase):
         self.assertEqual(saved.get("tickStartFingerprint"), "fp_start")
 
         # Tick 1 ends idle -> --update --unlock (persists tickStartFingerprint as lastFingerprint)
-        with patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--update", "--unlock"]), \
+        with patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--update", "--unlock", "--token", self._held_token()]), \
              self.assertRaises(SystemExit) as cm:
             tick_gate.main()
         self.assertEqual(cm.exception.code, tick_gate.EXIT_RUN)
@@ -316,7 +332,7 @@ class TickGateTest(unittest.TestCase):
         self.assertEqual(cm.exception.code, tick_gate.EXIT_RUN)
 
         # Tick 1 ends idle: --update --unlock
-        with patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--update", "--unlock"]), \
+        with patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--update", "--unlock", "--token", self._held_token()]), \
              self.assertRaises(SystemExit) as cm:
             tick_gate.main()
         self.assertEqual(cm.exception.code, tick_gate.EXIT_RUN)
@@ -343,7 +359,7 @@ class TickGateTest(unittest.TestCase):
         self.assertTrue(tick_gate.check_lock(self.lock_file))
 
         # Tick 1 completes work: --unlock only (no --update)
-        with patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--unlock"]), \
+        with patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--unlock", "--token", self._held_token()]), \
              self.assertRaises(SystemExit) as cm:
             tick_gate.main()
         self.assertEqual(cm.exception.code, tick_gate.EXIT_RUN)

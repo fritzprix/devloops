@@ -212,6 +212,24 @@ class CliInstallTest(unittest.TestCase):
 
         self.assertNotEqual(acquire_flock.call_args[0][0], state_file.parent / "tick.lock")
 
+    def test_first_tick_of_a_new_slot_runs(self):
+        # The state directory does not exist yet: the flock file must be created, not read as BUSY.
+        state_file = self.tmp_dir / "producer-loop" / "agents" / "new" / "state.json"
+        self.assertFalse(state_file.parent.exists())
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(cli.main(["tick", "producer", "--state-file", str(state_file)]), 0)
+        self.assertIn("UNLOCKED", out.getvalue())
+
+    def test_unopenable_flock_file_is_an_error_not_busy(self):
+        state_file = self.tmp_dir / "worker-loop" / "state.json"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text('{"current": 101}', encoding="utf-8")
+        with patch.object(cli, "acquire_flock", side_effect=PermissionError("denied")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(cli.main(["tick", "worker", "--state-file", str(state_file)]), 3)
+        self.assertIn("cannot open the flock file", err.getvalue())
+        self.assertFalse((state_file.parent / "tick.lock").exists())
+
     def test_agent_under_wrapper_can_run_its_gate_commands(self):
         # The agent follows SKILL.md: gate --lock at the start, --unlock at the end.
         # It must not get BUSY from the wrapper's own lock or release that lock.
@@ -237,7 +255,11 @@ class CliInstallTest(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         locked, unlocked = json.loads(results_file.read_text())
-        self.assertEqual(locked, [0, "RUN (current work in progress)", True])
+        # Inside the wrapper, --lock reports the wrapper's own token instead of BUSY.
+        self.assertEqual(locked[0], 0)
+        self.assertEqual(locked[1].splitlines()[0], "RUN (current work in progress)")
+        self.assertRegex(locked[1].splitlines()[1], r"^TOKEN [0-9a-f]{32}$")
+        self.assertTrue(locked[2])
         self.assertEqual(unlocked, [0, "LOCK KEPT (held by devloops tick)", True])
         self.assertFalse(lock_file.exists())
 

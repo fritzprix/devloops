@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 import unittest.mock
@@ -234,6 +235,50 @@ producer:
         self.assertEqual(merged["producer"]["task_periods"]["security"], "12h")
         self.assertEqual(merged["producer"]["task_max_new_issues"]["cleanup"], 1)
         self.assertEqual(merged["producer"]["task_max_new_issues"]["security"], 5)
+
+
+class ConfigErrorTest(unittest.TestCase):
+    def test_unreadable_config_raises_instead_of_using_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "devloops.config.json").write_text("{", encoding="utf-8")
+            with self.assertRaises(config.ConfigError):
+                config.load_config(start_dir=tmp)
+            (Path(tmp) / "devloops.config.json").write_text("[1]", encoding="utf-8")
+            with self.assertRaises(config.ConfigError):
+                config.load_config(start_dir=tmp)
+
+    def test_worker_limits_are_read_and_validated(self):
+        self.assertEqual(config.open_pr_limit({}), 5)
+        self.assertEqual(config.issue_claim_ttl_seconds({}), 7200)
+        parsed = config.parse_yaml_subset("worker:\n  open_pr_limit: 2\n  issue_claim_ttl_minutes: 1.5\n")
+        self.assertEqual((config.open_pr_limit(parsed), config.issue_claim_ttl_seconds(parsed)), (2, 90))
+        for bad in (0, -1, "5", True):
+            with self.subTest(value=bad), self.assertRaises(config.ConfigError):
+                config.open_pr_limit({"worker": {"open_pr_limit": bad}})
+
+    def test_entry_points_exit_3_not_1_on_a_broken_config(self):
+        # Exit 1 means NOOP to the gates, so a broken config must not look like "nothing to do".
+        root = Path(__file__).resolve().parent.parent
+        scripts = [
+            [root / "skills" / "worker-loop" / "scripts" / "tick_gate.py", "--lock"],
+            [root / "skills" / "worker-loop" / "scripts" / "claim.py", "pr", "1", "--token", "t"],
+            [root / "skills" / "worker-loop" / "scripts" / "guard.py", "check", "--token", "t"],
+            [root / "skills" / "worker-loop" / "scripts" / "plan_tick.py"],
+            [root / "skills" / "producer-loop" / "scripts" / "producer_gate.py", "--next", "--lock"],
+            [root / "skills" / "gatekeeper-loop" / "scripts" / "tick_lock.py", "--lock"],
+            ["-m", "devloops_lib.cli", "tick", "worker", "--agent-cmd", "exit 0"],
+        ]
+        env = {k: v for k, v in os.environ.items() if k not in ("LOOP_STATE_DIR", "DEVLOOPS_TICK_TOKEN")}
+        env["PYTHONPATH"] = str(root)
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".git").mkdir()
+            (Path(tmp) / "devloops.config.json").write_text("{", encoding="utf-8")
+            for argv in scripts:
+                with self.subTest(script=str(argv[0]) if argv[0] != "-m" else "devloops tick"):
+                    result = subprocess.run([sys.executable, *map(str, argv)], cwd=tmp, env=env,
+                                            capture_output=True, text=True, timeout=60)
+                    self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+                    self.assertIn("devloops config error", result.stderr)
 
 
 if __name__ == "__main__":
