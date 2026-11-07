@@ -7,7 +7,7 @@ Computes a fingerprint from a single GraphQL request covering:
   - Candidate issues: updatedAt timestamps.
 
 It also detects an actionable approved backlog: open issues carrying the approved
-label, with no assignees and no open PR closing them.
+label, not assigned to another user, and with no open PR closing them.
 
 If state.json has no 'current', the fingerprint matches 'lastFingerprint', and there
 is no actionable approved backlog, outputs 'NOOP' and exits with code 1 so external
@@ -51,9 +51,12 @@ EXIT_ERROR = 3
 # Lock TTL is 30 minutes; ticks with lengthy builds can exceed 15 minutes.
 LOCK_TTL_SECONDS = 1800
 
-# 30 candidates covers active queue without query bloat; matches worker-loop fallback limit.
-ISSUE_LIMIT = 30
-PR_LIMIT = 30
+# Matches issue_candidates.py default (--limit 100): a starved approved issue is by
+# definition not recently updated, so a small window would drop it from backlog detection.
+ISSUE_LIMIT = 100
+# PR search covers all open PRs (closing-PR detection), so @me PRs must not be pushed
+# out of the window by other authors' PRs.
+PR_LIMIT = 100
 
 GRAPHQL_GATE_QUERY = """
 query($prQuery: String!, $prLimit: Int!, $owner: String!, $name: String!, $issueLimit: Int!) {
@@ -199,6 +202,7 @@ def release_lock(lock_file: Path) -> None:
 
 
 CLOSING_PATTERN = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b", re.I)
+# Same heuristic as issue_candidates.py: only 3+ digit branch suffixes count as closing refs.
 BRANCH_ISSUE_PATTERN = re.compile(r"-(\d{3,})\b")
 
 
@@ -225,7 +229,7 @@ def fetch_gate_data() -> dict:
     }
 
 
-def compute_fingerprint(gate_data: dict | None = None) -> str:
+def compute_fingerprint(gate_data: dict | None = None, me: str | None = None) -> str:
     """Compute sha256 hash from @me open PRs and candidate issue updatedAt timestamps.
 
     Only PR state fields that require worker action are hashed; labels, assignees,
@@ -233,7 +237,8 @@ def compute_fingerprint(gate_data: dict | None = None) -> str:
     """
     if gate_data is None:
         gate_data = fetch_gate_data()
-    me = gh("api", "user", "--jq", ".login").strip()
+    if me is None:
+        me = gh("api", "user", "--jq", ".login").strip()
 
     prs_fingerprint = []
     for pr in gate_data["prs"]:
@@ -268,11 +273,14 @@ def compute_fingerprint(gate_data: dict | None = None) -> str:
     return hasher.hexdigest()
 
 
-def find_actionable_backlog(gate_data: dict, approved_label: str = "approved") -> list[int]:
-    """Return open, unclaimed issues with the approved label and no open closing PR.
+def find_actionable_backlog(gate_data: dict, me: str, approved_label: str = "approved") -> list[int]:
+    """Return open, actionable issues with the approved label and no open closing PR.
 
-    An issue is actionable when it carries approved_label, has no assignees, and no
-    open PR closes it (via closing keywords in title/body or a `-<number>` branch suffix).
+    An issue is actionable when it carries approved_label, is not assigned to another
+    user (issues assigned to @me are still actionable: the worker claims by assigning
+    @me, an in-progress claim is covered by state.current, and an open claim is covered
+    by its closing PR), and no open PR closes it (via closing keywords in title/body or
+    a `-<N>` branch suffix, same heuristic as issue_candidates.py).
     """
     closing_prs: set[int] = set()
     for pr in gate_data["prs"]:
@@ -290,8 +298,8 @@ def find_actionable_backlog(gate_data: dict, approved_label: str = "approved") -
         labels = {l.get("name") for l in ((issue.get("labels") or {}).get("nodes") or []) if l}
         if approved_label not in labels:
             continue
-        assignees = [a.get("login") for a in ((issue.get("assignees") or {}).get("nodes") or []) if a]
-        if assignees:
+        assignees = {a.get("login") for a in ((issue.get("assignees") or {}).get("nodes") or []) if a}
+        if assignees - {me}:
             continue
         if issue["number"] in closing_prs:
             continue
@@ -303,12 +311,16 @@ def preflight_decision(config: dict | None = None) -> tuple[str, list[int]]:
     """Return (fingerprint, actionable approved backlog) from one GraphQL fetch.
 
     The backlog makes the gate RUN even when the fingerprint is unchanged, so an
-    approved, unclaimed issue with no closing PR is never starved by a quiet repo.
+    approved issue with no closing PR is never starved by a quiet repo.
     """
     gate_data = fetch_gate_data()
+    me = gh("api", "user", "--jq", ".login").strip()
     cfg = config or load_config()
     approved_label = cfg.get("labels", {}).get("approved", "approved")
-    return compute_fingerprint(gate_data), find_actionable_backlog(gate_data, approved_label)
+    return (
+        compute_fingerprint(gate_data, me),
+        find_actionable_backlog(gate_data, me, approved_label),
+    )
 
 
 def main(argv: list[str] | None = None) -> None:

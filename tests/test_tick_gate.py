@@ -154,11 +154,12 @@ class TickGateTest(unittest.TestCase):
                 issue(100, ["approved"]),                      # actionable
                 issue(101, ["approved"]),                      # closed by PR title/body -> skip
                 issue(102, ["approved"]),                      # closed by branch suffix -> skip
-                issue(103, ["approved"], ["someone"]),         # claimed -> skip
+                issue(103, ["approved"], ["someone"]),         # assigned to other -> skip
                 issue(104, ["enhancement"]),                   # not approved -> skip
+                issue(105, ["approved"], ["me"]),              # assigned to @me only -> actionable
             ],
         }
-        self.assertEqual(tick_gate.find_actionable_backlog(gate_data), [100])
+        self.assertEqual(tick_gate.find_actionable_backlog(gate_data, me="me"), [100, 105])
 
     def test_update_takes_precedence_over_current(self):
         state = {"current": "some-feature-branch", "lastFingerprint": "old", "tickStartFingerprint": "new_fp_1234567890"}
