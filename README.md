@@ -85,6 +85,15 @@ The producer has its own gate, `producer_gate.py`. It picks the most overdue tas
 
 ## Install
 
+The recommended way to install devloops into a project is via `uvx`:
+
+```sh
+uvx devloops install                      # install into current project
+uvx devloops install --target /path/to/project
+```
+
+Alternatively, from a local checkout:
+
 ```sh
 git clone https://github.com/fritzprix/devloops.git
 devloops/scripts/install.sh /path/to/project          # copy
@@ -120,7 +129,7 @@ Edit `<project>/devloops.config.yaml`:
 | `producer.task_skills` | Optional project skill or command for each task |
 | `producer.task_periods` | Period for each task (e.g. `cleanup: 7d`) |
 | `producer.task_max_new_issues` | Limit of new issues for each task |
-| `scheduler` | `shell`, `cron`, or a harness-specific adapter |
+| `scheduler` | Documentation only: `shell`, `cron`, or a harness-specific adapter |
 
 ## Run
 
