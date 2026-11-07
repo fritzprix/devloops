@@ -108,7 +108,17 @@ def load_state(path: Path) -> dict:
 
 def save_state(path: Path, state: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path = path.with_suffix(f".tmp.{os.getpid()}.{time.time_ns()}")
+    try:
+        temp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(path)
+    except BaseException:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def gh(*args: str) -> str:
@@ -134,23 +144,47 @@ def check_lock(lock_file: Path, ttl_seconds: int = LOCK_TTL_SECONDS) -> bool:
             return False
         # If PID was explicitly recorded, verify if process is still alive
         pid = data.get("pid")
-        if pid and sys.platform != "win32":
-            try:
-                os.kill(pid, 0)
-            except OSError:
-                # Process is dead, lock is stale
-                return False
+        if pid:
+            if sys.platform != "win32":
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    # Process is dead, lock is stale
+                    return False
+            else:
+                import ctypes
+                PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                h_proc = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+                if not h_proc:
+                    return False
+                ctypes.windll.kernel32.CloseHandle(h_proc)
         return True
     except Exception:
         return False
 
 
-def acquire_lock(lock_file: Path, pid: int | None = None) -> None:
+def acquire_lock(lock_file: Path, pid: int | None = None) -> bool:
     lock_file.parent.mkdir(parents=True, exist_ok=True)
     payload = {"time": int(time.time())}
     if pid is not None:
         payload["pid"] = pid
-    lock_file.write_text(json.dumps(payload), encoding="utf-8")
+    data = json.dumps(payload).encode("utf-8")
+    try:
+        fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        return True
+    except FileExistsError:
+        if not check_lock(lock_file):
+            release_lock(lock_file)
+            try:
+                fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                with os.fdopen(fd, "wb") as f:
+                    f.write(data)
+                return True
+            except FileExistsError:
+                return False
+        return False
 
 
 def release_lock(lock_file: Path) -> None:
@@ -257,7 +291,9 @@ def main(argv: list[str] | None = None) -> None:
         # If currently implementing an issue or branch, always run
         if state.get("current"):
             if args.lock:
-                acquire_lock(lock_path, pid=args.pid)
+                if not acquire_lock(lock_path, pid=args.pid):
+                    print("BUSY (tick in progress)")
+                    sys.exit(EXIT_BUSY)
             print("RUN (current work in progress)")
             sys.exit(EXIT_RUN)
 
@@ -271,7 +307,9 @@ def main(argv: list[str] | None = None) -> None:
         # State changed: acquire lock if requested, but DO NOT save lastFingerprint yet.
         # lastFingerprint must be saved only after a successful tick via --update.
         if args.lock:
-            acquire_lock(lock_path, pid=args.pid)
+            if not acquire_lock(lock_path, pid=args.pid):
+                print("BUSY (tick in progress)")
+                sys.exit(EXIT_BUSY)
             state["tickStartFingerprint"] = fp
             save_state(state_path, state)
         print(f"RUN (changes detected: {fp[:12]})")

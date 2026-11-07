@@ -118,6 +118,7 @@ class ProducerGateTest(unittest.TestCase):
             self.assertIn("BUSY", mock_out.getvalue())
 
         # 3. Stale lock by dead PID
+        release_lock(self.lock_file)
         dead_pid = 9999999
         acquire_lock(self.lock_file, pid=dead_pid)
         self.assertFalse(check_lock(self.lock_file))
