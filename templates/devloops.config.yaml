@@ -42,4 +42,7 @@ producer:
 gatekeeper:
   max_issue_validations_per_tick: 1   # producer issues to validate per tick
 
+worker:
+  max_items_per_tick: 1       # PRs and issues to finish per tick; long ticks can pass the 30-minute lock TTL
+
 # scheduler: shell            # documentation only: shell | cron | harness-specific adapter

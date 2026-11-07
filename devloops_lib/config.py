@@ -61,6 +61,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "gatekeeper": {
         "max_issue_validations_per_tick": 1,
     },
+    "worker": {
+        "max_items_per_tick": 1,
+    },
     "scheduler": "shell",
 }
 

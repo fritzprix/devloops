@@ -222,23 +222,26 @@ def summarize(number: int, owner: str, name: str, me: str) -> dict:
     }
 
 
+def summarize_prs(number: int | None = None) -> list[dict]:
+    """Summarize one PR, or all non-draft open PRs by @me."""
+    repo = json.loads(gh("repo", "view", "--json", "owner,name"))
+    owner, name = repo["owner"]["login"], repo["name"]
+    me = gh("api", "user", "--jq", ".login").strip()
+    if number:
+        numbers = [number]
+    else:
+        listed = json.loads(gh("pr", "list", "--author", "@me", "--state", "open", "--json", "number,isDraft"))
+        numbers = [p["number"] for p in listed if not p.get("isDraft")]
+    return [summarize(n, owner, name, me) for n in numbers]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pr", type=int, help="Only this PR number")
     args = parser.parse_args()
 
-    repo = json.loads(gh("repo", "view", "--json", "owner,name"))
-    owner, name = repo["owner"]["login"], repo["name"]
-    me = gh("api", "user", "--jq", ".login").strip()
-
     try:
-        if args.pr:
-            numbers = [args.pr]
-        else:
-            listed = json.loads(gh("pr", "list", "--author", "@me", "--state", "open", "--json", "number,isDraft"))
-            numbers = [p["number"] for p in listed if not p.get("isDraft")]
-
-        print(json.dumps([summarize(n, owner, name, me) for n in numbers], ensure_ascii=False, indent=2))
+        print(json.dumps(summarize_prs(args.pr), ensure_ascii=False, indent=2))
     except GhError as e:
         sys.exit(f"gh error: {e}")
 
