@@ -8,6 +8,8 @@ description: 'Autonomous maintainer loop. Each tick first services open PRs (mer
 Autonomous loop that services open PRs first, and implements candidate issues when PRs are clean or waiting.
 Talks to the gatekeeper reviewer only through PR comments. See [references/scheduling.md](references/scheduling.md) for recurring arming instructions across runtimes.
 
+**Path convention**: `$SKILL_DIR` denotes the directory containing this SKILL.md (skill loaders report it on load). All script commands below use `"$SKILL_DIR/scripts/..."`, so they resolve from any current directory — in a repo checkout or in the installed `.agents/skills/` layout.
+
 ## Commands
 
 | Command | Behavior |
@@ -44,7 +46,7 @@ See [references/worktree-setup.md](references/worktree-setup.md) for setup comma
 
 ### 0. Preflight
 
-1. When started via `devloops tick worker`, the wrapper holds the tick lock. If run standalone: check gate and lock: `python3 skills/worker-loop/scripts/tick_gate.py --lock`.
+1. When started via `devloops tick worker`, the wrapper holds the tick lock. If run standalone: check gate and lock: `python3 "$SKILL_DIR/scripts/tick_gate.py" --lock`.
    - If output is `BUSY`: another tick is currently in progress. Stop immediately.
    - If output is `NOOP`: no PR or issue state changed. Output `Idle: no changes.` and stop.
 2. `git -C "$MAIN" fetch origin --prune`.
@@ -54,8 +56,8 @@ See [references/worktree-setup.md](references/worktree-setup.md) for setup comma
 ### 1. Service PRs (priority)
 
 ```bash
-python3 skills/worker-loop/scripts/pr_status.py          # all open PRs by @me
-python3 skills/worker-loop/scripts/pr_status.py --pr N    # one PR
+python3 "$SKILL_DIR/scripts/pr_status.py"          # all open PRs by @me
+python3 "$SKILL_DIR/scripts/pr_status.py" --pr N    # one PR
 ```
 
 *(Fallback if `python3` is unavailable or broken in the runtime)*:
@@ -85,7 +87,7 @@ Run only when Step 1 found no actionable PR.
 - **Open PR limit**: If 5 or more open PRs authored by `@me` exist (`>= 5`), or the candidate would stack on an already stacked branch (depth >= 2), do not start a new issue. Record `needsUser` ("Waiting for open PRs to be merged before starting new issues").
 
 ```bash
-python3 skills/worker-loop/scripts/issue_candidates.py
+python3 "$SKILL_DIR/scripts/issue_candidates.py"
 ```
 
 *(Fallback if `python3` is unavailable or broken in the runtime)*:
@@ -127,8 +129,8 @@ Report `needsUser` items once when newly created.
 **Lock release**:
 When started via `devloops tick worker`, the wrapper releases the lock automatically upon completion or error.
 When run standalone:
-- If idle or needsUser: `python3 skills/worker-loop/scripts/tick_gate.py --update --unlock`
-- If work completed or error: `python3 skills/worker-loop/scripts/tick_gate.py --unlock`
+- If idle or needsUser: `python3 "$SKILL_DIR/scripts/tick_gate.py" --update --unlock`
+- If work completed or error: `python3 "$SKILL_DIR/scripts/tick_gate.py" --unlock`
 - A tick that stopped with `BUSY` did not acquire the lock and must NOT run `--unlock` (it would delete another tick's lock). Unlock only a lock this tick acquired.
 - The lock is TTL-only (30 min); a tick longer than that can overlap the next tick, and this risk is accepted.
 

@@ -169,7 +169,7 @@ A cron example that starts the agent only when the gate says RUN (using the `dev
 */10 * * * * cd /path/to/project && devloops tick worker --agent-cmd '/path/to/agent-runner "/worker-loop"'
 ```
 
-See `skills/worker-loop/references/scheduling.md` for the shell-loop and harness adapters.
+See `.agents/skills/worker-loop/references/scheduling.md` (installed) or `skills/worker-loop/references/scheduling.md` (repo) for the shell-loop and harness adapters.
 
 ## Labels
 
