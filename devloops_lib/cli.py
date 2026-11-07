@@ -13,7 +13,7 @@ from pathlib import Path
 
 from devloops_lib.config import get_state_path, load_config
 from devloops_lib.tick_gate import (
-    acquire_lock,
+    acquire_lock_token,
     check_lock,
     load_state,
     preflight_decision,
@@ -168,26 +168,14 @@ def release_flock(fd: int | None) -> None:
             pass
 
 
-def acquire_wrapper_lock(lock_file: Path, pid: int) -> bool:
-    """Acquire lock atomically with O_CREAT|O_EXCL and record wrapper PID."""
-    lock_file.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps({"time": int(time.time()), "pid": pid}).encode("utf-8")
-    try:
-        fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        with os.fdopen(fd, "wb") as f:
-            f.write(payload)
-        return True
-    except FileExistsError:
-        if not check_lock(lock_file):
-            release_lock(lock_file)
-            try:
-                fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                with os.fdopen(fd, "wb") as f:
-                    f.write(payload)
-                return True
-            except FileExistsError:
-                return False
-        return False
+def acquire_wrapper_lock(lock_file: Path, pid: int) -> str | None:
+    """Acquire the wrapper lock atomically; return the ownership token.
+
+    Delegates to tick_gate.acquire_lock_token so publication is atomic and
+    stale reclamation is ownership-safe (issue #22). The returned token makes
+    the matching release ownership-safe across stale replacement.
+    """
+    return acquire_lock_token(lock_file, pid=pid)
 
 
 def tick_command(
@@ -223,14 +211,17 @@ def tick_command(
                 # If network fails or repo cannot be reached, do not exit NOOP
                 sys.stderr.write(f"Preflight error: {e}\n")
 
-    # Acquire lock (with flock on POSIX and atomic O_EXCL + PID on Windows/portable)
-    flock_fd = acquire_flock(lock_path)
+    # Hold flock on POSIX, then publish the portable lock. The flock needs its own
+    # file: opening tick.lock would create the empty file that publishing must not
+    # find, and a fresh empty lock counts as a live owner.
+    flock_fd = acquire_flock(lock_path.with_name(f"{lock_path.name}.flock"))
     if sys.platform != "win32" and flock_fd is None:
         print("BUSY (tick in progress)")
         return 2
 
-    # Acquire atomic lock
-    if not acquire_wrapper_lock(lock_path, pid=os.getpid()):
+    # Acquire atomic lock (the token makes the release ownership-safe)
+    lock_token = acquire_wrapper_lock(lock_path, pid=os.getpid())
+    if lock_token is None:
         release_flock(flock_fd)
         print("BUSY (tick in progress)")
         return 2
@@ -244,7 +235,7 @@ def tick_command(
             return res.returncode
         return 0
     finally:
-        release_lock(lock_path)
+        release_lock(lock_path, token=lock_token)
         release_flock(flock_fd)
         print("UNLOCKED")
 
