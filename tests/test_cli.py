@@ -20,7 +20,7 @@ class CliInstallTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        self.tmp_dir = Path(self._tmp.name)
+        self.tmp_dir = Path(self._tmp.name).resolve()
 
     def test_install_fresh_project(self):
         target = self.tmp_dir / "my_project"
@@ -144,11 +144,11 @@ class CliInstallTest(unittest.TestCase):
         (fake_pkg / "doctor.py").write_text("# fake doctor", encoding="utf-8")
 
         # Test get_asset_paths resolution with fake pkg
-        with patch.object(cli, "__file__", str(fake_cli_py)):
+        with patch.object(cli, "__file__", str(fake_cli_py.resolve())):
             resolved_skills, resolved_lib, resolved_templates = cli.get_asset_paths()
-            self.assertEqual(resolved_skills, bundled_skills)
-            self.assertEqual(resolved_lib, fake_pkg)
-            self.assertEqual(resolved_templates, bundled_templates)
+            self.assertEqual(resolved_skills.resolve(), bundled_skills.resolve())
+            self.assertEqual(resolved_lib.resolve(), fake_pkg.resolve())
+            self.assertEqual(resolved_templates.resolve(), bundled_templates.resolve())
 
             target = self.tmp_dir / "target_from_bundled"
             ret = cli.install_command(target)
