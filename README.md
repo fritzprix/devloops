@@ -149,6 +149,7 @@ Edit `<project>/devloops.config.yaml`:
 | `producer.task_skills` | Optional project skill or command for each task |
 | `producer.task_periods` | Period for each task (e.g. `cleanup: 7d`) |
 | `producer.task_max_new_issues` | Limit of new issues for each task |
+| `gatekeeper.max_issue_validations_per_tick` | Producer issues the gatekeeper validates per tick (default 1) |
 | `scheduler` | Documentation only: `shell`, `cron`, or a harness-specific adapter |
 
 ## Run

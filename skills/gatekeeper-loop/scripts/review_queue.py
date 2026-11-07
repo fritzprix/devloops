@@ -376,12 +376,41 @@ def summarize(number: int, me: str, state: dict | None = None, config: dict | No
     }
 
 
-def main() -> None:
+def head_is_current(pr: dict, head: str, base: str | None) -> bool:
+    """Return True if a verdict for this head and base still applies to the open PR."""
+    if pr.get("state") != "OPEN" or pr.get("headRefOid") != head:
+        return False
+    return base is None or pr.get("baseRefName") == base
+
+
+def check_head(number: int, head: str, base: str | None) -> int:
+    """Exit 0 if the reviewed head is still current, 1 if it changed, 3 on error."""
+    try:
+        pr = json.loads(gh("pr", "view", str(number), "--json", "state,headRefOid,baseRefName"))
+    except GhError as e:
+        sys.stderr.write(f"gh error: {e}\n")
+        return 3
+    if head_is_current(pr, head, base):
+        print("VALID")
+        return 0
+    print(f"CHANGED: head {pr.get('headRefOid')}, base {pr.get('baseRefName')}, state {pr.get('state')}")
+    return 1
+
+
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pr", type=int, help="Only this PR number")
     parser.add_argument("--state-file", type=Path, default=None, help="Path to state.json")
     add_agent_id_argument(parser)
-    args = parser.parse_args()
+    parser.add_argument("--check-head", type=int, metavar="N", help="Re-check PR N before posting a verdict; needs --head")
+    parser.add_argument("--head", help="The full head SHA that was reviewed")
+    parser.add_argument("--base", help="The base branch that was reviewed")
+    args = parser.parse_args(argv)
+
+    if args.check_head is not None:
+        if not args.head:
+            parser.error("--check-head needs --head")
+        sys.exit(check_head(args.check_head, args.head, args.base))
 
     try:
         state = load_state(args.state_file)
