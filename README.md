@@ -151,10 +151,10 @@ Then tell your agent:
 `/gatekeeper-loop` and `/producer-loop` use the same forms. `/gatekeeper-loop 10m --pr N`
 reviews one PR. `/producer-loop <task>` runs one producer task.
 
-A cron example that starts the agent only when the gate says RUN:
+A cron example that starts the agent only when the gate says RUN (using the `devloops tick` wrapper):
 
 ```cron
-*/10 * * * * cd /path/to/project && python3 .agents/skills/worker-loop/scripts/tick_gate.py --lock && /path/to/agent-runner "/worker-loop"
+*/10 * * * * cd /path/to/project && devloops tick worker --agent-cmd '/path/to/agent-runner "/worker-loop"'
 ```
 
 See `skills/worker-loop/references/scheduling.md` for the shell-loop and harness adapters.

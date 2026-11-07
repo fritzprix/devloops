@@ -3,10 +3,23 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
+import subprocess
 import sys
+import time
 from pathlib import Path
+
+from devloops_lib.config import get_state_path, load_config
+from devloops_lib.tick_gate import (
+    acquire_lock,
+    check_lock,
+    compute_fingerprint,
+    load_state,
+    release_lock,
+    save_state,
+)
 
 
 def get_asset_paths() -> tuple[Path, Path, Path]:
@@ -129,6 +142,112 @@ def install_command(target_dir: Path) -> int:
     return 0
 
 
+
+def acquire_flock(lock_file: Path) -> int | None:
+    """Acquire flock on POSIX systems. Returns open fd or None if blocked/unsupported."""
+    if sys.platform == "win32":
+        return None
+    try:
+        import fcntl
+        fd = os.open(str(lock_file), os.O_RDWR | os.O_CREAT, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except (BlockingIOError, OSError):
+        return None
+
+
+def release_flock(fd: int | None) -> None:
+    """Release flock on POSIX systems."""
+    if fd is not None and sys.platform != "win32":
+        try:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def acquire_wrapper_lock(lock_file: Path, pid: int) -> bool:
+    """Acquire lock atomically with O_CREAT|O_EXCL and record wrapper PID."""
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps({"time": int(time.time()), "pid": pid}).encode("utf-8")
+    try:
+        fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "wb") as f:
+            f.write(payload)
+        return True
+    except FileExistsError:
+        if not check_lock(lock_file):
+            release_lock(lock_file)
+            try:
+                fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                with os.fdopen(fd, "wb") as f:
+                    f.write(payload)
+                return True
+            except FileExistsError:
+                return False
+        return False
+
+
+def tick_command(
+    loop: str,
+    agent_cmd: str | None = None,
+    state_file: Path | None = None,
+) -> int:
+    """Run tick wrapper: gate check, acquire lock, execute agent command, and unlock."""
+    norm_loop = loop.strip().lower()
+    if not norm_loop.endswith("-loop"):
+        norm_loop = f"{norm_loop}-loop"
+
+    state_path = state_file or get_state_path(norm_loop)
+    lock_path = state_path.parent / "tick.lock"
+
+    # Preflight check lock
+    if check_lock(lock_path):
+        print("BUSY (tick in progress)")
+        return 2
+
+    state = load_state(state_path)
+
+    # Preflight gate for worker-loop
+    if norm_loop == "worker-loop":
+        if not state.get("current"):
+            try:
+                fp = compute_fingerprint()
+                last_fp = state.get("lastFingerprint")
+                if last_fp and last_fp == fp:
+                    print("NOOP (no changes)")
+                    return 1
+            except Exception as e:
+                # If network fails or repo cannot be reached, do not exit NOOP
+                sys.stderr.write(f"Preflight error: {e}\n")
+
+    # Acquire lock (with flock on POSIX and atomic O_EXCL + PID on Windows/portable)
+    flock_fd = acquire_flock(lock_path)
+    if sys.platform != "win32" and flock_fd is None:
+        print("BUSY (tick in progress)")
+        return 2
+
+    # Acquire atomic lock
+    if not acquire_wrapper_lock(lock_path, pid=os.getpid()):
+        release_flock(flock_fd)
+        print("BUSY (tick in progress)")
+        return 2
+
+    print(f"LOCKED ({norm_loop})")
+    try:
+        cmd_to_run = agent_cmd or os.environ.get("DEVLOOPS_AGENT_CMD") or os.environ.get("AGENT_CMD")
+        if cmd_to_run:
+            print(f"Executing agent command: {cmd_to_run}")
+            res = subprocess.run(cmd_to_run, shell=True)
+            return res.returncode
+        return 0
+    finally:
+        release_lock(lock_path)
+        release_flock(flock_fd)
+        print("UNLOCKED")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="devloops",
@@ -144,10 +263,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Target project directory (default: current directory)"
     )
 
+    tick_parser = subparsers.add_parser("tick", help="Run preflight gate, lock, execute agent command, and unlock safely")
+    tick_parser.add_argument("loop", choices=["worker", "worker-loop", "producer", "producer-loop", "gatekeeper", "gatekeeper-loop"], help="Loop name to tick")
+    tick_parser.add_argument("--agent-cmd", type=str, default=None, help="Agent command to execute while holding lock")
+    tick_parser.add_argument("--state-file", type=Path, default=None, help="Path to state.json")
+
     args = parser.parse_args(argv)
 
     if args.subcommand == "install":
         return install_command(args.target)
+    if args.subcommand == "tick":
+        return tick_command(args.loop, agent_cmd=args.agent_cmd, state_file=args.state_file)
 
     parser.print_help()
     return 0
