@@ -253,6 +253,18 @@ def get_state_path(loop_name: str, config: dict[str, Any] | None = None, start_d
     return (_agent_dir(root / state_dir / loop_name) / "state.json").resolve()
 
 
+def get_claims_dir(config: dict[str, Any] | None = None, start_dir: Path | str | None = None) -> Path:
+    """Return <state_dir>/claims. All agents share it, so it has no agent scope."""
+    env = os.environ.get("LOOP_STATE_DIR")
+    if env:
+        p = Path(env)
+        return (p.parent if p.name == "state.json" else p) / "claims"
+
+    cfg = config or load_config(start_dir=start_dir)
+    root = find_project_root(start_dir=start_dir)
+    return (root / cfg.get("state_dir", ".devloops") / "claims").resolve()
+
+
 def get_worktree_path(main: Path | str, role: str = "worker") -> Path:
     """Return <main>/../<main name>.worktrees/<role>, or <role>-<id> with an agent id.
 

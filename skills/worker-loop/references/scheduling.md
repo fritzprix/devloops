@@ -44,7 +44,21 @@ Schedule via cron using `devloops tick` (which performs the gate check, holds th
 
 The flag sets `DEVLOOPS_AGENT_ID`, which the agent started by `devloops tick` inherits. All agents keep the same GitHub account. An id can contain letters, digits, `.`, `_`, and `-`, and it must start and end with a letter or digit.
 
-**Do not run two workers on one repo yet.** Agent IDs only separate local paths. Nothing stops two workers from taking the same PR or issue until the per-item leases in issue #5 (Part 2) exist.
+### Per-item claims
+Workers on one repo use claims so that they do not take the same item:
+
+| Item | Claim | Scope | How it ends |
+| --- | --- | --- | --- |
+| PR | `<state_dir>/claims/pr-N` | One machine, because the state directory is local | `claim.py release-pr N`, or after 30 minutes if the worker crashed |
+| Issue | Remote branch `wip/issue-N`, pushed without force | Any machine | Never automatically |
+
+**Two workers on different machines can still take the same PR**, because PR claims are local. Run multiple workers on one machine, or share the state directory.
+
+**Open rule: reclaiming a stale issue claim.** A `wip/issue-N` branch is never deleted automatically, because remote branch deletion is forbidden. If its worker is gone, the issue stays claimed for other agents until the owner deletes the branch. No automatic reclaim rule is approved yet.
+
+An `OVER LIMIT` result also keeps the claim, for the same reason. The issue asked to release it, and this needs the same owner decision.
+
+Scope limit: claims cover the worker only. The gatekeeper and producer have no claims, so run one of each.
 
 ### 3. Harness-Specific Adapter
 A harness-specific scheduler adapter (such as an IDE agent callback, persistent worker daemon, or webhook runner) can be integrated by setting `scheduler` in `devloops.config.yaml` and implementing the corresponding callback hook.

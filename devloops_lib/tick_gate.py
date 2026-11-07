@@ -357,16 +357,17 @@ def _reclaim_stale(lock_file: Path) -> bool:
         return _unlink_lock(lock_file)
 
 
-def acquire_lock_token(lock_file: Path, pid: int | None = None) -> str | None:
+def acquire_lock_token(lock_file: Path, pid: int | None = None, extra: dict | None = None) -> str | None:
     """Try to acquire the lock. Return the ownership token on success, None if busy.
 
     Publication is atomic and exclusive (_publish_lock), so a freshly created
     live lock can never be reclaimed as partially published. Stale locks are
-    removed only through the ownership-safe _reclaim_stale path.
+    removed only through the ownership-safe _reclaim_stale path. Fields in extra
+    are stored in the payload.
     """
     lock_file.parent.mkdir(parents=True, exist_ok=True)
     token = uuid.uuid4().hex
-    payload = {"time": int(time.time()), "token": token}
+    payload = {**(extra or {}), "time": int(time.time()), "token": token}
     if pid is not None:
         payload["pid"] = pid
     data = json.dumps(payload).encode("utf-8")
