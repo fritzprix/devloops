@@ -90,8 +90,8 @@ class TickGateTest(unittest.TestCase):
         with patch.object(tick_gate, "gh") as mock_gh:
             mock_gh.side_effect = [
                 json.dumps({"owner": {"login": "owner"}, "name": "repo"}),  # repo view
-                "me\n",  # api user
                 json.dumps(fake_graphql),  # graphql
+                "me\n",  # api user
             ]
             fp1 = tick_gate.compute_fingerprint()
             self.assertTrue(isinstance(fp1, str) and len(fp1) == 64)
@@ -102,11 +102,64 @@ class TickGateTest(unittest.TestCase):
 
             mock_gh.side_effect = [
                 json.dumps({"owner": {"login": "owner"}, "name": "repo"}),
-                "me\n",
                 json.dumps(fake_graphql_ci_failed),
+                "me\n",
             ]
             fp2 = tick_gate.compute_fingerprint()
             self.assertNotEqual(fp1, fp2)
+
+    def test_backlog_approved_unclaimed_stable_fingerprint_runs(self):
+        # AC1: approved, unclaimed issue + stable fingerprint -> RUN
+        state = {"lastFingerprint": "fp_stable"}
+        tick_gate.save_state(self.state_file, state)
+
+        with patch.object(tick_gate, "preflight_decision", return_value=("fp_stable", [42])), \
+             patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--lock"]), \
+             self.assertRaises(SystemExit) as cm:
+            tick_gate.main()
+        self.assertEqual(cm.exception.code, tick_gate.EXIT_RUN)
+        self.assertTrue(tick_gate.check_lock(self.lock_file))
+
+    def test_backlog_empty_stable_fingerprint_noop(self):
+        # AC2: same fingerprint + no actionable backlog -> NOOP
+        state = {"lastFingerprint": "fp_stable"}
+        tick_gate.save_state(self.state_file, state)
+
+        with patch.object(tick_gate, "preflight_decision", return_value=("fp_stable", [])), \
+             patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--lock"]), \
+             self.assertRaises(SystemExit) as cm:
+            tick_gate.main()
+        self.assertEqual(cm.exception.code, tick_gate.EXIT_NOOP)
+        self.assertFalse(tick_gate.check_lock(self.lock_file))
+
+    def test_find_actionable_backlog_rules(self):
+        def issue(number, labels, assignees=()):
+            return {
+                "number": number,
+                "updatedAt": "2026-01-01T00:00:00Z",
+                "labels": {"nodes": [{"name": l} for l in labels]},
+                "assignees": {"nodes": [{"login": a} for a in assignees]},
+            }
+
+        pr = {
+            "number": 100,
+            "title": "fix: close #101",
+            "bodyText": "Fixes #101 and mentions #103",
+            "headRefName": "feat/some-thing-102",
+            "author": {"login": "someone"},
+        }
+        gate_data = {
+            "prs": [pr],
+            "issues": [
+                issue(100, ["approved"]),                      # actionable
+                issue(101, ["approved"]),                      # closed by PR title/body -> skip
+                issue(102, ["approved"]),                      # closed by branch suffix -> skip
+                issue(103, ["approved"], ["someone"]),         # assigned to other -> skip
+                issue(104, ["enhancement"]),                   # not approved -> skip
+                issue(105, ["approved"], ["me"]),              # assigned to @me only -> actionable
+            ],
+        }
+        self.assertEqual(tick_gate.find_actionable_backlog(gate_data, me="me"), [100, 105])
 
     def test_update_takes_precedence_over_current(self):
         state = {"current": "some-feature-branch", "lastFingerprint": "old", "tickStartFingerprint": "new_fp_1234567890"}
@@ -182,7 +235,7 @@ class TickGateTest(unittest.TestCase):
         state = {"lastFingerprint": "fp_old"}
         tick_gate.save_state(self.state_file, state)
 
-        with patch.object(tick_gate, "compute_fingerprint", return_value="fp_start"), \
+        with patch.object(tick_gate, "preflight_decision", return_value=("fp_start", [])), \
              patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--lock"]), \
              self.assertRaises(SystemExit) as cm:
             tick_gate.main()
@@ -202,7 +255,7 @@ class TickGateTest(unittest.TestCase):
         self.assertNotIn("tickStartFingerprint", saved)
 
         # Tick 2 starts: changes were made during tick 1, so GitHub returns fp_during_tick
-        with patch.object(tick_gate, "compute_fingerprint", return_value="fp_during_tick"), \
+        with patch.object(tick_gate, "preflight_decision", return_value=("fp_during_tick", [])), \
              patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--lock"]), \
              self.assertRaises(SystemExit) as cm:
             tick_gate.main()
@@ -213,7 +266,7 @@ class TickGateTest(unittest.TestCase):
         state = {"lastFingerprint": "fp_old"}
         tick_gate.save_state(self.state_file, state)
 
-        with patch.object(tick_gate, "compute_fingerprint", return_value="fp_idle"), \
+        with patch.object(tick_gate, "preflight_decision", return_value=("fp_idle", [])), \
              patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--lock"]), \
              self.assertRaises(SystemExit) as cm:
             tick_gate.main()
@@ -228,7 +281,7 @@ class TickGateTest(unittest.TestCase):
         self.assertEqual(saved.get("lastFingerprint"), "fp_idle")
 
         # Next tick: snapshot unchanged (still fp_idle) => NOOP
-        with patch.object(tick_gate, "compute_fingerprint", return_value="fp_idle"), \
+        with patch.object(tick_gate, "preflight_decision", return_value=("fp_idle", [])), \
              patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--lock"]), \
              self.assertRaises(SystemExit) as cm:
             tick_gate.main()
@@ -239,7 +292,7 @@ class TickGateTest(unittest.TestCase):
         state = {"lastFingerprint": "fp_old"}
         tick_gate.save_state(self.state_file, state)
 
-        with patch.object(tick_gate, "compute_fingerprint", return_value="fp_work"), \
+        with patch.object(tick_gate, "preflight_decision", return_value=("fp_work", [])), \
              patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--lock"]), \
              self.assertRaises(SystemExit) as cm:
             tick_gate.main()
@@ -257,7 +310,7 @@ class TickGateTest(unittest.TestCase):
         self.assertNotIn("tickStartFingerprint", saved)
 
         # Next tick: snapshot unchanged (still fp_work) => still RUNs because lastFingerprint is still fp_old
-        with patch.object(tick_gate, "compute_fingerprint", return_value="fp_work"), \
+        with patch.object(tick_gate, "preflight_decision", return_value=("fp_work", [])), \
              patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--lock"]), \
              self.assertRaises(SystemExit) as cm:
             tick_gate.main()

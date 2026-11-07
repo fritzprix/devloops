@@ -15,8 +15,8 @@ from devloops_lib.config import get_state_path, load_config
 from devloops_lib.tick_gate import (
     acquire_lock,
     check_lock,
-    compute_fingerprint,
     load_state,
+    preflight_decision,
     release_lock,
     save_state,
 )
@@ -213,9 +213,9 @@ def tick_command(
     if norm_loop == "worker-loop":
         if not state.get("current"):
             try:
-                fp = compute_fingerprint()
+                fp, backlog = preflight_decision()
                 last_fp = state.get("lastFingerprint")
-                if last_fp and last_fp == fp:
+                if last_fp and last_fp == fp and not backlog:
                     print("NOOP (no changes)")
                     return 1
             except Exception as e:
