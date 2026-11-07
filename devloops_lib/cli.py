@@ -8,18 +8,23 @@ import os
 import shutil
 import subprocess
 import sys
-import time
+import threading
 from pathlib import Path
 
-from devloops_lib.config import add_agent_id_argument, get_state_path, load_config
+from devloops_lib.claims import release_tick_claims
+from devloops_lib.config import add_agent_id_argument, get_claims_dir, get_state_path
 from devloops_lib.tick_gate import (
+    TOKEN_ENV,
     WRAPPER_PID_ENV,
     acquire_lock_token,
     check_lock,
+    describe_lock,
     load_state,
+    lock_ttl,
+    owner_fields,
     preflight_decision,
     release_lock,
-    save_state,
+    renew_lock,
 )
 
 
@@ -169,14 +174,44 @@ def release_flock(fd: int | None) -> None:
             pass
 
 
-def acquire_wrapper_lock(lock_file: Path, pid: int) -> str | None:
+def acquire_wrapper_lock(lock_file: Path, pid: int, loop: str = "worker-loop") -> str | None:
     """Acquire the wrapper lock atomically; return the ownership token.
 
     Delegates to tick_gate.acquire_lock_token so publication is atomic and
     stale reclamation is ownership-safe (issue #22). The returned token makes
     the matching release ownership-safe across stale replacement.
     """
-    return acquire_lock_token(lock_file, pid=pid)
+    return acquire_lock_token(lock_file, pid=pid, extra=owner_fields(loop))
+
+
+class LockHeartbeat:
+    """Renew the tick lock every TTL/3 while the agent runs, so a long tick keeps it."""
+
+    def __init__(self, lock_file: Path, token: str) -> None:
+        self.lock_file = lock_file
+        self.token = token
+        self.lost = False
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="devloops-lock-heartbeat", daemon=True)
+
+    def _run(self) -> None:
+        interval = max(1.0, lock_ttl() / 3)
+        while not self._stop.wait(interval):
+            if not renew_lock(self.lock_file, self.token):
+                self.lost = True
+                sys.stderr.write(
+                    f"devloops tick: lost the tick lock ({describe_lock(self.lock_file)}); "
+                    "the agent's guard commands now refuse to push\n"
+                )
+                return
+
+    def __enter__(self) -> "LockHeartbeat":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._stop.set()
+        self._thread.join()
 
 
 def tick_command(
@@ -192,9 +227,10 @@ def tick_command(
     state_path = state_file or get_state_path(norm_loop)
     lock_path = state_path.parent / "tick.lock"
 
-    # Preflight check lock
+    # Preflight check lock. BUSY means a tick of this slot holds the lock, which can
+    # also be this slot's own earlier tick, so the holder is described, not guessed.
     if check_lock(lock_path):
-        print("BUSY (tick in progress)")
+        print(f"BUSY ({describe_lock(lock_path)})")
         return 2
 
     state = load_state(state_path)
@@ -217,27 +253,31 @@ def tick_command(
     # find, and a fresh empty lock counts as a live owner.
     flock_fd = acquire_flock(lock_path.with_name(f"{lock_path.name}.flock"))
     if sys.platform != "win32" and flock_fd is None:
-        print("BUSY (tick in progress)")
+        print(f"BUSY (another devloops tick of this slot holds the flock; {describe_lock(lock_path)})")
         return 2
 
     # Acquire atomic lock (the token makes the release ownership-safe)
-    lock_token = acquire_wrapper_lock(lock_path, pid=os.getpid())
+    lock_token = acquire_wrapper_lock(lock_path, pid=os.getpid(), loop=norm_loop)
     if lock_token is None:
         release_flock(flock_fd)
-        print("BUSY (tick in progress)")
+        print(f"BUSY ({describe_lock(lock_path)})")
         return 2
 
     print(f"LOCKED ({norm_loop})")
     try:
-        cmd_to_run = agent_cmd or os.environ.get("DEVLOOPS_AGENT_CMD") or os.environ.get("AGENT_CMD")
-        if cmd_to_run:
-            print(f"Executing agent command: {cmd_to_run}")
-            # Tell the agent's gate commands that this process holds the lock.
-            agent_env = {**os.environ, WRAPPER_PID_ENV: str(os.getpid())}
-            res = subprocess.run(cmd_to_run, shell=True, env=agent_env)
-            return res.returncode
-        return 0
+        with LockHeartbeat(lock_path, lock_token):
+            cmd_to_run = agent_cmd or os.environ.get("DEVLOOPS_AGENT_CMD") or os.environ.get("AGENT_CMD")
+            if cmd_to_run:
+                print(f"Executing agent command: {cmd_to_run}")
+                # Tell the agent's gate, claim, and guard commands which lock this tick owns.
+                agent_env = {**os.environ, WRAPPER_PID_ENV: str(os.getpid()), TOKEN_ENV: lock_token}
+                res = subprocess.run(cmd_to_run, shell=True, env=agent_env)
+                return res.returncode
+            return 0
     finally:
+        released = release_tick_claims(get_claims_dir(), lock_token)
+        if released:
+            print(f"RELEASED CLAIMS: {', '.join(released)}")
         release_lock(lock_path, token=lock_token)
         release_flock(flock_fd)
         print("UNLOCKED")

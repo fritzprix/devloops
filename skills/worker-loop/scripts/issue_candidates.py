@@ -20,7 +20,8 @@ for _candidate in (_script_dir.parents[2], _script_dir.parents[3], _script_dir.p
     if (_candidate / "devloops_lib").is_dir() and str(_candidate) not in sys.path:
         sys.path.insert(0, str(_candidate))
 
-from devloops_lib.config import load_config
+from devloops_lib.claims import pr_is_approved
+from devloops_lib.config import load_config, open_pr_limit as configured_open_pr_limit
 from devloops_lib.gh import GhError, gh
 
 EXCLUDED_LABELS = {"wontfix", "duplicate", "invalid", "question"}
@@ -34,8 +35,6 @@ UMBRELLA_PATTERN = re.compile(r"\b(umbrella|tracking issue|epic)\b", re.I)
 DEPENDS_ON_PATTERN = re.compile(r"^[ \t]*(?:[-*][ \t]+)?depends on:?[ \t]+(#\d+(?:(?:,|[ \t]+and)?[ \t]*#\d+)*)", re.I | re.M)
 PART_OF_PATTERN = re.compile(r"\bpart of\s+#(\d+)\b", re.I)
 HEAD_ISSUE_PATTERN = re.compile(r"-(\d+)$")
-APPROVED_PR_LABEL = "gatekeeper:approved"
-OPEN_PR_LIMIT = 5
 
 
 # gh helper is imported from devloops_lib.gh
@@ -47,11 +46,6 @@ def parse_depends_on(body: str, number: int) -> list[int]:
     for match in DEPENDS_ON_PATTERN.findall(body):
         found |= {int(n) for n in re.findall(r"#(\d+)", match)}
     return sorted(found - {number})
-
-
-def _pr_is_approved(pr: dict) -> bool:
-    labels = {label["name"] if isinstance(label, dict) else label for label in pr.get("labels") or []}
-    return pr.get("reviewDecision") == "APPROVED" or APPROVED_PR_LABEL in labels
 
 
 def _prs_working_on(open_prs: list[dict]) -> dict[int, list[dict]]:
@@ -94,19 +88,19 @@ def resolve_dependency(
     prs = [prs_by_number[dep]] if dep in prs_by_number else prs_working_on.get(dep, [])
     options = [pr for pr in prs if (pr.get("baseRefName") or base_branch) == base_branch]
     if options:
-        pr = max(options, key=lambda p: (_pr_is_approved(p), p["number"]))
+        pr = max(options, key=lambda p: (pr_is_approved(p), p["number"]))
         result["status"] = "stack"
-        result["stackOn"] = {"pr": pr["number"], "head": pr.get("headRefName", ""), "approved": _pr_is_approved(pr)}
+        result["stackOn"] = {"pr": pr["number"], "head": pr.get("headRefName", ""), "approved": pr_is_approved(pr)}
     return result
 
 
-def open_pr_limit(open_prs: list[dict], me: str) -> dict:
+def open_pr_limit(open_prs: list[dict], me: str, limit: int) -> dict:
     """Count my unapproved open PRs against the limit. Approved PRs wait only for a merge."""
     unapproved = sum(
         1 for pr in open_prs
-        if (pr.get("author") or {}).get("login") == me and not _pr_is_approved(pr)
+        if (pr.get("author") or {}).get("login") == me and not pr_is_approved(pr)
     )
-    return {"unapproved": unapproved, "limit": OPEN_PR_LIMIT, "reached": unapproved >= OPEN_PR_LIMIT}
+    return {"unapproved": unapproved, "limit": limit, "reached": unapproved >= limit}
 
 
 def filter_and_rank_issues(
@@ -201,7 +195,11 @@ def filter_and_rank_issues(
         )
 
     candidates.sort(key=rank)
-    return {"openPRLimit": open_pr_limit(open_prs, me), "candidates": candidates, "excluded": excluded}
+    return {
+        "openPRLimit": open_pr_limit(open_prs, me, configured_open_pr_limit(cfg)),
+        "candidates": candidates,
+        "excluded": excluded,
+    }
 
 
 def fetch_candidates(limit: int = 100) -> dict:

@@ -15,6 +15,9 @@ from pathlib import Path
 from typing import Any
 
 AGENT_ID_ENV = "DEVLOOPS_AGENT_ID"
+# The gatekeeper's approval label. Like the other gatekeeper:* labels it is part of
+# the comment protocol (comment-format.md), not a per-project setting.
+GATEKEEPER_APPROVED_LABEL = "gatekeeper:approved"
 # One path component on every OS: no separators, no leading or trailing dots.
 AGENT_ID_PATTERN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
 
@@ -63,6 +66,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "worker": {
         "max_items_per_tick": 1,
+        "open_pr_limit": 5,
+        "issue_claim_ttl_minutes": 120,
     },
     "scheduler": "shell",
 }
@@ -192,8 +197,17 @@ def find_config_file(start_dir: Path | str | None = None) -> Path | None:
     return None
 
 
+class ConfigError(ValueError):
+    """Raised when a config file exists but cannot be read or parsed."""
+
+
 def load_config(start_dir: Path | str | None = None) -> dict[str, Any]:
-    """Load devloops configuration with defaults."""
+    """Load devloops configuration with defaults.
+
+    Without a config file the defaults apply. A config file that exists but cannot
+    be read or parsed raises ConfigError: silently using the defaults would, for
+    example, switch the base branch to `main` without anyone noticing.
+    """
     cfg_file = find_config_file(start_dir)
     if cfg_file is None:
         return copy.deepcopy(DEFAULT_CONFIG)
@@ -204,9 +218,28 @@ def load_config(start_dir: Path | str | None = None) -> dict[str, Any]:
             data = json.loads(content)
         else:
             data = parse_yaml_subset(content)
-        return deep_merge(DEFAULT_CONFIG, data)
-    except Exception:
-        return copy.deepcopy(DEFAULT_CONFIG)
+    except (OSError, ValueError) as e:
+        raise ConfigError(f"cannot load {cfg_file}: {e}") from e
+    if not isinstance(data, dict):
+        raise ConfigError(f"cannot load {cfg_file}: the top level must be a mapping")
+    return deep_merge(DEFAULT_CONFIG, data)
+
+
+def _positive_number(cfg: dict[str, Any], section: str, key: str) -> float:
+    value = cfg.get(section, {}).get(key, DEFAULT_CONFIG[section][key])
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise ConfigError(f"{section}.{key} must be a positive number, got {value!r}")
+    return value
+
+
+def open_pr_limit(cfg: dict[str, Any]) -> int:
+    """Unapproved open PRs (plus live issue claims without a PR) at which new issues wait."""
+    return int(_positive_number(cfg, "worker", "open_pr_limit"))
+
+
+def issue_claim_ttl_seconds(cfg: dict[str, Any]) -> int:
+    """An active issue claim not refreshed for this long is stale."""
+    return int(_positive_number(cfg, "worker", "issue_claim_ttl_minutes") * 60)
 
 
 def validate_agent_id(agent_id: str) -> str:

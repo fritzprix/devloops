@@ -5,11 +5,17 @@ With no check flag, prints JSON: `items` lists everything that needs work now (P
 then issues), and `maxItems` is how many to finish this tick. `waiting` lists issues
 whose dependency status is `wait`, which the worker reads before deciding.
 
+Each PR item carries a `stamp` of the state the plan was built from: next action,
+head SHA, base branch, and the latest gatekeeper verdict (round, verdict, reviewed
+head). `--check-pr N --stamp S` reports CHANGED when any of them moved, so a plan
+built before a push, a rebase, a retarget, or a new review round is never executed.
+
 Check flags exit 0 if the item is still valid, 1 if it changed, and 3 on error.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -41,11 +47,33 @@ def _skip_is_current(skipped: dict, candidate: dict) -> bool:
     return bool(entry) and entry.get("updatedAt") == candidate.get("updatedAt")
 
 
+def _pr_fields(pr: dict) -> dict:
+    gatekeeper = pr.get("gatekeeper") or {}
+    return {
+        "action": pr.get("nextAction"),
+        "head": pr.get("headSha"),
+        "base": pr.get("base"),
+        "gatekeeper": {key: gatekeeper.get(key) for key in ("round", "verdict", "head", "url")},
+    }
+
+
+def pr_stamp(pr: dict) -> str:
+    """Hash the PR state a plan item depends on."""
+    return hashlib.sha256(json.dumps(_pr_fields(pr), sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def _pr_item(pr: dict) -> dict:
+    gatekeeper = pr.get("gatekeeper") or {}
+    return {
+        "kind": "pr", "number": pr["number"], "action": pr["nextAction"], "head": pr.get("headSha"),
+        "base": pr.get("base"), "gatekeeperRound": gatekeeper.get("round"), "stamp": pr_stamp(pr),
+    }
+
+
 def build_plan(prs: list[dict], candidates: dict, skipped: dict, max_items: int) -> dict:
     """Return all items that need work now, in order. nextAction is the source of truth for PRs."""
     pr_items = sorted(
-        ({"kind": "pr", "number": pr["number"], "action": pr["nextAction"]}
-         for pr in prs if pr.get("nextAction") in PR_ACTIONS),
+        (_pr_item(pr) for pr in prs if pr.get("nextAction") in PR_ACTIONS),
         key=lambda item: (PR_ACTIONS.index(item["action"]), item["number"]),
     )
     open_issues = [c for c in candidates["candidates"] if not _skip_is_current(skipped, c)]
@@ -64,8 +92,16 @@ def build_plan(prs: list[dict], candidates: dict, skipped: dict, max_items: int)
     }
 
 
-def pr_item_is_current(fresh: list[dict], action: str) -> bool:
-    return bool(fresh) and fresh[0].get("nextAction") == action
+def pr_item_is_current(fresh: list[dict], stamp: str) -> bool:
+    return bool(fresh) and fresh[0].get("nextAction") in PR_ACTIONS and pr_stamp(fresh[0]) == stamp
+
+
+def describe_pr(fresh: list[dict]) -> str:
+    if not fresh:
+        return "PR is closed or not found"
+    fields = _pr_fields(fresh[0])
+    return (f"action {fields['action']}, head {fields['head']}, base {fields['base']}, "
+            f"gatekeeper round {fields['gatekeeper']['round']} {fields['gatekeeper']['verdict']}")
 
 
 def issue_item_is_current(candidates: dict, number: int, updated_at: str) -> bool:
@@ -77,20 +113,23 @@ def issue_item_is_current(candidates: dict, number: int, updated_at: str) -> boo
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--check-pr", type=int, metavar="N", help="Re-check a PR item; needs --action")
-    parser.add_argument("--action", help="The nextAction recorded in the plan")
+    parser.add_argument("--check-pr", type=int, metavar="N", help="Re-check a PR item; needs --stamp")
+    parser.add_argument("--stamp", help="The stamp recorded in the plan")
     parser.add_argument("--check-issue", type=int, metavar="N", help="Re-check an issue item; needs --updated-at")
     parser.add_argument("--updated-at", help="The updatedAt recorded in the plan")
     parser.add_argument("--state-file", type=Path, default=None, help="Path to state.json")
     args = parser.parse_args(argv)
-    if args.check_pr is not None and not args.action:
-        parser.error("--check-pr needs --action")
+    if args.check_pr is not None and not args.stamp:
+        parser.error("--check-pr needs --stamp")
     if args.check_issue is not None and not args.updated_at:
         parser.error("--check-issue needs --updated-at")
 
+    detail = ""
     try:
         if args.check_pr is not None:
-            valid = pr_item_is_current(summarize_prs(args.check_pr), args.action)
+            fresh = summarize_prs(args.check_pr)
+            valid = pr_item_is_current(fresh, args.stamp)
+            detail = describe_pr(fresh)
         elif args.check_issue is not None:
             valid = issue_item_is_current(fetch_candidates(), args.check_issue, args.updated_at)
         else:
@@ -103,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
     except GhError as e:
         sys.stderr.write(f"plan_tick error: {e}\n")
         return EXIT_ERROR
-    print("VALID" if valid else "CHANGED")
+    print("VALID" if valid else f"CHANGED{': ' + detail if detail else ''}")
     return EXIT_RUN if valid else EXIT_NOOP
 
 

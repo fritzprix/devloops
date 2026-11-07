@@ -237,7 +237,11 @@ class CliInstallTest(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         locked, unlocked = json.loads(results_file.read_text())
-        self.assertEqual(locked, [0, "RUN (current work in progress)", True])
+        # Inside the wrapper, --lock reports the wrapper's own token instead of BUSY.
+        self.assertEqual(locked[0], 0)
+        self.assertEqual(locked[1].splitlines()[0], "RUN (current work in progress)")
+        self.assertRegex(locked[1].splitlines()[1], r"^TOKEN [0-9a-f]{32}$")
+        self.assertTrue(locked[2])
         self.assertEqual(unlocked, [0, "LOCK KEPT (held by devloops tick)", True])
         self.assertFalse(lock_file.exists())
 

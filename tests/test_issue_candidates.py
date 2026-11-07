@@ -202,7 +202,12 @@ class OpenPrLimitTest(unittest.TestCase):
             _pr(6, "feat/6", labels=[{"name": "gatekeeper:approved"}]),
             _pr(7, "feat/7", author="someone-else"),
         ]
-        self.assertEqual(_module.open_pr_limit(prs, "me"), {"unapproved": 4, "limit": 5, "reached": False})
+        self.assertEqual(_module.open_pr_limit(prs, "me", 5), {"unapproved": 4, "limit": 5, "reached": False})
+
+    def test_limit_comes_from_config(self):
+        prs = [_pr(n, f"feat/{n}") for n in range(1, 4)]
+        result = filter_and_rank_issues([], prs, "me", config={"worker": {"open_pr_limit": 3}})
+        self.assertEqual(result["openPRLimit"], {"unapproved": 3, "limit": 3, "reached": True})
 
     def test_limit_is_reached_at_five(self):
         prs = [_pr(n, f"feat/{n}") for n in range(1, 6)]
