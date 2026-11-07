@@ -6,9 +6,12 @@ Computes a fingerprint from a single GraphQL request covering:
     updatedAt, and last comment createdAt.
   - Candidate issues: updatedAt timestamps.
 
-If state.json has no 'current' and the fingerprint matches 'lastFingerprint', outputs
-'NOOP' and exits with code 1 so external schedulers (e.g., `python3 tick_gate.py && ...`)
-do not invoke the LLM.
+It also detects an actionable approved backlog: open issues carrying the approved
+label, with no assignees and no open PR closing them.
+
+If state.json has no 'current', the fingerprint matches 'lastFingerprint', and there
+is no actionable approved backlog, outputs 'NOOP' and exits with code 1 so external
+schedulers (e.g., `python3 tick_gate.py && ...`) do not invoke the LLM.
 
 Exit codes:
   0 - RUN (actionable work or state changed)
@@ -22,6 +25,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -29,14 +33,14 @@ from pathlib import Path
 
 # Support running directly or as module
 try:
-    from devloops_lib.config import get_state_path
+    from devloops_lib.config import get_state_path, load_config
     from devloops_lib.gh import GhError, gh
 except ImportError:
     # Walk up to find repo root
     _root = Path(__file__).resolve().parent.parent
     if str(_root) not in sys.path:
         sys.path.insert(0, str(_root))
-    from devloops_lib.config import get_state_path
+    from devloops_lib.config import get_state_path, load_config
     from devloops_lib.gh import GhError, gh
 
 EXIT_RUN = 0
@@ -62,6 +66,9 @@ query($prQuery: String!, $prLimit: Int!, $owner: String!, $name: String!, $issue
         updatedAt
         isDraft
         author { login }
+        title
+        bodyText
+        headRefName
         commits(last: 1) {
           nodes {
             commit {
@@ -84,6 +91,8 @@ query($prQuery: String!, $prLimit: Int!, $owner: String!, $name: String!, $issue
       nodes {
         number
         updatedAt
+        labels(first: 20) { nodes { name } }
+        assignees(first: 10) { nodes { login } }
       }
     }
   }
@@ -189,13 +198,16 @@ def release_lock(lock_file: Path) -> None:
             pass
 
 
-def compute_fingerprint() -> str:
-    """Compute sha256 hash using a single GraphQL query for PRs and issues."""
+CLOSING_PATTERN = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b", re.I)
+BRANCH_ISSUE_PATTERN = re.compile(r"-(\d{3,})\b")
+
+
+def fetch_gate_data() -> dict:
+    """Fetch open PRs (all authors) and open issues via a single GraphQL request."""
     repo_raw = gh("repo", "view", "--json", "owner,name")
     repo = json.loads(repo_raw)
     owner, name = repo["owner"]["login"], repo["name"]
-    me = gh("api", "user", "--jq", ".login").strip()
-    pr_query = f"repo:{owner}/{name} is:pr is:open author:@me"
+    pr_query = f"repo:{owner}/{name} is:pr is:open"
 
     query_raw = gh(
         "api", "graphql",
@@ -207,12 +219,24 @@ def compute_fingerprint() -> str:
         "-F", f"issueLimit={ISSUE_LIMIT}",
     )
     data = json.loads(query_raw).get("data", {})
-    repo_data = data.get("repository", {})
+    return {
+        "prs": data.get("search", {}).get("nodes") or [],
+        "issues": (data.get("repository") or {}).get("issues", {}).get("nodes") or [],
+    }
 
-    pr_nodes = data.get("search", {}).get("nodes") or []
-    # Only PRs authored by @me and not draft
+
+def compute_fingerprint(gate_data: dict | None = None) -> str:
+    """Compute sha256 hash from @me open PRs and candidate issue updatedAt timestamps.
+
+    Only PR state fields that require worker action are hashed; labels, assignees,
+    and PR body text are intentionally excluded so they do not mask a stable fingerprint.
+    """
+    if gate_data is None:
+        gate_data = fetch_gate_data()
+    me = gh("api", "user", "--jq", ".login").strip()
+
     prs_fingerprint = []
-    for pr in pr_nodes:
+    for pr in gate_data["prs"]:
         if not pr:
             continue
         if (pr.get("author") or {}).get("login") != me:
@@ -237,12 +261,54 @@ def compute_fingerprint() -> str:
         ))
     prs_fingerprint.sort()
 
-    issue_nodes = repo_data.get("issues", {}).get("nodes") or []
-    issues_fingerprint = sorted((i["number"], i.get("updatedAt")) for i in issue_nodes)
+    issues_fingerprint = sorted((i["number"], i.get("updatedAt")) for i in gate_data["issues"])
 
     hasher = hashlib.sha256()
     hasher.update(json.dumps({"prs": prs_fingerprint, "issues": issues_fingerprint}).encode("utf-8"))
     return hasher.hexdigest()
+
+
+def find_actionable_backlog(gate_data: dict, approved_label: str = "approved") -> list[int]:
+    """Return open, unclaimed issues with the approved label and no open closing PR.
+
+    An issue is actionable when it carries approved_label, has no assignees, and no
+    open PR closes it (via closing keywords in title/body or a `-<number>` branch suffix).
+    """
+    closing_prs: set[int] = set()
+    for pr in gate_data["prs"]:
+        if not pr:
+            continue
+        text = f"{pr.get('title') or ''} {pr.get('bodyText') or ''}"
+        closes = {int(n) for n in CLOSING_PATTERN.findall(text)}
+        closes |= {int(n) for n in BRANCH_ISSUE_PATTERN.findall(pr.get("headRefName") or "")}
+        closing_prs |= closes
+
+    actionable: list[int] = []
+    for issue in gate_data["issues"]:
+        if not issue:
+            continue
+        labels = {l.get("name") for l in ((issue.get("labels") or {}).get("nodes") or []) if l}
+        if approved_label not in labels:
+            continue
+        assignees = [a.get("login") for a in ((issue.get("assignees") or {}).get("nodes") or []) if a]
+        if assignees:
+            continue
+        if issue["number"] in closing_prs:
+            continue
+        actionable.append(issue["number"])
+    return sorted(actionable)
+
+
+def preflight_decision(config: dict | None = None) -> tuple[str, list[int]]:
+    """Return (fingerprint, actionable approved backlog) from one GraphQL fetch.
+
+    The backlog makes the gate RUN even when the fingerprint is unchanged, so an
+    approved, unclaimed issue with no closing PR is never starved by a quiet repo.
+    """
+    gate_data = fetch_gate_data()
+    cfg = config or load_config()
+    approved_label = cfg.get("labels", {}).get("approved", "approved")
+    return compute_fingerprint(gate_data), find_actionable_backlog(gate_data, approved_label)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -291,14 +357,14 @@ def main(argv: list[str] | None = None) -> None:
             print("RUN (current work in progress)")
             sys.exit(EXIT_RUN)
 
-        fp = compute_fingerprint()
+        fp, backlog = preflight_decision()
         last_fp = state.get("lastFingerprint")
 
-        if last_fp and last_fp == fp:
+        if last_fp and last_fp == fp and not backlog:
             print("NOOP (no changes)")
             sys.exit(EXIT_NOOP)
 
-        # State changed: acquire lock if requested, but DO NOT save lastFingerprint yet.
+        # State changed (or approved backlog waiting): acquire lock if requested, but DO NOT save lastFingerprint yet.
         # lastFingerprint must be saved only after a successful tick via --update.
         if args.lock:
             if not acquire_lock(lock_path, pid=args.pid):
@@ -306,7 +372,10 @@ def main(argv: list[str] | None = None) -> None:
                 sys.exit(EXIT_BUSY)
             state["tickStartFingerprint"] = fp
             save_state(state_path, state)
-        print(f"RUN (changes detected: {fp[:12]})")
+        if last_fp and last_fp == fp:
+            print(f"RUN (approved backlog waiting: #{', #'.join(map(str, backlog))})")
+        else:
+            print(f"RUN (changes detected: {fp[:12]})")
         sys.exit(EXIT_RUN)
 
     except GhError as e:
