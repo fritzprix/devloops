@@ -7,6 +7,18 @@ Each loop is a skill (`SKILL.md` plus helper scripts). You install the skills in
 project's `.agents/skills/` directory. A per-project file, `devloops.config.yaml`,
 holds the project values (repo, branches, commands, protected paths, labels).
 
+## Install with an agent
+
+Paste this into a coding agent opened in your project:
+
+```text
+Install devloops into this repository.
+1. Run `uvx devloops install`. (Fallback only if uvx is unavailable: clone the devloops repo and run `scripts/install.sh <this repo>`.)
+2. If `devloops.config.yaml` does not exist, create it from the installed template and ask me only for values you cannot detect. If it exists, do not change it without asking me.
+3. Run `python3 .agents/skills/worker-loop/scripts/doctor.py` and check that every script path mentioned in the installed SKILL.md files exists and runs from any directory. Report the result.
+Do not set up schedules (cron or routines).
+```
+
 ## Why
 
 Most maintenance work is routine: find a problem, write an issue, fix it, review the fix.
