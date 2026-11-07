@@ -39,6 +39,7 @@ for _candidate in (_script_dir.parents[2], _script_dir.parents[3], _script_dir.p
         sys.path.insert(0, str(_candidate))
 
 from devloops_lib.config import get_state_path, load_config
+from devloops_lib.gh import GhError, gh
 
 MAX_ROUNDS = 5
 # Loop markers must appear at the very start of the comment (ignoring optional UTF-8 BOM and leading whitespace).
@@ -62,11 +63,7 @@ def get_default_state_file() -> Path:
     return get_state_path("gatekeeper-loop")
 
 
-def gh(*args: str) -> str:
-    result = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8")
-    if result.returncode != 0:
-        sys.exit(f"gh {' '.join(args)} failed: {result.stderr.strip()}")
-    return result.stdout
+# gh helper is imported from devloops_lib.gh
 
 
 def check_state(check: dict) -> str:
@@ -322,19 +319,22 @@ def main() -> None:
     parser.add_argument("--state-file", type=Path, default=None, help="Path to state.json")
     args = parser.parse_args()
 
-    state = load_state(args.state_file)
-    cfg = load_config()
-    me = gh("api", "user", "--jq", ".login").strip()
-    if args.pr:
-        numbers = [args.pr]
-    else:
-        listed = json.loads(gh("pr", "list", "--author", "@me", "--state", "open",
-                                "--json", "number,isDraft"))
-        numbers = [p["number"] for p in listed if not p["isDraft"]]
+    try:
+        state = load_state(args.state_file)
+        cfg = load_config()
+        me = gh("api", "user", "--jq", ".login").strip()
+        if args.pr:
+            numbers = [args.pr]
+        else:
+            listed = json.loads(gh("pr", "list", "--author", "@me", "--state", "open",
+                                    "--json", "number,isDraft"))
+            numbers = [p["number"] for p in listed if not p["isDraft"]]
 
-    summaries = [summarize(n, me, state, cfg) for n in numbers]
-    summaries.sort(key=lambda x: (x["priority"], x["createdAt"]))
-    print(json.dumps(summaries, ensure_ascii=False, indent=2))
+        summaries = [summarize(n, me, state, cfg) for n in numbers]
+        summaries.sort(key=lambda x: (x["priority"], x["createdAt"]))
+        print(json.dumps(summaries, ensure_ascii=False, indent=2))
+    except GhError as e:
+        sys.exit(f"gh error: {e}")
 
 
 if __name__ == "__main__":

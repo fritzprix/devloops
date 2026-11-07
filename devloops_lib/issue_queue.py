@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from devloops_lib.config import get_state_path, load_config
-from devloops_lib.tick_gate import GhError, load_state, save_state
+from devloops_lib.gh import GhError, gh
+from devloops_lib.tick_gate import load_state, save_state
 
 VALID_VERDICTS = {"validated", "rejected"}
 TASK_LABEL_PATTERN = re.compile(r"^auto:(?!producer$)(.+)$")
@@ -73,7 +74,6 @@ def list_unjudged_issues(
     """Fetch open issues via gh and filter for unjudged producer issues."""
     cfg = config or load_config()
     cmd = [
-        "gh",
         "issue",
         "list",
         "--state",
@@ -87,15 +87,9 @@ def list_unjudged_issues(
     if target_repo and target_repo != "owner/name":
         cmd.extend(["--repo", target_repo])
 
+    res_stdout = gh(*cmd)
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
-    except Exception as e:
-        raise GhError(f"Failed to execute gh issue list: {e}") from e
-    if res.returncode != 0:
-        raise GhError(f"gh issue list failed (code {res.returncode}): {res.stderr.strip()}")
-
-    try:
-        issues = json.loads(res.stdout) if res.stdout.strip() else []
+        issues = json.loads(res_stdout) if res_stdout.strip() else []
     except json.JSONDecodeError as e:
         raise GhError(f"Failed to parse gh issue list output: {e}") from e
 

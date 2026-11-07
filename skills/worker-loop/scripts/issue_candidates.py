@@ -21,6 +21,7 @@ for _candidate in (_script_dir.parents[2], _script_dir.parents[3], _script_dir.p
         sys.path.insert(0, str(_candidate))
 
 from devloops_lib.config import load_config
+from devloops_lib.gh import GhError, gh
 
 EXCLUDED_LABELS = {"wontfix", "duplicate", "invalid", "question"}
 DEPRIORITIZED_LABELS = {"backlog"}
@@ -31,11 +32,7 @@ BLOCKED_PATTERN = re.compile(r"\b(blocked by|depends on|waiting (?:for|on)|after
 UMBRELLA_PATTERN = re.compile(r"\b(umbrella|tracking issue|epic)\b", re.I)
 
 
-def gh(*args: str) -> str:
-    result = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8")
-    if result.returncode != 0:
-        sys.exit(f"gh {' '.join(args)} failed: {result.stderr.strip()}")
-    return result.stdout
+# gh helper is imported from devloops_lib.gh
 
 
 def filter_and_rank_issues(
@@ -126,17 +123,20 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=100, help="Candidate issues limit (default: 100)")
     args = parser.parse_args()
 
-    me = gh("api", "user", "--jq", ".login").strip()
-    issues = json.loads(
-        gh("issue", "list", "--state", "open", "--limit", str(args.limit), "--json",
-           "number,title,labels,assignees,body,createdAt,updatedAt,url")
-    )
-    open_prs = json.loads(
-        gh("pr", "list", "--state", "open", "--limit", "100", "--json", "number,title,body,headRefName")
-    )
+    try:
+        me = gh("api", "user", "--jq", ".login").strip()
+        issues = json.loads(
+            gh("issue", "list", "--state", "open", "--limit", str(args.limit), "--json",
+               "number,title,labels,assignees,body,createdAt,updatedAt,url")
+        )
+        open_prs = json.loads(
+            gh("pr", "list", "--state", "open", "--limit", "100", "--json", "number,title,body,headRefName")
+        )
 
-    result = filter_and_rank_issues(issues, open_prs, me)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+        result = filter_and_rank_issues(issues, open_prs, me)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    except GhError as e:
+        sys.exit(f"gh error: {e}")
 
 
 if __name__ == "__main__":

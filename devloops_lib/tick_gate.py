@@ -30,12 +30,14 @@ from pathlib import Path
 # Support running directly or as module
 try:
     from devloops_lib.config import get_state_path
+    from devloops_lib.gh import GhError, gh
 except ImportError:
     # Walk up to find repo root
     _root = Path(__file__).resolve().parent.parent
     if str(_root) not in sys.path:
         sys.path.insert(0, str(_root))
     from devloops_lib.config import get_state_path
+    from devloops_lib.gh import GhError, gh
 
 EXIT_RUN = 0
 EXIT_NOOP = 1
@@ -89,8 +91,7 @@ query($prQuery: String!, $prLimit: Int!, $owner: String!, $name: String!, $issue
 """
 
 
-class GhError(RuntimeError):
-    """Raised when GitHub CLI execution fails."""
+# GhError is imported from devloops_lib.gh
 
 
 def default_state_path(loop_name: str = "worker-loop") -> Path:
@@ -111,14 +112,7 @@ def save_state(path: Path, state: dict) -> None:
     path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def gh(*args: str) -> str:
-    try:
-        result = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8")
-    except Exception as e:
-        raise GhError(f"Failed to execute gh: {e}") from e
-    if result.returncode != 0:
-        raise GhError(f"gh {' '.join(args)} failed (code {result.returncode}): {result.stderr.strip()}")
-    return result.stdout
+# gh helper is imported from devloops_lib.gh
 
 
 def check_lock(lock_file: Path, ttl_seconds: int = LOCK_TTL_SECONDS) -> bool:
@@ -134,12 +128,20 @@ def check_lock(lock_file: Path, ttl_seconds: int = LOCK_TTL_SECONDS) -> bool:
             return False
         # If PID was explicitly recorded, verify if process is still alive
         pid = data.get("pid")
-        if pid and sys.platform != "win32":
-            try:
-                os.kill(pid, 0)
-            except OSError:
-                # Process is dead, lock is stale
-                return False
+        if pid:
+            if sys.platform != "win32":
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    # Process is dead, lock is stale
+                    return False
+            else:
+                import ctypes
+                PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                h_proc = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+                if not h_proc:
+                    return False
+                ctypes.windll.kernel32.CloseHandle(h_proc)
         return True
     except Exception:
         return False
