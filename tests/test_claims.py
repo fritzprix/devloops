@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Tests for per-item PR and issue claims (single process; see test_concurrency for races)."""
+from __future__ import annotations
+
 import contextlib
 import io
 import json
@@ -45,12 +47,13 @@ def make_remote(root: Path, *clones: str) -> tuple[Path, list[Path]]:
     return remote, paths
 
 
-def push_old_claim(repo: Path, number: int, agent: str, age_seconds: int, branch: str = "") -> None:
+def push_old_claim(repo: Path, number: int, agent: str, age_seconds: int, branch: str = "",
+                   host: str = "other-host") -> None:
     """Push a claim commit whose time trailer is age_seconds in the past."""
     lines = [
         f"devloops claim: issue #{number} active", "",
         f"{claims.OWNER_TRAILER}: {agent}",
-        f"{claims.HOST_TRAILER}: other-host",
+        f"{claims.HOST_TRAILER}: {host}",
         f"{claims.STATE_TRAILER}: {claims.ACTIVE}",
         f"{claims.TIME_TRAILER}: {int(time.time()) - age_seconds}",
     ]

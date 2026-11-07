@@ -195,7 +195,8 @@ class LockHeartbeat:
         self._thread = threading.Thread(target=self._run, name="devloops-lock-heartbeat", daemon=True)
 
     def _run(self) -> None:
-        interval = max(1.0, lock_ttl() / 3)
+        # Three renewals per TTL, so one late renewal never lets the lock expire.
+        interval = lock_ttl() / 3
         while not self._stop.wait(interval):
             if not renew_lock(self.lock_file, self.token):
                 self.lost = True

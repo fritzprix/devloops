@@ -172,14 +172,28 @@ def _pid_alive(pid: int) -> bool:
             os.kill(pid, 0)
         except OSError:
             return False
-        return True
+        # A killed process that its parent has not reaped yet is a zombie (Linux).
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        except OSError:
+            return True
+        return stat.rpartition(")")[2].split()[:1] != ["Z"]
     import ctypes
+    from ctypes import wintypes
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-    h_proc = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    STILL_ACTIVE = 259
+    kernel32 = ctypes.windll.kernel32
+    h_proc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not h_proc:
         return False
-    ctypes.windll.kernel32.CloseHandle(h_proc)
-    return True
+    try:
+        # A process that exited stays openable while any handle to it is open.
+        exit_code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(h_proc, ctypes.byref(exit_code)):
+            return True
+        return exit_code.value == STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(h_proc)
 
 
 def lock_ttl() -> int:
@@ -208,9 +222,9 @@ def _is_stale_payload(data: dict, ttl_seconds: int) -> bool:
     # If lock expired by TTL (time is the last renewal), it is stale regardless of PID
     if time.time() - data.get("time", 0) > ttl_seconds:
         return True
-    # If PID was explicitly recorded, verify if process is still alive
+    # A recorded PID is checked only on its own host; elsewhere the TTL decides.
     pid = data.get("pid")
-    if pid:
+    if pid and data.get("host") in (None, socket.gethostname()):
         return not _pid_alive(pid)
     return False
 
@@ -460,7 +474,7 @@ def acquire_lock_token(lock_file: Path, pid: int | None = None, extra: dict | No
     """
     lock_file.parent.mkdir(parents=True, exist_ok=True)
     token = uuid.uuid4().hex
-    payload = {"started": int(time.time()), **(extra or {}), "time": int(time.time()), "token": token}
+    payload = {"started": int(time.time()), **(extra or {}), "time": time.time(), "token": token}
     if pid is not None:
         payload["pid"] = pid
     data = json.dumps(payload).encode("utf-8")
@@ -546,7 +560,7 @@ def renew_lock(lock_file: Path, token: str) -> bool:
         data = read_lock_payload(lock_file)
         if not data or data.get("token") != token:
             return False
-        data["time"] = int(time.time())
+        data["time"] = time.time()
         return _replace_payload(lock_file, json.dumps(data).encode("utf-8"))
 
 

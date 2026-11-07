@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Automated relocated-install smoke test (issue #8 acceptance criteria).
 
-Scope and known gaps (stated plainly per gatekeeper G1.3):
-- The installer runs from the SOURCE TREE (subprocess with
-  PYTHONPATH=<repo root>). This mirrors the `uvx --from <absolute-wheel>
-  devloops install` invocation shape (separate process, unrelated cwd,
-  explicit --target) but does NOT build a wheel, so wheel/sdist asset
-  bundling (#8 task 2) is not exercised here — it is covered by the CI
-  matrix task in #8.
+Installer under test:
+- By default the installer runs from the SOURCE TREE (subprocess with
+  PYTHONPATH=<repo root>), in a separate process, unrelated cwd, explicit --target.
+- With DEVLOOPS_SMOKE_INSTALLER set to a JSON argv list (for example
+  ["uvx", "--from", "/abs/devloops-0.1.0-py3-none-any.whl", "devloops"]), the
+  same checks run against that installer instead, with no PYTHONPATH, so the
+  assets come from the built wheel. scripts/ci_smoke.py does this in CI.
 - All post-install checks run with PYTHONPATH removed, from unrelated
   directories, against the installed layout only.
 
@@ -25,12 +25,15 @@ Checks:
 - installed skill scripts run `--help` (exit 0) from an unrelated cwd,
   bootstrapping their own imports;
 - doctor entry points compile (doctor runs live env diagnostics, not argv);
-- re-install from a second unrelated cwd is idempotent.
+- re-install from a second unrelated cwd keeps edited skill files and the
+  edited config, and reports them as skipped;
+- no dev-only test wrappers are installed.
 
 Cross-platform: plain subprocess calls, no POSIX-only commands.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -61,14 +64,32 @@ def _run(cmd: list[str], cwd: Path, env_extra: dict[str, str] | None = None) -> 
     return subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, env=env, timeout=120)
 
 
+INSTALLER_ENV = "DEVLOOPS_SMOKE_INSTALLER"
+
+
+def _installer() -> list[str] | None:
+    """Return the installer argv from $DEVLOOPS_SMOKE_INSTALLER, or None for the source tree."""
+    raw = os.environ.get(INSTALLER_ENV)
+    if not raw:
+        return None
+    argv = json.loads(raw)
+    if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
+        raise ValueError(f"{INSTALLER_ENV} must be a non-empty JSON list of strings")
+    return argv
+
+
 def _install(cwd_dir: Path, target: Path) -> str:
     """Run the CLI install from an unrelated cwd into the target; return stdout."""
-    code = (
-        "import sys; from devloops_lib.cli import main; "
-        f"sys.exit(main(['install', '--target', {str(target)!r}]))"
-    )
-    proc = _run([sys.executable, "-c", code], cwd=cwd_dir,
-                env_extra={"PYTHONPATH": str(REPO_ROOT)})
+    installer = _installer()
+    if installer:
+        proc = _run([*installer, "install", "--target", str(target)], cwd=cwd_dir)
+    else:
+        code = (
+            "import sys; from devloops_lib.cli import main; "
+            f"sys.exit(main(['install', '--target', {str(target)!r}]))"
+        )
+        proc = _run([sys.executable, "-c", code], cwd=cwd_dir,
+                    env_extra={"PYTHONPATH": str(REPO_ROOT)})
     if proc.returncode != 0:
         raise RuntimeError(f"install failed:\n{proc.stdout}\n{proc.stderr}")
     return proc.stdout
@@ -178,8 +199,7 @@ class RelocatedInstallSmokeTest(unittest.TestCase):
     def test_installed_skill_scripts_run_help_from_unrelated_cwd(self):
         # doctor.py ignores argv (it runs full environment diagnostics and its exit
         # code reflects the machine), so it gets a compile check instead of --help.
-        scripts = [s for s in sorted(self.skills_dest.glob("*/scripts/*.py"))
-                   if not s.name.startswith("test_") and s.name != "doctor.py"]
+        scripts = [s for s in sorted(self.skills_dest.glob("*/scripts/*.py")) if s.name != "doctor.py"]
         self.assertGreaterEqual(len(scripts), 3, "expected installed skill scripts to smoke-test")
         for script in scripts:
             proc = _run([sys.executable, str(script), "--help"], cwd=self.cwd_dir)
@@ -196,13 +216,17 @@ class RelocatedInstallSmokeTest(unittest.TestCase):
 
     def test_installed_lib_imports_from_relocated_layout(self):
         proc = _run(
-            [sys.executable, "-c", "import devloops_lib.config, devloops_lib.tick_gate, devloops_lib.gh"],
+            [sys.executable, "-c", "import devloops_lib.config, devloops_lib.tick_gate, devloops_lib.gh, "
+                                   "devloops_lib.claims, devloops_lib.guard, devloops_lib.cli"],
             cwd=self.cwd_dir,
             env_extra={"PYTHONPATH": str(self.target / ".agents")},
         )
         self.assertEqual(proc.returncode, 0, f"installed devloops_lib import failed:\n{proc.stderr}")
 
-    def test_rerun_from_another_unrelated_cwd_is_idempotent(self):
+    def test_no_dev_only_test_wrappers_are_installed(self):
+        self.assertEqual(sorted(self.skills_dest.glob("*/scripts/test_*.py")), [])
+
+    def test_rerun_from_another_unrelated_cwd_keeps_edits(self):
         # Own target (mutates state), separate from the class-level install.
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -213,8 +237,16 @@ class RelocatedInstallSmokeTest(unittest.TestCase):
         second_cwd = base / "cwd two"
         second_cwd.mkdir()
         _install(first_cwd, target)
+        skill_md = target / ".agents" / "skills" / "worker-loop" / "SKILL.md"
+        config = target / "devloops.config.yaml"
+        skill_md.write_text("edited skill\n", encoding="utf-8")
+        config.write_text("base_branch: dev\n", encoding="utf-8")
         second = _install(second_cwd, target)
-        self.assertIn("[skipped (already exists)]", second)
+        self.assertEqual(skill_md.read_text(encoding="utf-8"), "edited skill\n")
+        self.assertEqual(config.read_text(encoding="utf-8"), "base_branch: dev\n")
+        for path in (Path(".agents") / "skills" / "worker-loop" / "SKILL.md", Path("devloops.config.yaml")):
+            self.assertIn(f"[skipped (already exists)] {path}", second)
+        self.assertNotIn("[installed]", second)
 
 
 if __name__ == "__main__":

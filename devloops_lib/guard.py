@@ -68,6 +68,14 @@ def _git(repo: Path, *args: str) -> str:
     return result.stdout
 
 
+def _identity_args(repo: Path) -> list[str]:
+    """Return a fallback committer identity for `git stash` when none is configured."""
+    probe = subprocess.run(["git", "-C", str(repo), "var", "GIT_COMMITTER_IDENT"], capture_output=True, text=True)
+    if probe.returncode == 0:
+        return []
+    return ["-c", "user.name=devloops", "-c", "user.email=devloops@users.noreply.github.com"]
+
+
 def preserve_and_reset(repo: Path, preserve_dir: Path, label: str) -> list[str]:
     """Reset a linked worktree after saving its uncommitted work; return what was saved."""
     git_dir = Path(_git(repo, "rev-parse", "--absolute-git-dir").strip())
@@ -93,7 +101,7 @@ def preserve_and_reset(repo: Path, preserve_dir: Path, label: str) -> list[str]:
             break
 
     if _git(repo, "status", "--porcelain", "--untracked-files=all").strip():
-        _git(repo, "stash", "push", "--include-untracked", "-m", f"devloops preserved: {label}")
+        _git(repo, *_identity_args(repo), "stash", "push", "--include-untracked", "-m", f"devloops preserved: {label}")
         saved.append(f"stash {_git(repo, 'rev-parse', '--short', 'stash@{0}').strip()} ({label})")
 
     _git(repo, "reset", "--hard")
