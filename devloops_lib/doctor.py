@@ -139,4 +139,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    from devloops_lib.config import run_main
+
+    run_main(main)

@@ -23,6 +23,7 @@ for _candidate in (_script_dir.parents[2], _script_dir.parents[3], _script_dir.p
 from devloops_lib.claims import pr_is_approved
 from devloops_lib.config import load_config, open_pr_limit as configured_open_pr_limit
 from devloops_lib.gh import GhError, gh
+from devloops_lib.config import run_main
 
 EXCLUDED_LABELS = {"wontfix", "duplicate", "invalid", "question"}
 DEPRIORITIZED_LABELS = {"backlog"}
@@ -227,4 +228,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_main(main)

@@ -44,6 +44,7 @@ for _candidate in (_script_dir.parents[2], _script_dir.parents[3], _script_dir.p
 
 from devloops_lib.config import GATEKEEPER_APPROVED_LABEL, add_agent_id_argument, get_state_path, load_config
 from devloops_lib.gh import GhError, gh
+from devloops_lib.config import run_main
 
 MAX_ROUNDS = 5
 # Loop markers must appear at the very start of the comment (ignoring optional UTF-8 BOM and leading whitespace).
@@ -431,4 +432,4 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_main(main)

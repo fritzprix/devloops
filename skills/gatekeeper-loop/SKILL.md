@@ -50,6 +50,16 @@ Record the PID in state. Alternatively, a cron schedule or a harness-specific sc
 
 ## Tick procedure
 
+### 0. Lock
+
+```bash
+python3 "$SKILL_DIR/scripts/tick_lock.py" --lock
+```
+
+- `RUN`: the next line is `TOKEN <token>`; keep it as `$TOKEN`. Under `devloops tick gatekeeper` the wrapper already holds the lock, and the command prints the wrapper's token instead of taking the lock again.
+- `BUSY` (exit 2): a tick of this gatekeeper slot holds the lock (a duplicate start or this slot's own earlier tick). It does not mean another gatekeeper exists. Stop and do not unlock.
+- At the end of every tick, also after an error: `python3 "$SKILL_DIR/scripts/tick_lock.py" --unlock --token "$TOKEN"`. `LOST` (exit 4) means another tick took over a lock that was not renewed within the TTL; stop without posting further comments. For a review that may run longer than a third of the TTL (`DEVLOOPS_LOCK_TTL_SECONDS`, default 30 minutes), renew first: `tick_lock.py --renew --token "$TOKEN"`.
+
 ### 1. Queue
 
 ```bash

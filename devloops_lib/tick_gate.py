@@ -850,4 +850,6 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    from devloops_lib.config import run_main
+
+    run_main(main)

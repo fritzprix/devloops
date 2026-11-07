@@ -17,6 +17,7 @@ for _candidate in (_script_dir.parents[2], _script_dir.parents[3], _script_dir.p
         sys.path.insert(0, str(_candidate))
 
 from devloops_lib.tick_gate import main
+from devloops_lib.config import run_main
 
 if __name__ == "__main__":
-    main(["--loop", "gatekeeper-loop", *sys.argv[1:]])
+    run_main(lambda: main(["--loop", "gatekeeper-loop", *sys.argv[1:]]))

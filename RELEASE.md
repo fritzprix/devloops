@@ -115,11 +115,11 @@ Checklist:
 - [ ] A `LICENSE` entry is present in `*.dist-info/` (blocked until step 3 is done).
 - [ ] `devloops_lib` modules import from the unpacked wheel.
 
-**Known gap to decide before the first release (issue #8 task 2):** the wheel
-force-includes 8 dev-only `skills/*/scripts/test_*.py` files as assets, and they import
-the root `tests/` package, which is not installed. They are therefore broken in the
-installed layout. Either exclude them from the wheel or make them self-contained — do
-not ship broken wrappers silently.
+**Dev-only test wrappers (issue #8 task 2): resolved.** The 8 `skills/*/scripts/test_*.py`
+wrappers imported the root `tests/` package, which is not installed, so they were broken
+in the installed layout. They were removed; the tests live only in `tests/`.
+`scripts/ci_smoke.py` fails if a `scripts/test_*` entry appears in the wheel again, and
+`tests/test_install_smoke.py` fails if one is installed.
 
 ## 6. Verify the sdist
 
@@ -147,9 +147,10 @@ Checklist:
 ## 7. Release trigger (GitHub ↔ PyPI)
 
 The owner reports a GitHub ↔ PyPI integration already exists. **It is not visible from
-the source tree:** at the SHA above `main` has no `.github/` directory, no workflow
-files, no git tags, and no GitHub Releases. So the trigger cannot be verified from a
-clone — verify it in the repository settings and UI before the first release:
+the source tree:** the only workflow, `.github/workflows/ci.yml`, tests and builds but
+never publishes, and there are no git tags or GitHub Releases. So the trigger cannot be
+verified from a clone — verify it in the repository settings and UI before the first
+release:
 
 - [ ] Find the workflow that publishes (or confirm the integration is configured
       outside the repo). Record its path and its `on:` trigger here.
@@ -164,9 +165,12 @@ clone — verify it in the repository settings and UI before the first release:
 
 ## 8. Relocated-install smoke test (must pass before release)
 
-Run from an empty temp directory **outside** the checkout, with no source root on
-`PYTHONPATH`, once per OS (Linux and Windows), and with a target path containing
-spaces:
+CI runs this on every PR head and on `main`, on Linux, Windows, and macOS with Python
+3.8 and 3.13: `uv build --out-dir dist && python scripts/ci_smoke.py --dist dist`. The
+script inspects both artifacts, runs `tests/test_install_smoke.py` against
+`uvx --from <wheel> devloops` in temp directories whose paths contain spaces with no
+`PYTHONPATH`, and checks the missing-asset failure from a venv install of the wheel.
+Confirm that the CI run on the release commit is green; the manual form is:
 
 ```
 WHEEL="$CHECKOUT/dist/devloops-<version>-py3-none-any.whl"   # absolute path, resolved before cd
@@ -202,10 +206,10 @@ In order; every box must be checked by the person tagging the release.
       `python -m unittest discover -s tests`). Do not hard-code the test count.
 - [ ] `version` bumped in `pyproject.toml`, and the tag to be pushed matches it.
 - [ ] `LICENSE` tracked in git and shipped in both artifacts (step 3).
-- [ ] Dev-only `test_*.py` asset decision resolved (step 5).
+- [x] Dev-only `test_*.py` asset decision resolved (step 5): removed.
 - [ ] Both artifacts rebuilt from a clean checkout (step 4).
 - [ ] Wheel and sdist inspected (steps 5 and 6).
-- [ ] Relocated-install smoke test passed on Linux and Windows (step 8).
+- [ ] Relocated-install smoke test green in CI on Linux, Windows, and macOS for the release commit (step 8).
 - [ ] Release trigger and PyPI target confirmed (step 7).
 - [ ] Publish happens only through the existing integration — no local upload,
       no credentials added to the repo.
@@ -215,4 +219,5 @@ In order; every box must be checked by the person tagging the release.
 ## Out of scope for this checklist
 
 Publishing to PyPI, adding CI credentials, and setting up a new PyPI integration.
-CI for Linux/Windows/macOS is tracked as issue #8 tasks 13–15.
+CI (`.github/workflows/ci.yml`) runs on `pull_request` and `push` to `main` with
+`permissions: contents: read` and no secrets, so fork PRs are safe.

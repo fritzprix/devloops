@@ -12,7 +12,7 @@ import threading
 from pathlib import Path
 
 from devloops_lib.claims import release_tick_claims
-from devloops_lib.config import add_agent_id_argument, get_claims_dir, get_state_path
+from devloops_lib.config import EXIT_CONFIG_ERROR, ConfigError, add_agent_id_argument, get_claims_dir, get_state_path
 from devloops_lib.tick_gate import (
     TOKEN_ENV,
     WRAPPER_PID_ENV,
@@ -151,16 +151,24 @@ def install_command(target_dir: Path) -> int:
 
 
 def acquire_flock(lock_file: Path) -> int | None:
-    """Acquire flock on POSIX systems. Returns open fd or None if blocked/unsupported."""
+    """Acquire flock on POSIX systems. Returns the open fd, or None if another process holds it.
+
+    Raises OSError when the flock file cannot be opened: that is an error, not BUSY.
+    """
     if sys.platform == "win32":
         return None
+    import fcntl
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_file), os.O_RDWR | os.O_CREAT, 0o644)
     try:
-        import fcntl
-        fd = os.open(str(lock_file), os.O_RDWR | os.O_CREAT, 0o644)
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return fd
-    except (BlockingIOError, OSError):
+    except BlockingIOError:
+        os.close(fd)
         return None
+    except OSError:
+        os.close(fd)
+        raise
+    return fd
 
 
 def release_flock(fd: int | None) -> None:
@@ -252,7 +260,11 @@ def tick_command(
     # Hold flock on POSIX, then publish the portable lock. The flock needs its own
     # file: opening tick.lock would create the empty file that publishing must not
     # find, and a fresh empty lock counts as a live owner.
-    flock_fd = acquire_flock(lock_path.with_name(f"{lock_path.name}.flock"))
+    try:
+        flock_fd = acquire_flock(lock_path.with_name(f"{lock_path.name}.flock"))
+    except OSError as e:
+        sys.stderr.write(f"devloops tick: cannot open the flock file: {e}\n")
+        return 3
     if sys.platform != "win32" and flock_fd is None:
         print(f"BUSY (another devloops tick of this slot holds the flock; {describe_lock(lock_path)})")
         return 2
@@ -310,7 +322,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.subcommand == "install":
         return install_command(args.target)
     if args.subcommand == "tick":
-        return tick_command(args.loop, agent_cmd=args.agent_cmd, state_file=args.state_file)
+        try:
+            return tick_command(args.loop, agent_cmd=args.agent_cmd, state_file=args.state_file)
+        except ConfigError as e:
+            # Exit 1 would read as NOOP to a scheduler.
+            sys.stderr.write(f"devloops config error: {e}\n")
+            return EXIT_CONFIG_ERROR
 
     parser.print_help()
     return 0

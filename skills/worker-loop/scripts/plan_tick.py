@@ -33,6 +33,7 @@ from devloops_lib.config import get_state_path, load_config
 from devloops_lib.gh import GhError
 from devloops_lib.pr_status import summarize_prs
 from devloops_lib.tick_gate import EXIT_ERROR, EXIT_NOOP, EXIT_RUN, load_state
+from devloops_lib.config import run_main
 
 # The pr_status priority order. wait-ci and none need no work now.
 PR_ACTIONS = ["resolve-conflict", "restack", "address-gatekeeper", "triage-comments", "fix-ci"]
@@ -147,4 +148,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    run_main(main)

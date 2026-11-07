@@ -11,8 +11,9 @@ import copy
 import json
 import os
 import re
+import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, NoReturn, Optional
 
 AGENT_ID_ENV = "DEVLOOPS_AGENT_ID"
 # The gatekeeper's approval label. Like the other gatekeeper:* labels it is part of
@@ -199,6 +200,25 @@ def find_config_file(start_dir: Path | str | None = None) -> Path | None:
 
 class ConfigError(ValueError):
     """Raised when a config file exists but cannot be read or parsed."""
+
+
+# Same value as tick_gate.EXIT_ERROR (tick_gate imports this module).
+EXIT_CONFIG_ERROR = 3
+
+
+def run_main(main: Callable[[], Optional[int]]) -> NoReturn:
+    """Run a script's main() and exit with its code.
+
+    An unusable config exits 3 (ERROR) with a message. An uncaught exception
+    would exit 1, which the gates use for NOOP, so a broken config would look
+    like "nothing to do".
+    """
+    try:
+        code = main()
+    except ConfigError as e:
+        sys.stderr.write(f"devloops config error: {e}\n")
+        code = EXIT_CONFIG_ERROR
+    sys.exit(code)
 
 
 def load_config(start_dir: Path | str | None = None) -> dict[str, Any]:
