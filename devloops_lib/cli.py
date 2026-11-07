@@ -135,9 +135,10 @@ def install_command(target_dir: Path) -> int:
     print(f"     {skills_dest}")
     print("  2. Project config: Review and customize:")
     print(f"     {config_dest}")
-    print("  3. Diagnostics: Verify prerequisites and installation by running:")
-    py_cmd = sys.executable or "python3"
-    print(f"     {py_cmd} {lib_dest / 'doctor.py'}")
+    print("  3. Diagnostics: Verify prerequisites and installation by running")
+    print("     (any Python 3.8+ on PATH; use `python` on Windows if `python3` is absent):")
+    doctor_path = skills_dest / "worker-loop" / "scripts" / "doctor.py"
+    print(f'     python3 "{doctor_path}"')
 
     return 0
 
