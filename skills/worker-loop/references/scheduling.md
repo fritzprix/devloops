@@ -34,8 +34,10 @@ Schedule via cron using the tick wrapper (which performs the gate check, holds t
 */10 * * * * cd /path/to/project && python3 .agents/skills/worker-loop/scripts/tick.py --agent-cmd '/path/to/agent-runner "/worker-loop"'
 ```
 
-### Agent IDs
-`--agent-id <id>` on `tick.py` (or `devloops tick`) or on a loop script gives one agent its own state, lock, and worktree:
+### Agent IDs and automatic slots
+With no `--agent-id` / `DEVLOOPS_AGENT_ID`, `tick_gate.py --lock` claims the first free slot (`default`, `default-2`, …), prints `AGENT <id>`, and sets `DEVLOOPS_AGENT_ID` until `--unlock` or idle `NOOP`. Parallel harnesses on one machine never share a tick lock silently.
+
+`--agent-id <id>` on `tick.py` (or `devloops tick`) or on a loop script still gives one agent its own state, lock, and worktree:
 
 | Path | Default | With `--agent-id a` |
 | --- | --- | --- |
@@ -48,7 +50,7 @@ The flag sets `DEVLOOPS_AGENT_ID`, which the agent started by the tick wrapper i
 
 | Concept | What it is | Held by | Answers |
 | --- | --- | --- | --- |
-| Slot | One worker, named by `--agent-id` (no id = the default slot) | You, when you start a worker | Whose state, lock, and worktree |
+| Slot | One worker per session (`default`, `default-2`, … from `tick_gate.py --lock`, or explicit `--agent-id`) | Auto check-in on `--lock` or you | Whose state, lock, and worktree |
 | Tick lock | `<slot dir>/tick.lock`, one tick per slot | The running tick, proven by its token | Is a tick of this slot running? |
 | Claim | One slot per PR or issue | The tick (PR) or slot (issue) working on it | Which slot works on this item? |
 

@@ -43,15 +43,45 @@ from pathlib import Path
 
 # Support running directly or as module
 try:
-    from devloops_lib.config import add_agent_id_argument, get_agent_id, get_state_path, load_config
+    from devloops_lib.config import (
+        AGENT_ID_ENV,
+        add_agent_id_argument,
+        get_agent_id,
+        get_checkins_path,
+        get_state_path,
+        load_config,
+        lock_ttl_seconds,
+    )
     from devloops_lib.gh import GhError, gh
+    from devloops_lib.sessions import (
+        CheckinError,
+        acquire_checkin,
+        release_checkin,
+        resolve_holder_pid,
+        session_key,
+    )
 except ImportError:
     # Walk up to find repo root
     _root = Path(__file__).resolve().parent.parent
     if str(_root) not in sys.path:
         sys.path.insert(0, str(_root))
-    from devloops_lib.config import add_agent_id_argument, get_agent_id, get_state_path, load_config
+    from devloops_lib.config import (
+        AGENT_ID_ENV,
+        add_agent_id_argument,
+        get_agent_id,
+        get_checkins_path,
+        get_state_path,
+        load_config,
+        lock_ttl_seconds,
+    )
     from devloops_lib.gh import GhError, gh
+    from devloops_lib.sessions import (
+        CheckinError,
+        acquire_checkin,
+        release_checkin,
+        resolve_holder_pid,
+        session_key,
+    )
 
 EXIT_RUN = 0
 EXIT_NOOP = 1
@@ -196,8 +226,8 @@ def _pid_alive(pid: int) -> bool:
         kernel32.CloseHandle(h_proc)
 
 
-def lock_ttl() -> int:
-    """Return the lock TTL in seconds: $DEVLOOPS_LOCK_TTL_SECONDS, or LOCK_TTL_SECONDS."""
+def lock_ttl(config: dict | None = None) -> int:
+    """Return lock TTL: ``$DEVLOOPS_LOCK_TTL_SECONDS``, then config, then default."""
     raw = os.environ.get(LOCK_TTL_ENV)
     if raw:
         try:
@@ -206,7 +236,15 @@ def lock_ttl() -> int:
             value = 0
         if value > 0:
             return value
-    return LOCK_TTL_SECONDS
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            config = {}
+    try:
+        return lock_ttl_seconds(config)
+    except Exception:
+        return LOCK_TTL_SECONDS
 
 
 def _is_stale_payload(data: dict, ttl_seconds: int) -> bool:
@@ -719,6 +757,36 @@ def preflight_decision(config: dict | None = None) -> tuple[str, list[int]]:
     )
 
 
+def _maybe_auto_checkin(args: argparse.Namespace, loop: str) -> tuple[bool, Path | None, str | None]:
+    """When no agent id is set, claim a free slot before taking the tick lock."""
+    if os.environ.get(AGENT_ID_ENV) or getattr(args, "agent_id", None):
+        return False, None, None
+    if os.environ.get(TOKEN_ENV):
+        return False, None, None
+    if not args.lock:
+        return False, None, None
+    checkins = get_checkins_path(loop)
+    sess = session_key()
+    try:
+        slot = acquire_checkin(None, checkins, session=sess, holder=args.pid)
+    except CheckinError as exc:
+        sys.stderr.write(f"tick_gate check-in error: {exc}\n")
+        raise SystemExit(EXIT_BUSY) from exc
+    print(f"AGENT {slot}")
+    return True, checkins, sess
+
+
+def _release_auto_checkin(
+    checkins: Path | None,
+    sess: str | None,
+    slot: str | None,
+    holder_pid: int | None,
+) -> None:
+    if checkins is None:
+        return
+    release_checkin(slot or get_agent_id(), checkins, session=sess, holder=holder_pid)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--loop", default="worker-loop", help="Loop name (default: worker-loop)")
@@ -733,14 +801,47 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--force-unlock", action="store_true", help="Operator only: remove tick.lock whoever owns it")
     args = parser.parse_args(argv)
 
+    checked_in = False
+    session = session_key()
+    checkins_path = get_checkins_path(args.loop)
+    auto_slot: str | None = None
+    holder_pid = resolve_holder_pid(args.pid)
+
+    try:
+        checked_in, _, _ = _maybe_auto_checkin(args, args.loop)
+        if checked_in:
+            auto_slot = get_agent_id()
+    except SystemExit:
+        raise
+
     state_path = args.state_file or default_state_path(args.loop)
     lock_path = state_path.parent / "tick.lock"
     token = args.token or os.environ.get(TOKEN_ENV)
     # Under the wrapper, --lock and --unlock leave its lock in place.
     wrapper_held = held_by_wrapper(lock_path)
 
+    def _finish_checkin() -> None:
+        _release_auto_checkin(checkins_path, session, auto_slot, holder_pid)
+
+    def _emit_token(tick_token: str | None) -> None:
+        if not tick_token:
+            return
+        print(f"TOKEN {tick_token}")
+        if not wrapper_held and args.lock:
+            from devloops_lib.lock_heartbeat import start_detached
+
+            start_detached(lock_path, tick_token)
+
+    def _exit_busy() -> None:
+        _finish_checkin()
+        print(f"BUSY ({describe_lock(lock_path)})")
+        sys.exit(EXIT_BUSY)
+
+    from devloops_lib.lock_heartbeat import stop_heartbeat
+
     try:
         if args.force_unlock:
+            stop_heartbeat(lock_path)
             release_lock(lock_path)
             print("UNLOCKED (forced by operator)")
             sys.exit(EXIT_RUN)
@@ -756,6 +857,7 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(EXIT_LOST)
 
         if args.unlock and not wrapper_held:
+            stop_heartbeat(lock_path)
             if not token:
                 sys.stderr.write(
                     f"--unlock needs the token printed by --lock (--token or ${TOKEN_ENV}); "
@@ -786,21 +888,19 @@ def main(argv: list[str] | None = None) -> None:
                     else:
                         release_lock(lock_path, token=token)
                         print("UNLOCKED")
+                        _finish_checkin()
             sys.exit(EXIT_RUN)
 
         if check_lock(lock_path) and not wrapper_held:
-            print(f"BUSY ({describe_lock(lock_path)})")
-            sys.exit(EXIT_BUSY)
+            _exit_busy()
 
         if args.loop != "worker-loop":
             # The fingerprint gate is the worker's; other loops only take the lock here.
-            tick_token = take_tick_lock(lock_path, args.loop, pid=args.pid) if args.lock else None
+            tick_token = take_tick_lock(lock_path, args.loop, pid=holder_pid) if args.lock else None
             if args.lock and tick_token is None:
-                print(f"BUSY ({describe_lock(lock_path)})")
-                sys.exit(EXIT_BUSY)
+                _exit_busy()
             print(f"RUN ({args.loop} has no fingerprint gate)")
-            if tick_token:
-                print(f"TOKEN {tick_token}")
+            _emit_token(tick_token)
             sys.exit(EXIT_RUN)
 
         state = load_state(state_path)
@@ -809,19 +909,18 @@ def main(argv: list[str] | None = None) -> None:
         if state.get("current"):
             tick_token = None
             if args.lock:
-                tick_token = take_tick_lock(lock_path, args.loop, pid=args.pid)
+                tick_token = take_tick_lock(lock_path, args.loop, pid=holder_pid)
                 if tick_token is None:
-                    print(f"BUSY ({describe_lock(lock_path)})")
-                    sys.exit(EXIT_BUSY)
+                    _exit_busy()
             print("RUN (current work in progress)")
-            if tick_token:
-                print(f"TOKEN {tick_token}")
+            _emit_token(tick_token)
             sys.exit(EXIT_RUN)
 
         fp, backlog = preflight_decision()
         last_fp = state.get("lastFingerprint")
 
         if last_fp and last_fp == fp and not backlog:
+            _finish_checkin()
             print("NOOP (no changes)")
             sys.exit(EXIT_NOOP)
 
@@ -829,24 +928,26 @@ def main(argv: list[str] | None = None) -> None:
         # lastFingerprint must be saved only after a successful tick via --update.
         tick_token = None
         if args.lock:
-            tick_token = take_tick_lock(lock_path, args.loop, pid=args.pid)
+            tick_token = take_tick_lock(lock_path, args.loop, pid=holder_pid)
             if tick_token is None:
-                print(f"BUSY ({describe_lock(lock_path)})")
-                sys.exit(EXIT_BUSY)
+                _exit_busy()
             state["tickStartFingerprint"] = fp
             save_state(state_path, state)
         if last_fp and last_fp == fp:
             print(f"RUN (approved backlog waiting: #{', #'.join(map(str, backlog))})")
         else:
             print(f"RUN (changes detected: {fp[:12]})")
-        if tick_token:
-            print(f"TOKEN {tick_token}")
+        _emit_token(tick_token)
         sys.exit(EXIT_RUN)
 
     except GhError as e:
+        stop_heartbeat(lock_path)
+        _finish_checkin()
         sys.stderr.write(f"tick_gate GitHub CLI error: {e}\n")
         sys.exit(EXIT_ERROR)
     except Exception as e:
+        stop_heartbeat(lock_path)
+        _finish_checkin()
         sys.stderr.write(f"tick_gate unexpected error: {e}\n")
         sys.exit(EXIT_ERROR)
 

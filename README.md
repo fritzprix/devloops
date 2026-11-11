@@ -64,8 +64,10 @@ human ───────────► merge
 - The worker skips producer issues that do not have the `approved` label.
 - The worker and the gatekeeper can share one GitHub account. So verdicts are PR
   comments with a hidden marker, plus a `gatekeeper:*` label.
-- The gatekeeper adds `gatekeeper:needs-human` for extra review on security-sensitive PRs and
-  PRs that touch `protected_paths` (the worker still implements; humans merge).
+- The gatekeeper **expands its own prerequisites** (CI workflows, review rubrics, fixtures)
+  when missing, instead of blocking on `needs-human`. Humans collaborate only when judgment
+  criteria are ambiguous (draft rubric for confirm/edit). `gatekeeper:needs-human` remains for
+  security-sensitive paths, loop-skill edits, and ambiguous criteria.
 
 ### Tick gate
 
@@ -76,7 +78,8 @@ same slot holds the lock, it prints `BUSY` with the holder's pid, start, and las
 For the worker, it first runs a fingerprint check, and it does not start the agent when
 nothing changed.
 
-A **slot** is one loop agent (`--agent-id`); the **tick lock** allows one tick per slot;
+A **slot** is one loop agent (`--agent-id`, or auto-assigned `default`, `default-2`, … on
+`tick_gate.py --lock`); the **tick lock** allows one tick per slot;
 **claims** keep two worker slots off the same PR or issue. `BUSY` is about the tick lock of
 the same slot only: it never means that another worker exists. See
 [`scheduling.md`](skills/worker-loop/references/scheduling.md#slots-tick-locks-and-claims).
@@ -84,7 +87,9 @@ the same slot only: it never means that another worker exists. See
 Inside the agent, or when you start a tick without the wrapper, `tick_gate.py`
 decides if there is anything to do:
 
-1. `--lock` takes `tick.lock` and prints `TOKEN <token>`, the tick's proof of ownership.
+1. `--lock` takes `tick.lock`, prints `AGENT <id>` when the slot was auto-assigned, then
+   `TOKEN <token>` (the tick's proof of ownership). A detached heartbeat keeps the lock alive
+   for long ticks without manual `--renew`.
    Under the wrapper, it recognizes the wrapper's token (`DEVLOOPS_TICK_TOKEN`) and leaves
    the wrapper's lock in place. If a tick of the same slot holds the lock, it prints `BUSY`.
 2. It computes a fingerprint with one GitHub GraphQL request (your open PRs:

@@ -393,10 +393,21 @@ class Issue14ClassificationTests(unittest.TestCase):
             clean_head="head0", pending_checks=["Test"], total_checks=1))
         self.assertEqual(status, "review")
 
-    def test_clean_head_without_ci_runs_is_needs_human(self) -> None:
-        status, reason, _ = classify(**base_args(clean_head="head1", total_checks=0))
-        self.assertEqual(status, "needs-human")
-        self.assertIn("no CI", reason)
+    def test_clean_head_without_repo_ci_is_await_bootstrap(self) -> None:
+        status, reason, _ = classify(
+            **base_args(clean_head="head1", total_checks=0),
+            repo_has_ci=False,
+        )
+        self.assertEqual(status, "await-bootstrap")
+        self.assertIn("CI", reason)
+
+    def test_clean_head_with_repo_ci_but_no_runs_is_await_ci(self) -> None:
+        status, reason, _ = classify(
+            **base_args(clean_head="head1", total_checks=0),
+            repo_has_ci=True,
+        )
+        self.assertEqual(status, "await-ci")
+        self.assertIn("waiting for CI", reason)
 
     def test_clean_head_pending_checks_is_await_ci(self) -> None:
         status, _, _ = classify(**base_args(
@@ -458,10 +469,10 @@ class Issue14NeedsHumanTests(unittest.TestCase):
         self.assertTrue(guidance["commentPresent"])
         self.assertFalse(guidance["staleLabel"])
 
-    def test_clean_no_ci_guidance(self) -> None:
+    def test_ambiguous_rubric_guidance(self) -> None:
         guidance = needs_human_guidance(status="needs-human", own_skill=False, sensitive=[],
                                         labels=[], needs_comment_present=False)
-        self.assertEqual(guidance["reason"], "no CI on head")
+        self.assertEqual(guidance["reason"], "ambiguous review criteria")
         self.assertFalse(guidance["labelPresent"])
         self.assertFalse(guidance["commentPresent"])
 

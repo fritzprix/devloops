@@ -74,11 +74,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "gatekeeper": {
         "max_issue_validations_per_tick": 1,
+        "rubric_paths": [],
+        "issue_rules_paths": [],
     },
     "worker": {
         "max_items_per_tick": 1,
         "open_pr_limit": 5,
         "issue_claim_ttl_minutes": 120,
+        "lock_ttl_seconds": 1800,
     },
     "scheduler": "shell",
 }
@@ -356,3 +359,29 @@ def get_lock_path(loop_name: str, config: dict[str, Any] | None = None, start_di
     """Return path to <state_dir>/<loop>/tick.lock."""
     state_file = get_state_path(loop_name, config=config, start_dir=start_dir)
     return state_file.parent / "tick.lock"
+
+
+def get_checkins_path(loop_name: str, config: dict[str, Any] | None = None, start_dir: Path | str | None = None) -> Path:
+    """Return shared <state_dir>/<loop>/checkins.json for automatic slot assignment."""
+    env = os.environ.get("LOOP_STATE_DIR")
+    if env:
+        p = Path(env)
+        base = p.parent if p.name == "state.json" else p
+        loop_dir = base if base.name == loop_name else base / loop_name
+        return (loop_dir / "checkins.json").resolve()
+
+    cfg = config or load_config(start_dir=start_dir)
+    state_dir = cfg.get("state_dir", ".devloops")
+    root = find_project_root(start_dir=start_dir)
+    return (root / state_dir / loop_name / "checkins.json").resolve()
+
+
+def lock_ttl_seconds(cfg: dict[str, Any] | None = None) -> int:
+    """Tick lock TTL from config (``worker.lock_ttl_seconds``). Env still overrides in tick_gate."""
+    cfg = cfg or DEFAULT_CONFIG
+    value = cfg.get("worker", {}).get("lock_ttl_seconds", DEFAULT_CONFIG["worker"]["lock_ttl_seconds"])
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise ConfigError(f"worker.lock_ttl_seconds must be a positive number, got {value!r}")
+    return int(value)
+
+

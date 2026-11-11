@@ -5,7 +5,10 @@ description: 'Reviewer loop paired with worker-loop. Each tick reviews open PRs,
 
 # Gatekeeper Loop
 
-The reviewer half of a two-agent loop. `worker-loop` writes code; `gatekeeper-loop` reviews it and talks to the worker **only through PR comments**:
+The reviewer half of a two-agent loop. `worker-loop` writes code; `gatekeeper-loop` reviews it and talks to the worker **only through PR comments**.
+
+**Autonomous expansion:** Whatever the gatekeeper needs to judge PRs reliably — CI, written rubrics, test fixtures, verification tooling — it detects the gap and **builds or proposes it itself** (usually via a bootstrap PR) instead of blocking or idling with `needs-human`. Human collaboration is reserved for **ambiguous judgment criteria**: post a concrete draft rubric or acceptance checklist and ask the owner to confirm or edit (never open-ended questions). Missing CI and missing rubrics are instances of this rule, not special cases.
+
 
 ```
 worker opens PR ─► gatekeeper verdict (changes-requested, G-items)
@@ -61,13 +64,23 @@ python3 "$SKILL_DIR/scripts/tick_lock.py" --lock
 - `BUSY` (exit 2): a tick of this gatekeeper slot holds the lock (a duplicate start or this slot's own earlier tick). It does not mean another gatekeeper exists. Stop and do not unlock.
 - At the end of every tick, also after an error: `python3 "$SKILL_DIR/scripts/tick_lock.py" --unlock --token "$TOKEN"`. `LOST` (exit 4) means another tick took over a lock that was not renewed within the TTL; stop without posting further comments. For a review that may run longer than a third of the TTL (`DEVLOOPS_LOCK_TTL_SECONDS`, default 30 minutes), renew first: `tick_lock.py --renew --token "$TOKEN"`.
 
-### 1. Queue
+### 1. Readiness and queue
 
 ```bash
 python3 "$SKILL_DIR/scripts/review_queue.py" [--pr N]
 ```
 
-The script output is already sorted: priority 0 first (worker response, new head, rebase, owner comment, base change, CI failure after approve), then never-reviewed PRs, oldest first. Process **every** `status: review` PR in that order, at most **5 per tick**; leftovers carry over and keep their priority.
+The JSON output has `readiness` (repo CI + rubric gaps and `autonomousWork` for this tick) and `prs` (sorted queue). **Before reviewing PRs**, execute every `readiness.autonomousWork` item:
+
+| Gap | Autonomous action |
+| --- | --- |
+| Missing PR CI | Open a PR adding a sensible `.github/workflows` workflow (`pull_request`, lint/test/build from `devloops.config.yaml` `commands` and repo layout). Merge via human when required; until then keep the bootstrap PR moving. |
+| Missing / thin rubric | Open a PR adding `REVIEW_RUBRIC.md` (and link `ISSUE_RULES.md` when present), with checkable criteria and judgment procedure. |
+| Ambiguous rubric (`co_create`) | Post a concrete draft rubric as an issue or PR comment (checkable criteria, procedure, fail conditions); label `gatekeeper:needs-human` with reason `ambiguous review criteria`. Hold approve on affected PRs until the owner confirms. |
+
+When CI was missing, reviewed worker PRs in `await-bootstrap` stay clean-marked; after CI lands, run `gh pr update-branch` (or ask worker) so checks run on the current head, then approve when green.
+
+The `prs` list is sorted: priority 0 first (worker response, new head, rebase, owner comment, base change, CI failure after approve), then never-reviewed PRs, oldest first. Process **every** `status: review` PR in that order, at most **5 per tick**; leftovers carry over and keep their priority.
 
 - **Never empty or skip a tick due to pending CI**: select PRs that actually have reviewable work in this tick.
 - PRs in `status: await-ci` have a `verdict=clean` marker for the current head and are only waiting for CI; do not re-review them.
@@ -78,7 +91,8 @@ The script output is already sorted: priority 0 first (worker response, new head
 Other statuses:
 
 - `await-ci` — a `verdict=clean` marker exists for this head; waiting only for CI completion. Remove any stale `gatekeeper:changes-requested` label (e.g. `gh pr edit N --remove-label gatekeeper:changes-requested`). If CI turned green, post `approve` and remove any stale `gatekeeper:changes-requested` label (e.g. `gh pr edit N --add-label gatekeeper:approved --remove-label gatekeeper:changes-requested,gatekeeper:escalated`); if failed, diagnose failure and post `changes-requested`.
-- `needs-human` — the current head was reviewed clean but no CI runs exist on it (`no CI on head`). Do not re-review and do not approve. Ensure the `gatekeeper:needs-human` label and one `kind=needs-human` marker comment exist (check `needsHuman` in the queue output; never duplicate them). When CI runs appear or the head changes, the status clears; then remove `gatekeeper:needs-human` only if `needsHuman.staleLabel` is true and no security-sensitive or human-only reason remains.
+- `await-bootstrap` — code review is done for this head but repo CI or rubric bootstrap is still in flight (`readiness.gaps`). Finish autonomous work first; do not approve until CI can run on the head and criteria are explicit.
+- `needs-human` — **ambiguous review criteria** only (plus security-sensitive paths and loop-skill edits as before). Post a draft rubric/checklist for the owner; do not use this status for missing CI (bootstrap CI instead).
 - `wait-worker` — worker's turn (changes requested at current head without response, or merge conflicts).
 - `approved` — nothing to do; make sure the label is `gatekeeper:approved`. For any PR with `staleApprovedLabel: true` (status no longer `approved`), swap the label right away (`gatekeeper:changes-requested` if CI is failing, otherwise remove `gatekeeper:approved`) before reviewing, so a stale approve is never visible. The script already turns an approve back into `review` when the head changed (a push after an approve **always requires re-review**), CI fails, the base changed (e.g. stacked PR retargeted), or the owner commented.
 - `escalate` — post an `escalate` verdict if none exists yet and swap the label to `gatekeeper:escalated`. Note: An owner comment on an escalated PR resets status to `review` so the gatekeeper can incorporate owner direction.

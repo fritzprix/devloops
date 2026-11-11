@@ -17,9 +17,11 @@ status values:
   approved   - approve verdict exists for the current head, base unchanged, CI
                not failing, no newer owner comment.
   escalate   - round limit reached or second dispute on the same finding; maintainer direction.
-  needs-human - blocked on a person, not on code: reviewed clean at the current
-               head but no CI runs exist when CI is expected. No re-review until
-               a new head or genuinely new input arrives.
+  await-bootstrap - reviewed clean but the repo lacks PR CI (or it has not run on
+               this head yet while bootstrap is in flight). The gatekeeper opens
+               CI/rubric PRs autonomously; worker PRs wait for checks then continue.
+  needs-human - judgment criteria are ambiguous: gatekeeper posted a draft rubric
+               for the owner to confirm. Not used for missing CI (bootstrap instead).
   human-only - touches the gatekeeper's own skill; never reviewed or approved by
                the loop, but surfaced to the human via `gatekeeper:needs-human`.
 
@@ -42,6 +44,7 @@ if str(_script_dir) not in sys.path:
     sys.path.insert(0, str(_script_dir))
 
 from devloops_lib.config import GATEKEEPER_APPROVED_LABEL, add_agent_id_argument, get_state_path, load_config
+from devloops_lib.gatekeeper_readiness import assess_readiness
 from devloops_lib.gh import GhError, gh
 from devloops_lib.config import run_main
 
@@ -170,6 +173,8 @@ def classify(
     owner_comment: bool = False,
     total_checks: int | None = None,
     config: dict | None = None,
+    repo_has_ci: bool = True,
+    rubric_ready: bool = True,
 ) -> tuple[str, str, int]:
     """Return (status, one-line reason, priority). Lower priority number is handled first."""
     ci_applies = is_dev_base(base, config=config)
@@ -217,7 +222,11 @@ def classify(
         if ci_applies and pending_checks:
             return "await-ci", "reviewed clean; waiting for pending CI", 9
         if ci_applies and total_checks == 0:
-            return "needs-human", "reviewed clean but no CI runs on the head (no CI on head)", 9
+            if not repo_has_ci:
+                return "await-bootstrap", "reviewed clean; gatekeeper must add repo CI before approve", 8
+            return "await-ci", "reviewed clean; waiting for CI to run on head", 9
+        if not rubric_ready:
+            return "await-bootstrap", "reviewed clean; gatekeeper must finalize review criteria", 8
         return "review", "reviewed clean; CI done or not applicable, issue the verdict", 1
 
     if failing_checks and ci_applies:
@@ -248,7 +257,7 @@ def needs_human_guidance(
     if status == "human-only":
         reason = "changes loop skill files"
     elif status == "needs-human":
-        reason = "no CI on head"
+        reason = "ambiguous review criteria"
     elif sensitive:
         reason = "security-sensitive paths"
     else:
@@ -262,13 +271,23 @@ def needs_human_guidance(
             "commentPresent": needs_comment_present, "staleLabel": False}
 
 
-def summarize(number: int, me: str, state: dict | None = None, config: dict | None = None) -> dict:
+def summarize(
+    number: int,
+    me: str,
+    state: dict | None = None,
+    config: dict | None = None,
+    readiness: dict | None = None,
+) -> dict:
     pr = json.loads(
         gh("pr", "view", str(number), "--json",
            "number,title,url,headRefName,headRefOid,baseRefName,isDraft,mergeable,createdAt,"
            "statusCheckRollup,comments,labels,files")
     )
     cfg = config or load_config()
+    readiness = readiness or assess_readiness(config=cfg)
+    repo_has_ci = bool((readiness.get("ci") or {}).get("present"))
+    rubric_status = (readiness.get("rubric") or {}).get("status", "present")
+    rubric_ready = rubric_status == "present"
     base = pr["baseRefName"]
     checks = pr.get("statusCheckRollup") or []
     failing = [c.get("name") or c.get("context") for c in checks if check_state(c) in FAILED]
@@ -331,6 +350,8 @@ def summarize(number: int, me: str, state: dict | None = None, config: dict | No
         owner_comment=bool(owner),
         total_checks=len(checks),
         config=cfg,
+        repo_has_ci=repo_has_ci,
+        rubric_ready=rubric_ready,
     )
     if own_skill:
         status, reason, priority = "human-only", "changes loop skill files; left to the human", 9
@@ -423,9 +444,10 @@ def main(argv: list[str] | None = None) -> None:
                                     "--json", "number,isDraft"))
             numbers = [p["number"] for p in listed if not p["isDraft"]]
 
-        summaries = [summarize(n, me, state, cfg) for n in numbers]
+        readiness = assess_readiness(config=cfg)
+        summaries = [summarize(n, me, state, cfg, readiness) for n in numbers]
         summaries.sort(key=lambda x: (x["priority"], x["createdAt"]))
-        print(json.dumps(summaries, ensure_ascii=False, indent=2))
+        print(json.dumps({"readiness": readiness, "prs": summaries}, ensure_ascii=False, indent=2))
     except GhError as e:
         sys.exit(f"gh error: {e}")
 
