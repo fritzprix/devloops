@@ -23,8 +23,8 @@ Checks:
 - the documented library-import one-liner from worktree-setup.md runs verbatim
   from the installed project root with no PYTHONPATH;
 - installed skill scripts run `--help` (exit 0) from an unrelated cwd,
-  bootstrapping their own imports;
-- doctor entry points compile (doctor runs live env diagnostics, not argv);
+  bootstrapping their own imports from the skill's own devloops_lib;
+- doctor entry points compile, and `doctor.py --init` writes the bundled template;
 - re-install from a second unrelated cwd keeps edited skill files and the
   edited config, and reports them as skipped;
 - no dev-only test wrappers are installed.
@@ -53,7 +53,7 @@ LEGACY_SCRIPT_REF = re.compile(r"skills/[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+\.py")
 # Relative markdown links, e.g. (references/x.md) or (../worker-loop/references/y.md).
 MD_LINK = re.compile(r"\]\((?!https?://|mailto:)([^)#\s]+\.md)(?:#[^)\s]*)?\)")
 # The documented base-branch library-import one-liner (bash form) in worktree-setup.md.
-DOC_ONELINER = re.compile(r'BASE=\$\(python3 -c "(.+?)"\)')
+DOC_ONELINER = re.compile(r'BASE=\$\(python3 -c "(.+?)" "\$SKILL_DIR/scripts"\)')
 
 
 def _run(cmd: list[str], cwd: Path, env_extra: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -123,7 +123,8 @@ class RelocatedInstallSmokeTest(unittest.TestCase):
         for skill in REQUIRED_SKILLS:
             self.assertTrue((self.skills_dest / skill / "SKILL.md").is_file(),
                             f"{skill}/SKILL.md missing after install")
-        self.assertTrue((self.target / ".agents" / "devloops_lib" / "config.py").is_file())
+            self.assertTrue((self.skills_dest / skill / "scripts" / "devloops_lib" / "config.py").is_file(),
+                            f"{skill} must carry its own devloops_lib")
         self.assertTrue((self.target / "devloops.config.yaml").is_file())
 
     def test_skill_script_references_resolve_and_are_counted_per_skill(self):
@@ -189,17 +190,16 @@ class RelocatedInstallSmokeTest(unittest.TestCase):
         match = DOC_ONELINER.search(doc.read_text(encoding="utf-8"))
         self.assertIsNotNone(match, "documented base-branch one-liner missing from worktree-setup.md")
         code = match.group(1)
-        self.assertIn("sys.path.insert(0, '.agents')", code)
+        self.assertIn("sys.path.insert(0, sys.argv[1])", code)
         self.assertIn("base_branch", code)
-        proc = _run([sys.executable, "-c", code], cwd=self.target)
+        skill_scripts = self.skills_dest / "worker-loop" / "scripts"
+        proc = _run([sys.executable, "-c", code, str(skill_scripts)], cwd=self.target)
         self.assertEqual(proc.returncode, 0,
                          f"documented one-liner failed in relocated install:\n{proc.stderr}")
         self.assertEqual(proc.stdout.strip(), "main")
 
     def test_installed_skill_scripts_run_help_from_unrelated_cwd(self):
-        # doctor.py ignores argv (it runs full environment diagnostics and its exit
-        # code reflects the machine), so it gets a compile check instead of --help.
-        scripts = [s for s in sorted(self.skills_dest.glob("*/scripts/*.py")) if s.name != "doctor.py"]
+        scripts = sorted(self.skills_dest.glob("*/scripts/*.py"))
         self.assertGreaterEqual(len(scripts), 3, "expected installed skill scripts to smoke-test")
         for script in scripts:
             proc = _run([sys.executable, str(script), "--help"], cwd=self.cwd_dir)
@@ -215,13 +215,40 @@ class RelocatedInstallSmokeTest(unittest.TestCase):
                              f"{doctor.relative_to(self.target)} failed to compile:\n{proc.stderr}")
 
     def test_installed_lib_imports_from_relocated_layout(self):
-        proc = _run(
-            [sys.executable, "-c", "import devloops_lib.config, devloops_lib.tick_gate, devloops_lib.gh, "
-                                   "devloops_lib.claims, devloops_lib.guard, devloops_lib.cli"],
-            cwd=self.cwd_dir,
-            env_extra={"PYTHONPATH": str(self.target / ".agents")},
-        )
-        self.assertEqual(proc.returncode, 0, f"installed devloops_lib import failed:\n{proc.stderr}")
+        # Skill installers copy one skill directory, so each skill's own copy must import.
+        for skill in REQUIRED_SKILLS:
+            proc = _run(
+                [sys.executable, "-c", "import devloops_lib.config, devloops_lib.tick_gate, devloops_lib.gh, "
+                                       "devloops_lib.claims, devloops_lib.guard, devloops_lib.cli"],
+                cwd=self.cwd_dir,
+                env_extra={"PYTHONPATH": str(self.skills_dest / skill / "scripts")},
+            )
+            self.assertEqual(proc.returncode, 0, f"{skill} devloops_lib import failed:\n{proc.stderr}")
+
+    def test_skill_tick_wrapper_runs_agent_under_lock(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        project = Path(tmp.name).resolve() / "tick project"
+        (project / ".git").mkdir(parents=True)
+        tick = self.skills_dest / "gatekeeper-loop" / "scripts" / "tick.py"
+        agent = subprocess.list2cmdline([sys.executable, "-c", "print('agent ran')"])
+        proc = _run([sys.executable, str(tick), "--agent-cmd", agent], cwd=project)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("LOCKED (gatekeeper-loop)", proc.stdout)
+        self.assertIn("agent ran", proc.stdout)
+        self.assertIn("UNLOCKED", proc.stdout)
+        self.assertFalse((project / ".devloops" / "gatekeeper-loop" / "tick.lock").exists())
+
+    def test_doctor_init_creates_config_from_skill_template(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        project = Path(tmp.name).resolve() / "fresh project"
+        (project / ".git").mkdir(parents=True)
+        doctor = self.skills_dest / "worker-loop" / "scripts" / "doctor.py"
+        proc = _run([sys.executable, str(doctor), "--init"], cwd=project)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual((project / "devloops.config.yaml").read_text(encoding="utf-8"),
+                         (REPO_ROOT / "templates" / "devloops.config.yaml").read_text(encoding="utf-8"))
 
     def test_no_dev_only_test_wrappers_are_installed(self):
         self.assertEqual(sorted(self.skills_dest.glob("*/scripts/test_*.py")), [])

@@ -32,7 +32,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SKILLS = ("worker-loop", "gatekeeper-loop", "producer-loop")
-WHEEL_REQUIRED = [f"devloops_lib/assets/skills/{skill}/SKILL.md" for skill in SKILLS] + [
+WHEEL_REQUIRED = [
+    f"devloops_lib/assets/skills/{skill}/{rel}"
+    for skill in SKILLS
+    for rel in ("SKILL.md", "scripts/devloops_lib/cli.py", "assets/devloops.config.yaml")
+] + [
     "devloops_lib/assets/templates/devloops.config.yaml",
     "devloops_lib/cli.py",
     "devloops_lib/claims.py",

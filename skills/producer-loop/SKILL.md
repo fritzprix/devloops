@@ -64,7 +64,7 @@ Lock file: `<state_dir>/producer-loop/tick.lock` (lock TTL: 30 minutes, 1800s).
 ## Tick procedure
 
 ### 0. Gate Check & Lock
-Under `devloops tick producer`, the wrapper already holds the lock and exports its token as `DEVLOOPS_TICK_TOKEN`. The `--lock` and `--unlock` flags recognize that token and leave the lock to the wrapper, so the commands in this procedure do not change.
+Under the tick wrapper (`scripts/tick.py`, or `devloops tick producer`), the wrapper already holds the lock and exports its token as `DEVLOOPS_TICK_TOKEN`. The `--lock` and `--unlock` flags recognize that token and leave the lock to the wrapper, so the commands in this procedure do not change.
 
 1. Run preflight gate:
    ```bash

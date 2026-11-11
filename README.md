@@ -3,9 +3,10 @@
 Reusable agent-loop skills for coding agents.
 
 devloops gives a coding agent three loops: **producer**, **worker**, and **gatekeeper**.
-Each loop is a skill (`SKILL.md` plus helper scripts). You install the skills into a
-project's `.agents/skills/` directory. A per-project file, `devloops.config.yaml`,
-holds the project values (repo, branches, commands, protected paths, labels).
+Each loop is a self-contained skill (`SKILL.md` plus helper scripts). You install the
+skills into your project with `npx skills add fritzprix/devloops`. A per-project file,
+`devloops.config.yaml`, holds the project values (repo, branches, commands, protected
+paths, labels).
 
 ## Install with an agent
 
@@ -13,9 +14,10 @@ Paste this into a coding agent opened in your project:
 
 ```text
 Install devloops into this repository.
-1. Run `uvx devloops install`. (Fallback only if uvx is unavailable: clone the devloops repo and run `scripts/install.sh <this repo>`.)
-2. If `devloops.config.yaml` does not exist, create it from the installed template and ask me only for values you cannot detect. If it exists, do not change it without asking me.
-3. Run `python3 .agents/skills/worker-loop/scripts/doctor.py` and check that every script path mentioned in the installed SKILL.md files exists and runs from any directory. Report the result.
+1. Run `npx skills add fritzprix/devloops --skill '*' -y` (add `-a claude-code` if you are Claude Code). Fallback only if Node.js is unavailable: `uvx --from git+https://github.com/fritzprix/devloops devloops install`.
+2. Find where the worker-loop skill was installed (for example `.agents/skills/worker-loop` or `.claude/skills/worker-loop`); call it WORKER below.
+3. If `devloops.config.yaml` does not exist, run `python3 WORKER/scripts/doctor.py --init`, then fill it in and ask me only for values you cannot detect. If it exists, do not change it without asking me.
+4. Run `python3 WORKER/scripts/doctor.py` and check that every script path mentioned in the installed SKILL.md files exists and runs from any directory. Report the result.
 Do not set up schedules (cron or routines).
 ```
 
@@ -67,7 +69,7 @@ human ───────────► merge
 
 ### Tick gate
 
-A scheduler starts each loop in **ticks**, through `devloops tick <loop> --agent-cmd '...'`.
+A scheduler starts each loop in **ticks**, through the skill's `scripts/tick.py --agent-cmd '...'` (or `devloops tick <loop>`).
 The wrapper takes `tick.lock`, starts the agent, renews the lock while the agent runs,
 and releases the lock (and the tick's PR claims) on every exit path. If a tick of the
 same slot holds the lock, it prints `BUSY` with the holder's pid, start, and last renewal.
@@ -113,33 +115,64 @@ The producer has its own gate, `producer_gate.py`. It picks the most overdue tas
 - Python 3.8 or later (no third-party packages; tested with 3.13)
 - `git`
 - GitHub CLI `gh`, logged in, with push permission to the project repo. Note: issue-only trackers (for example Linear, Jira) still need a git host for pull requests, code reviews, and CI status.
-- A coding agent that can load skills from `.agents/skills/`
+- A coding agent that loads skills (`SKILL.md` directories)
+- To install: Node.js 22.20 or later for `npx skills` (or `uv` for the Python installer)
 
 ## Install
 
-The recommended way to install devloops into a project is via `uvx`:
+devloops installs with the [`skills` CLI](https://github.com/vercel-labs/skills)
+(Node.js 22.20 or later). Each skill is self-contained: it ships its own copy of the
+shared code (`scripts/devloops_lib/`) and the config template (`assets/`), so nothing
+else needs to be installed. Run from your project root:
 
 ```sh
-uvx devloops install                      # install into current project
-uvx devloops install --target /path/to/project
+# 1. Install the three skills (prompts for your coding agents)
+npx skills add fritzprix/devloops --skill '*'
+
+# 2. Create devloops.config.yaml from the template, then edit it (see Configure)
+python3 .agents/skills/worker-loop/scripts/doctor.py --init
+
+# 3. Check the prerequisites
+python3 .agents/skills/worker-loop/scripts/doctor.py
 ```
 
-Alternatively, from a local checkout:
+Then add the state directory (default `.devloops/`) to `.gitignore`.
+
+Where the skills land depends on the agents you pick. Cursor, Codex, Gemini CLI,
+GitHub Copilot, and most other agents read `.agents/skills/`; Claude Code reads
+`.claude/skills/`. The commands in this README use `.agents/skills/`: replace it with
+your agent's directory. For a non-interactive install, name the agents:
 
 ```sh
-git clone https://github.com/fritzprix/devloops.git
-devloops/scripts/install.sh /path/to/project          # copy
-devloops/scripts/install.sh /path/to/project --link   # symlink (follows updates)
+npx skills add fritzprix/devloops --skill '*' -a cursor claude-code -y
 ```
 
-The script installs:
+The CLI records the installed versions in `skills-lock.json`; commit it with the skills.
 
-- `skills/*` to `<project>/.agents/skills/` (`worker-loop`, `gatekeeper-loop`, `producer-loop`)
-- `devloops_lib/` to `<project>/.agents/devloops_lib/`
-- `templates/devloops.config.yaml` to `<project>/devloops.config.yaml`, if it does not exist
+### Update
 
-It does not overwrite a skill that already exists. Add the state directory
-(default `.devloops/`) to `.gitignore`.
+```sh
+npx skills check     # list available updates
+npx skills update    # update the installed skills
+```
+
+Always update the three skills together. They share state and lock files, and
+`doctor.py` fails when their copies of `devloops_lib` differ.
+
+### Without Node.js
+
+Run the Python installer straight from GitHub (devloops is not on PyPI yet). It copies
+the skills to `.agents/skills/` and creates `devloops.config.yaml` if it does not exist:
+
+```sh
+uvx --from git+https://github.com/fritzprix/devloops devloops install
+uvx --from git+https://github.com/fritzprix/devloops devloops install --target /path/to/project
+```
+
+From a local checkout, `scripts/install.sh /path/to/project` does the same, and
+`--link` symlinks the skills instead (they follow the checkout). These installers
+never overwrite a skill that already exists: to update, delete the three skill
+directories and install again.
 
 ## Configure
 
@@ -169,7 +202,8 @@ Edit `<project>/devloops.config.yaml`:
 
 ## Run
 
-Check the prerequisites first (Python, GitHub API, `git`, `gh auth`, push permission):
+Check the prerequisites first (Python, GitHub API, `git`, `gh auth`, push permission,
+matching skill versions):
 
 ```sh
 python3 .agents/skills/worker-loop/scripts/doctor.py
@@ -187,13 +221,20 @@ Then tell your agent:
 `/gatekeeper-loop` and `/producer-loop` use the same forms. `/gatekeeper-loop 10m --pr N`
 reviews one PR. `/producer-loop <task>` runs one producer task.
 
-A cron example that starts the agent only when the gate says RUN (using the `devloops tick` wrapper):
+A cron example that starts the agent only when the gate says RUN, through each skill's
+tick wrapper `scripts/tick.py`:
 
 ```cron
-*/10 * * * * cd /path/to/project && devloops tick worker --agent-cmd '/path/to/agent-runner "/worker-loop"'
+*/10 * * * * cd /path/to/project && python3 .agents/skills/worker-loop/scripts/tick.py --agent-cmd '/path/to/agent-runner "/worker-loop"'
 ```
 
-See `.agents/skills/worker-loop/references/scheduling.md` (installed) or `skills/worker-loop/references/scheduling.md` (repo) for the shell-loop and harness adapters.
+The gatekeeper and producer have the same wrapper in their own skill
+(`gatekeeper-loop/scripts/tick.py`, `producer-loop/scripts/tick.py`). `devloops tick <loop>`
+is the same wrapper, for setups that installed the `devloops` command
+(`uv tool install git+https://github.com/fritzprix/devloops`).
+
+See [`scheduling.md`](skills/worker-loop/references/scheduling.md) (installed at
+`worker-loop/references/scheduling.md`) for the shell-loop and harness adapters.
 
 ## Labels
 
@@ -237,6 +278,10 @@ python3 -m unittest discover -s tests -p 'test_*.py'   # or: python3 -m pytest -
 uv build && python3 scripts/ci_smoke.py --dist dist     # wheel + relocated-install smoke test
 ```
 
+Edit shared code only in `devloops_lib/` and `templates/`, then run
+`python3 scripts/sync_skill_lib.py` and commit the copies it writes into each skill.
+`tests/test_skill_lib_sync.py` fails while a copy is out of date.
+
 `tests/test_concurrency.py` starts real competing processes (tick locks, wrapper
 heartbeat, lost ownership, PR and issue claim races). CI (`.github/workflows/ci.yml`)
 runs the tests, the build, and the smoke test on Linux, Windows, and macOS with
@@ -246,8 +291,9 @@ Python 3.8 and 3.13, on every PR head and on `main`.
 
 | Path | Purpose |
 | --- | --- |
-| `skills/` | `worker-loop`, `gatekeeper-loop`, `producer-loop`. Each has `SKILL.md`, `references/`, `scripts/`. |
-| `devloops_lib/` | Shared code: config, tick gate, claims, ownership guard, PR status, issue queue, producer, doctor |
-| `templates/devloops.config.yaml` | Project config template |
-| `scripts/install.sh` | Copies or links the skills and `devloops_lib` into a project |
+| `skills/` | `worker-loop`, `gatekeeper-loop`, `producer-loop`. Each has `SKILL.md`, `references/`, `scripts/` (with a generated `devloops_lib/` copy), and `assets/` (generated config template). |
+| `devloops_lib/` | Shared code (the source of the copies): config, tick gate, claims, ownership guard, PR status, issue queue, producer, doctor |
+| `templates/devloops.config.yaml` | Project config template (the source of the copies) |
+| `scripts/sync_skill_lib.py` | Copies `devloops_lib/` and the template into each skill; `--check` reports stale copies |
+| `scripts/install.sh` | Copies or links the skills and the config template into a project |
 | `tests/` | Unit tests |

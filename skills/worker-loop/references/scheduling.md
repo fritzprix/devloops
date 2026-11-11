@@ -12,37 +12,37 @@
 ## Schedulers
 
 ### 1. Shell Loop Adapter (Default)
-Run a background shell process that periodically triggers the tick via the `devloops tick` wrapper:
+Run a background shell process that periodically triggers the tick via the skill's tick wrapper, `scripts/tick.py` (the same as `devloops tick worker` when the `devloops` command is installed):
 
 - **Bash (Linux/macOS)**:
   ```bash
-  while true; do devloops tick worker --agent-cmd 'agent "/worker-loop"'; sleep 600; done
+  while true; do python3 "$SKILL_DIR/scripts/tick.py" --agent-cmd 'agent "/worker-loop"'; sleep 600; done
   ```
 - **PowerShell (Windows)**:
   ```powershell
-  while ($true) { devloops tick worker --agent-cmd 'agent "/worker-loop"'; Start-Sleep -Seconds 600 }
+  while ($true) { python3 "$SKILL_DIR/scripts/tick.py" --agent-cmd 'agent "/worker-loop"'; Start-Sleep -Seconds 600 }
   ```
 
 The wrapper owns the lock for the whole agent run and releases it, with the tick's PR claims, on every exit path, including an agent error exit. It renews the lock in the background (every third of the TTL), so a tick longer than the TTL keeps it. It exports the lock token as `DEVLOOPS_TICK_TOKEN`: the agent's `--lock` recognizes the wrapper's own lock by that token (a normal call inside the wrapper, not a duplicate tick), prints it, and `--unlock` leaves the lock to the wrapper. If the wrapper is killed, its lock goes stale at once (its pid is dead), and an orphaned agent's `guard.py` and `claim.py` calls answer `LOST`, so it cannot push after the next tick starts.
 
-The gatekeeper and producer use the same form: `devloops tick gatekeeper --agent-cmd 'agent "/gatekeeper-loop"'` and `devloops tick producer --agent-cmd 'agent "/producer-loop"'`. Only the worker gets the wrapper's fingerprint check. The producer selects its task inside the agent, with `producer_gate.py`.
+The gatekeeper and producer use the same form with their own skill's wrapper: `gatekeeper-loop/scripts/tick.py --agent-cmd 'agent "/gatekeeper-loop"'` and `producer-loop/scripts/tick.py --agent-cmd 'agent "/producer-loop"'`. Only the worker gets the wrapper's fingerprint check. The producer selects its task inside the agent, with `producer_gate.py`.
 
 ### 2. Cron Schedule
-Schedule via cron using `devloops tick` (which performs the gate check, holds the lock, runs the command, and unlocks on exit):
+Schedule via cron using the tick wrapper (which performs the gate check, holds the lock, runs the command, and unlocks on exit). Use the path where the skill is installed, for example `.agents/skills/`:
 ```cron
 # Trigger worker-loop every 10 minutes
-*/10 * * * * cd /path/to/project && devloops tick worker --agent-cmd '/path/to/agent-runner "/worker-loop"'
+*/10 * * * * cd /path/to/project && python3 .agents/skills/worker-loop/scripts/tick.py --agent-cmd '/path/to/agent-runner "/worker-loop"'
 ```
 
 ### Agent IDs
-`--agent-id <id>` on `devloops tick` or on a loop script gives one agent its own state, lock, and worktree:
+`--agent-id <id>` on `tick.py` (or `devloops tick`) or on a loop script gives one agent its own state, lock, and worktree:
 
 | Path | Default | With `--agent-id a` |
 | --- | --- | --- |
 | State and lock | `<state_dir>/worker-loop/` | `<state_dir>/worker-loop/agents/a/` |
 | Worktree | `<project>.worktrees/worker` | `<project>.worktrees/worker-a` |
 
-The flag sets `DEVLOOPS_AGENT_ID`, which the agent started by `devloops tick` inherits. All agents keep the same GitHub account. An id can contain letters, digits, `.`, `_`, and `-`, and it must start and end with a letter or digit.
+The flag sets `DEVLOOPS_AGENT_ID`, which the agent started by the tick wrapper inherits. All agents keep the same GitHub account. An id can contain letters, digits, `.`, `_`, and `-`, and it must start and end with a letter or digit.
 
 ### Slots, tick locks, and claims
 
