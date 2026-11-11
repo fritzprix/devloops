@@ -50,7 +50,7 @@ Three separate things, see [references/scheduling.md](references/scheduling.md#s
 - **Tick lock**: at most one tick per slot at a time. `tick_gate.py --lock` prints `TOKEN <token>`; that token is this tick's proof of ownership.
 - **Claim**: at most one slot per PR or issue (`claim.py`).
 
-Every command below that takes `--token` needs the token from step 0.1. Under `devloops tick worker` the wrapper exports it as `DEVLOOPS_TICK_TOKEN`, so `--token` can be omitted there. Exit codes are shared: `0` ok, `1` nothing to do, `2` BUSY, `3` error, `4` LOST.
+Every command below that takes `--token` needs the token from step 0.1. Under the tick wrapper (`scripts/tick.py`, or `devloops tick worker`) the wrapper exports it as `DEVLOOPS_TICK_TOKEN`, so `--token` can be omitted there. Exit codes are shared: `0` ok, `1` nothing to do, `2` BUSY, `3` error, `4` LOST.
 
 **LOST (exit 4) from any command means this tick no longer owns its lock or the item.** Stop the tick at once: do not push, comment, reset, or rebase, and do not unlock. Another tick of this slot has taken over.
 
@@ -67,7 +67,7 @@ python3 "$SKILL_DIR/scripts/guard.py" run --token "$TOKEN" --issue N --repo "$WT
 
 ### 0. Preflight
 
-1. Check gate and lock: `python3 "$SKILL_DIR/scripts/tick_gate.py" --lock`. On `RUN`, the next line is `TOKEN <token>`: keep it as `$TOKEN`. Under `devloops tick worker`, the wrapper already holds the lock: the command recognizes the wrapper's token, prints it, and does not take the lock again.
+1. Check gate and lock: `python3 "$SKILL_DIR/scripts/tick_gate.py" --lock`. On `RUN`, the next line is `TOKEN <token>`: keep it as `$TOKEN`. Under the tick wrapper, the wrapper already holds the lock: the command recognizes the wrapper's token, prints it, and does not take the lock again.
    - `BUSY` (exit 2): a tick of **this slot** holds the lock. The output describes the holder (pid, start, last renewal). It can be a duplicate start or this slot's own earlier tick that is still running; it does **not** mean that another worker exists. Stop immediately and do not unlock.
    - `NOOP` (exit 1): no PR or issue state changed. Output `Idle: no changes.` and stop.
 2. `git -C "$MAIN" fetch origin --prune`.
@@ -165,7 +165,7 @@ Report `needsUser` items once when newly created.
 **Claim release**: PR claims end with the tick's lock, so unlocking releases them; `claim.py release-pr N --token "$TOKEN"` frees one earlier. Release an issue claim when its PR is open or when you abandon the issue (`claim.py release-issue N`). A claim left by a crash is reclaimable: a PR claim as soon as the crashed tick's lock is stale, an issue claim once it has not been refreshed for `worker.issue_claim_ttl_minutes`.
 
 **Lock release**:
-Run the same commands with or without the wrapper. Under `devloops tick worker`, `--unlock` leaves the lock in place and the wrapper releases it on exit.
+Run the same commands with or without the wrapper. Under the tick wrapper, `--unlock` leaves the lock in place and the wrapper releases it on exit.
 - If idle or needsUser: `python3 "$SKILL_DIR/scripts/tick_gate.py" --update --unlock --token "$TOKEN"`
 - If work completed or error: `python3 "$SKILL_DIR/scripts/tick_gate.py" --unlock --token "$TOKEN"`
 - `--unlock` releases only the lock that carries this token. If another tick took over, it prints `LOST`, exits `4`, and changes neither the lock nor the state.

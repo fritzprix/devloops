@@ -35,9 +35,12 @@ class CliInstallTest(unittest.TestCase):
         for s in ["worker-loop", "gatekeeper-loop", "producer-loop"]:
             self.assertTrue((target / ".agents" / "skills" / s / "SKILL.md").is_file())
 
-        # Check devloops_lib
-        self.assertTrue((target / ".agents" / "devloops_lib" / "config.py").is_file())
-        self.assertTrue((target / ".agents" / "devloops_lib" / "doctor.py").is_file())
+        # Each skill carries its own devloops_lib; there is no shared copy
+        for s in ["worker-loop", "gatekeeper-loop", "producer-loop"]:
+            lib = target / ".agents" / "skills" / s / "scripts" / "devloops_lib"
+            self.assertTrue((lib / "config.py").is_file())
+            self.assertTrue((lib / "cli.py").is_file())
+        self.assertFalse((target / ".agents" / "devloops_lib").exists())
 
         # Check config
         self.assertTrue((target / "devloops.config.yaml").is_file())
@@ -119,12 +122,8 @@ class CliInstallTest(unittest.TestCase):
         templates_dir.mkdir()
         (templates_dir / "devloops.config.yaml").write_text("config: true", encoding="utf-8")
 
-        lib_dir = self.tmp_dir / "fake_lib"
-        lib_dir.mkdir()
-        (lib_dir / "doctor.py").write_text("# doc", encoding="utf-8")
-
         target = self.tmp_dir / "target_with_skill_assets"
-        with patch("devloops_lib.cli.get_asset_paths", return_value=(custom_skills_dir, lib_dir, templates_dir)):
+        with patch("devloops_lib.cli.get_asset_paths", return_value=(custom_skills_dir, templates_dir)):
             ret = cli.main(["install", "--target", str(target)])
             self.assertEqual(ret, 0)
 
@@ -132,8 +131,8 @@ class CliInstallTest(unittest.TestCase):
         self.assertTrue(installed_asset_file.is_file(), "Skill assets/x.txt must be installed")
         self.assertEqual(installed_asset_file.read_text(encoding="utf-8"), "asset file content")
 
-    def test_bundled_wheel_package_layout_and_no_nested_assets(self):
-        """G1.2: Verify bundled-wheel layout asset resolution and exclusion of nested assets in devloops_lib."""
+    def test_bundled_wheel_package_layout(self):
+        """G1.2: Verify bundled-wheel layout asset resolution; the package itself is not installed."""
         fake_pkg = self.tmp_dir / "fake_installed_pkg"
         fake_pkg.mkdir()
 
@@ -155,22 +154,16 @@ class CliInstallTest(unittest.TestCase):
 
         # Test get_asset_paths resolution with fake pkg
         with patch.object(cli, "__file__", str(fake_cli_py.resolve())):
-            resolved_skills, resolved_lib, resolved_templates = cli.get_asset_paths()
+            resolved_skills, resolved_templates = cli.get_asset_paths()
             self.assertEqual(resolved_skills.resolve(), bundled_skills.resolve())
-            self.assertEqual(resolved_lib.resolve(), fake_pkg.resolve())
             self.assertEqual(resolved_templates.resolve(), bundled_templates.resolve())
 
             target = self.tmp_dir / "target_from_bundled"
             ret = cli.install_command(target)
             self.assertEqual(ret, 0)
 
-            # Assert .agents/devloops_lib contains doctor.py
-            self.assertTrue((target / ".agents" / "devloops_lib" / "doctor.py").is_file())
-            # Assert .agents/devloops_lib does NOT contain nested assets/ directory
-            self.assertFalse(
-                (target / ".agents" / "devloops_lib" / "assets").exists(),
-                "Installed devloops_lib must not contain packaging assets directory",
-            )
+            self.assertTrue((target / ".agents" / "skills" / "worker-loop" / "SKILL.md").is_file())
+            self.assertFalse((target / ".agents" / "devloops_lib").exists())
 
 
 

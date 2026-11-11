@@ -15,11 +15,6 @@ if [ "$MODE" = "--link" ]; then
     ln -s "$s" "$target"
     echo "installed $name"
   done
-  target_lib="$DEST/.agents/devloops_lib"
-  if [ ! -e "$target_lib" ]; then
-    ln -s "$SRC/devloops_lib" "$target_lib"
-    echo "installed devloops_lib"
-  fi
   [ -e "$DEST/devloops.config.yaml" ] || cp "$SRC/templates/devloops.config.yaml" "$DEST/"
 else
   # Delegate to devloops CLI installer
