@@ -51,10 +51,13 @@ producer:
 
 gatekeeper:
   max_issue_validations_per_tick: 1   # producer issues to validate per tick
+  rubric_paths: []                    # extra REVIEW_RUBRIC.md paths (see gatekeeper-loop SKILL)
+  issue_rules_paths: []               # ISSUE_RULES.md paths for acceptance criteria
 
 worker:
   max_items_per_tick: 1       # PRs and issues to finish per tick
   open_pr_limit: 5            # throttle: worker idles without needsUser while this many unapproved PRs (+ live issue claims without PR) are open
   issue_claim_ttl_minutes: 120  # an issue claim not refreshed for this long is stale and can be taken over
+  lock_ttl_seconds: 1800        # tick lock TTL; DEVLOOPS_LOCK_TTL_SECONDS env overrides
 
 # scheduler: shell            # documentation only: shell | cron | harness-specific adapter

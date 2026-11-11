@@ -46,7 +46,7 @@ See [references/worktree-setup.md](references/worktree-setup.md) for setup comma
 
 Three separate things, see [references/scheduling.md](references/scheduling.md#slots-tick-locks-and-claims):
 
-- **Slot**: one worker, named by `--agent-id` / `DEVLOOPS_AGENT_ID` (default: no id). Each slot has its own state, tick lock, and worktree.
+- **Slot**: one worker per concurrent harness session. Omit `--agent-id`; `tick_gate.py --lock` prints `AGENT <id>` (`default`, `default-2`, …), sets `DEVLOOPS_AGENT_ID`, and releases the slot on `--unlock` or idle `NOOP`. Explicit `--agent-id` / `DEVLOOPS_AGENT_ID` still works.
 - **Tick lock**: at most one tick per slot at a time. `tick_gate.py --lock` prints `TOKEN <token>`; that token is this tick's proof of ownership.
 - **Claim**: at most one slot per PR or issue (`claim.py`).
 
@@ -61,13 +61,13 @@ python3 "$SKILL_DIR/scripts/guard.py" run --token "$TOKEN" --pr N -- git -C "$WT
 python3 "$SKILL_DIR/scripts/guard.py" run --token "$TOKEN" --issue N --repo "$WT" -- gh pr create ...
 ```
 
-**Long steps**: the wrapper renews the lock in the background. A tick run without the wrapper renews it with every `claim.py` and `guard.py` call; before a step that may run longer than a third of the lock TTL (`DEVLOOPS_LOCK_TTL_SECONDS`, default 30 minutes) without such calls, run `python3 "$SKILL_DIR/scripts/tick_gate.py" --renew --token "$TOKEN"`.
+**Long steps**: the tick wrapper and the slash-command `--lock` path both keep the lock alive in the background (`worker.lock_ttl_seconds` in config, default 30m; `DEVLOOPS_LOCK_TTL_SECONDS` overrides). `claim.py` / `guard.py` also renew. Manual `--renew` is only for unusual scripts that bypass those entry points.
 
 ## Tick procedure
 
 ### 0. Preflight
 
-1. Check gate and lock: `python3 "$SKILL_DIR/scripts/tick_gate.py" --lock`. On `RUN`, the next line is `TOKEN <token>`: keep it as `$TOKEN`. Under the tick wrapper, the wrapper already holds the lock: the command recognizes the wrapper's token, prints it, and does not take the lock again.
+1. Check gate and lock: `python3 "$SKILL_DIR/scripts/tick_gate.py" --lock`. On `RUN`, read `AGENT <id>` (when present) and `TOKEN <token>`; export `DEVLOOPS_AGENT_ID` from the agent line before worktree setup. Under the tick wrapper, the wrapper already holds the lock: the command recognizes the wrapper's token, prints it, and does not take the lock again. The slash-command path starts a detached lock heartbeat automatically — you do not need to call `--renew` during normal ticks.
    - `BUSY` (exit 2): a tick of **this slot** holds the lock. The output describes the holder (pid, start, last renewal). It can be a duplicate start or this slot's own earlier tick that is still running; it does **not** mean that another worker exists. Stop immediately and do not unlock.
    - `NOOP` (exit 1): no PR or issue state changed. Output `Idle: no changes.` and stop.
 2. `git -C "$MAIN" fetch origin --prune`.

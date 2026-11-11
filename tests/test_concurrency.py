@@ -23,6 +23,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from devloops_lib import claims, tick_gate
+from devloops_lib.lock_heartbeat import stop_heartbeat
+from devloops_lib.proc_util import terminate_process_tree
 from devloops_lib.config import AGENT_ID_ENV, get_claims_dir, get_lock_path, get_state_path
 from devloops_lib.tick_gate import EXIT_BUSY, EXIT_LOST, EXIT_RUN, LOCK_TTL_ENV, TOKEN_ENV, WRAPPER_PID_ENV
 
@@ -60,6 +62,7 @@ ORPHAN_AGENT = """\
 import os, subprocess, sys, time
 from pathlib import Path
 work = Path(sys.argv[1])
+(work / "agent.pid").write_text(str(os.getpid()), encoding="utf-8")
 (work / "token").write_text(os.environ["DEVLOOPS_TICK_TOKEN"], encoding="utf-8")
 deadline = time.time() + 60
 while not (work / "go").exists() and time.time() < deadline:
@@ -71,23 +74,76 @@ rc = subprocess.call([sys.executable, sys.argv[2], "run", "--", sys.executable, 
 """
 
 
+class _WindowsSafeTempDir:
+    """TemporaryDirectory that reaps stray child handles before cleanup on Windows."""
+
+    def __init__(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.name = self._tmp.name
+
+    def cleanup(self) -> None:
+        for child in tuple(getattr(self, "_children", ())):
+            if child.poll() is None:
+                terminate_process_tree(child.pid)
+                try:
+                    child.wait(timeout=WAIT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    terminate_process_tree(child.pid, wait_seconds=5)
+        for hb in Path(self.name).rglob("tick.lock.heartbeat"):
+            stop_heartbeat(hb.parent / "tick.lock")
+        deadline = time.time() + 10
+        last_err: OSError | None = None
+        while time.time() < deadline:
+            try:
+                self._tmp.cleanup()
+                return
+            except OSError as exc:
+                last_err = exc
+                time.sleep(0.2)
+        if last_err is not None:
+            raise last_err
+
+
 class ProcessTestCase(unittest.TestCase):
     ttl = None
+    _children: list[subprocess.Popen]
+    SLOT_AGENT: str | None = None
 
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
+        self._children = []
+        if sys.platform == "win32":
+            self._tmpdir = _WindowsSafeTempDir()
+            self.addCleanup(self._tmpdir.cleanup)
+            tmp_name = self._tmpdir.name
+        else:
+            self._tmpdir = tempfile.TemporaryDirectory()
+            self.addCleanup(self._tmpdir.cleanup)
+            tmp_name = self._tmpdir.name
+        self.root = Path(tmp_name)
         self.state = self.root / "state"
         self.env = {k: v for k, v in os.environ.items() if k not in (TOKEN_ENV, WRAPPER_PID_ENV, AGENT_ID_ENV)}
         self.env.update({"LOOP_STATE_DIR": str(self.state), "PYTHONPATH": str(REPO_ROOT)})
         if self.ttl is not None:
             self.env[LOCK_TTL_ENV] = str(self.ttl)
+        if self.SLOT_AGENT:
+            self.env[AGENT_ID_ENV] = self.SLOT_AGENT
         patcher = patch.dict(os.environ, self.env, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
+        self.addCleanup(self._reap_children_and_heartbeats)
         self.start_runner = self.root / "start_together.py"
         self.start_runner.write_text(START_TOGETHER, encoding="utf-8")
+
+    def _reap_children_and_heartbeats(self) -> None:
+        for proc in self._children:
+            if proc.poll() is None:
+                terminate_process_tree(proc.pid)
+                try:
+                    proc.wait(timeout=WAIT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    terminate_process_tree(proc.pid, wait_seconds=5)
+        for hb in self.root.rglob("tick.lock.heartbeat"):
+            stop_heartbeat(hb.parent / "tick.lock")
 
     def write(self, name: str, text: str) -> Path:
         path = self.root / name
@@ -141,7 +197,22 @@ class ProcessTestCase(unittest.TestCase):
         argv = [sys.executable, "-m", "devloops_lib.cli", "tick", "worker", "--agent-cmd", agent_cmd]
         if agent:
             argv += ["--agent-id", agent]
-        return subprocess.Popen(argv, cwd=str(self.root), env=self.env, stdout=output, stderr=output, text=True)
+        popen_kw: dict = {
+            "cwd": str(self.root),
+            "env": self.env,
+            "stdout": output,
+            "stderr": output,
+            "text": True,
+        }
+        if sys.platform == "win32":
+            popen_kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kw["start_new_session"] = True
+        proc = subprocess.Popen(argv, **popen_kw)
+        self._children.append(proc)
+        if isinstance(self._tmpdir, _WindowsSafeTempDir):
+            self._tmpdir._children = self._children  # type: ignore[attr-defined]
+        return proc
 
 
 def token_of(stdout: str) -> str:
@@ -149,7 +220,13 @@ def token_of(stdout: str) -> str:
     return lines[0].split()[1] if lines else ""
 
 
-class TickLockProcessTest(ProcessTestCase):
+class SingleSlotProcessTest(ProcessTestCase):
+    """Lock/claim races use one explicit slot so contenders share one tick.lock."""
+
+    SLOT_AGENT = "race"
+
+
+class TickLockProcessTest(SingleSlotProcessTest):
     def test_duplicate_direct_ticks_have_exactly_one_owner(self):
         self.mark_in_progress()
         lock = get_lock_path("worker-loop")
@@ -167,7 +244,7 @@ class TickLockProcessTest(ProcessTestCase):
             self.assertFalse(lock.exists())
 
 
-class LongTickProcessTest(ProcessTestCase):
+class LongTickProcessTest(SingleSlotProcessTest):
     ttl = 3
 
     def test_wrapper_keeps_its_lock_while_the_agent_runs_past_the_ttl(self):
@@ -195,7 +272,7 @@ class LongTickProcessTest(ProcessTestCase):
         self.assertIn("UNLOCKED", out)
 
 
-class LostOwnershipProcessTest(ProcessTestCase):
+class LostOwnershipProcessTest(SingleSlotProcessTest):
     ttl = 1
 
     def test_tick_that_lost_its_lock_cannot_unlock_claim_or_run_guarded_commands(self):
@@ -203,6 +280,7 @@ class LostOwnershipProcessTest(ProcessTestCase):
         lock = get_lock_path("worker-loop")
         first = token_of(self.script("tick_gate.py", "--lock").stdout)
         self.assertTrue(first)
+        stop_heartbeat(lock)
         time.sleep(self.ttl + 0.5)
         second = token_of(self.script("tick_gate.py", "--lock").stdout)
         self.assertTrue(second, "a direct lock that was not renewed within the TTL must be reclaimable")
@@ -226,7 +304,7 @@ class LostOwnershipProcessTest(ProcessTestCase):
         self.assertEqual(self.script("tick_gate.py", "--unlock", "--token", second).returncode, EXIT_RUN)
 
 
-class WrapperExitProcessTest(ProcessTestCase):
+class WrapperExitProcessTest(SingleSlotProcessTest):
     def test_agent_error_exit_releases_the_lock_and_the_claims(self):
         self.mark_in_progress()
         agent = self.write("agent.py", (
@@ -259,6 +337,14 @@ class WrapperExitProcessTest(ProcessTestCase):
         finally:
             (work / "go").touch()
         self.wait_for(work / "rc")
+        stop_heartbeat(get_lock_path("worker-loop"))
+        pid_file = work / "agent.pid"
+        if pid_file.exists():
+            try:
+                orphan = int(pid_file.read_text(encoding="utf-8").strip())
+                terminate_process_tree(orphan, wait_seconds=5)
+            except (OSError, ValueError):
+                pass
         self.assertEqual((work / "rc").read_text(encoding="utf-8"), str(EXIT_LOST))
         self.assertFalse((work / "pushed").exists())
         self.assertTrue(tick_gate.lock_is_owned(get_lock_path("worker-loop"), token_of(next_tick.stdout)))

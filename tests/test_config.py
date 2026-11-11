@@ -37,6 +37,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(cfg["producer"]["task_periods"]["cleanup"], "7d")
         self.assertEqual(cfg["producer"]["default_period"], "24h")
         self.assertEqual(cfg["scheduler"], "shell")
+        self.assertEqual(cfg["worker"]["lock_ttl_seconds"], 1800)
 
     def test_parse_yaml_subset(self):
         yaml_text = """

@@ -37,6 +37,12 @@ Approve:
 
 <2–3 lines: what was verified (diff, tests, CI green at <short-sha>), residual risks, suggestions left open>
 
+### Criteria
+
+| Criterion (from rubric / issue) | Result | Evidence |
+| --- | --- | --- |
+| … | pass / fail | `path:line` — brief note |
+
 ### Checked
 
 - `<acceptance criterion 1 from linked issue>` — verified in `<file>:<line>` (<brief explanation>).
@@ -59,14 +65,14 @@ Clean, waiting for CI (no label change, not a round; lets any tick or machine se
 Needs human (not a verdict, does not count as a round; post once per reason+head, never duplicate):
 
 ```markdown
-<!-- gatekeeper-loop: kind=needs-human reason=no-ci-on-head head=<sha> -->
+<!-- gatekeeper-loop: kind=needs-human reason=ambiguous-review-criteria head=<sha> -->
 
-## Gatekeeper · needs human · no CI on head
+## Gatekeeper · needs human · ambiguous review criteria
 
-<1–2 lines: what is blocked and what a human should do>
+<Concrete draft rubric or checklist the owner must confirm or edit — not open-ended questions.>
 ```
 
-Reasons: `no CI on head`, `changes loop skill files`, `security-sensitive paths`.
+Reasons: `ambiguous review criteria`, `changes loop skill files`, `security-sensitive paths`. Missing repo CI is **not** needs-human: the gatekeeper opens a bootstrap CI PR instead.
 
 Escalate (round limit or second dispute on the same `G` item):
 

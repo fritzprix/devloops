@@ -13,6 +13,7 @@ from pathlib import Path
 
 from devloops_lib.claims import release_tick_claims
 from devloops_lib.config import EXIT_CONFIG_ERROR, ConfigError, add_agent_id_argument, get_claims_dir, get_state_path
+from devloops_lib.proc_util import popen_agent, terminate_process_tree
 from devloops_lib.tick_gate import (
     TOKEN_ENV,
     WRAPPER_PID_ENV,
@@ -273,6 +274,7 @@ def tick_command(
         return 2
 
     print(f"LOCKED ({norm_loop})")
+    agent_proc: subprocess.Popen[bytes] | None = None
     try:
         with LockHeartbeat(lock_path, lock_token):
             cmd_to_run = agent_cmd or os.environ.get("DEVLOOPS_AGENT_CMD") or os.environ.get("AGENT_CMD")
@@ -280,10 +282,16 @@ def tick_command(
                 print(f"Executing agent command: {cmd_to_run}")
                 # Tell the agent's gate, claim, and guard commands which lock this tick owns.
                 agent_env = {**os.environ, WRAPPER_PID_ENV: str(os.getpid()), TOKEN_ENV: lock_token}
-                res = subprocess.run(cmd_to_run, shell=True, env=agent_env)
-                return res.returncode
+                agent_proc = popen_agent(cmd_to_run, agent_env)
+                return agent_proc.wait()
             return 0
     finally:
+        if agent_proc is not None and agent_proc.poll() is None:
+            terminate_process_tree(agent_proc.pid)
+            try:
+                agent_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                terminate_process_tree(agent_proc.pid, wait_seconds=5)
         released = release_tick_claims(get_claims_dir(), lock_token)
         if released:
             print(f"RELEASED CLAIMS: {', '.join(released)}")
