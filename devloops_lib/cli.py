@@ -28,8 +28,8 @@ from devloops_lib.tick_gate import (
 )
 
 
-def get_asset_paths() -> tuple[Path, Path, Path]:
-    """Locate (skills_dir, devloops_lib_dir, templates_dir).
+def get_asset_paths() -> tuple[Path, Path]:
+    """Locate (skills_dir, templates_dir).
 
     Raises RuntimeError if any required assets are missing.
     """
@@ -39,14 +39,14 @@ def get_asset_paths() -> tuple[Path, Path, Path]:
     bundled_skills = pkg_dir / "assets" / "skills"
     bundled_templates = pkg_dir / "assets" / "templates"
     if bundled_skills.is_dir() and bundled_templates.is_dir():
-        return bundled_skills, pkg_dir, bundled_templates
+        return bundled_skills, bundled_templates
 
     # 2. Source tree layout
     repo_root = pkg_dir.parent
     src_skills = repo_root / "skills"
     src_templates = repo_root / "templates"
     if src_skills.is_dir() and src_templates.is_dir():
-        return src_skills, pkg_dir, src_templates
+        return src_skills, src_templates
 
     raise RuntimeError(
         "Missing required devloops assets (skills and templates). "
@@ -84,9 +84,9 @@ def copy_tree_safe(src: Path, dest: Path, exclude_names: set[str] | None = None)
 
 
 def install_command(target_dir: Path) -> int:
-    """Install devloops skills, devloops_lib, and config into target_dir."""
+    """Install devloops skills (each with its own devloops_lib) and config into target_dir."""
     try:
-        skills_src, lib_src, templates_src = get_asset_paths()
+        skills_src, templates_src = get_asset_paths()
     except RuntimeError as e:
         sys.stderr.write(f"Error: {e}\n")
         return 1
@@ -107,7 +107,6 @@ def install_command(target_dir: Path) -> int:
     target_dir.mkdir(parents=True, exist_ok=True)
 
     skills_dest = target_dir / ".agents" / "skills"
-    lib_dest = target_dir / ".agents" / "devloops_lib"
     config_dest = target_dir / "devloops.config.yaml"
 
     log_entries: list[tuple[str, Path]] = []
@@ -115,10 +114,7 @@ def install_command(target_dir: Path) -> int:
     # 1. Install skills (skills can contain their own assets/ dir; exclude only cache/git)
     log_entries.extend(copy_tree_safe(skills_src, skills_dest, exclude_names={"__pycache__", ".git"}))
 
-    # 2. Install devloops_lib (exclude internal packaging assets and cache)
-    log_entries.extend(copy_tree_safe(lib_src, lib_dest, exclude_names={"__pycache__", "assets", ".git"}))
-
-    # 3. Install config (root config copied only if absent)
+    # 2. Install config (root config copied only if absent)
     if config_dest.exists():
         log_entries.append(("skipped (already exists)", config_dest))
     else:
@@ -296,6 +292,31 @@ def tick_command(
         print("UNLOCKED")
 
 
+def add_tick_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--agent-cmd", type=str, default=None, help="Agent command to execute while holding lock")
+    parser.add_argument("--state-file", type=Path, default=None, help="Path to state.json")
+    add_agent_id_argument(parser)
+
+
+def run_tick(loop: str, args: argparse.Namespace) -> int:
+    try:
+        return tick_command(loop, agent_cmd=args.agent_cmd, state_file=args.state_file)
+    except ConfigError as e:
+        # Exit 1 would read as NOOP to a scheduler.
+        sys.stderr.write(f"devloops config error: {e}\n")
+        return EXIT_CONFIG_ERROR
+
+
+def tick_main(loop: str, argv: list[str]) -> int:
+    """Entry point of a skill's scripts/tick.py, which fixes the loop."""
+    parser = argparse.ArgumentParser(
+        prog="tick.py",
+        description=f"Run one {loop}-loop tick: preflight gate, lock, agent command, unlock.",
+    )
+    add_tick_options(parser)
+    return run_tick(loop, parser.parse_args(argv))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="devloops",
@@ -313,21 +334,14 @@ def main(argv: list[str] | None = None) -> int:
 
     tick_parser = subparsers.add_parser("tick", help="Run preflight gate, lock, execute agent command, and unlock safely")
     tick_parser.add_argument("loop", choices=["worker", "worker-loop", "producer", "producer-loop", "gatekeeper", "gatekeeper-loop"], help="Loop name to tick")
-    tick_parser.add_argument("--agent-cmd", type=str, default=None, help="Agent command to execute while holding lock")
-    tick_parser.add_argument("--state-file", type=Path, default=None, help="Path to state.json")
-    add_agent_id_argument(tick_parser)
+    add_tick_options(tick_parser)
 
     args = parser.parse_args(argv)
 
     if args.subcommand == "install":
         return install_command(args.target)
     if args.subcommand == "tick":
-        try:
-            return tick_command(args.loop, agent_cmd=args.agent_cmd, state_file=args.state_file)
-        except ConfigError as e:
-            # Exit 1 would read as NOOP to a scheduler.
-            sys.stderr.write(f"devloops config error: {e}\n")
-            return EXIT_CONFIG_ERROR
+        return run_tick(args.loop, args)
 
     parser.print_help()
     return 0

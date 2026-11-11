@@ -20,12 +20,10 @@ import json
 import sys
 from pathlib import Path
 
-# Add project root and devloops_lib to sys.path
+# The skill ships its own copy of devloops_lib next to this script.
 _script_dir = Path(__file__).resolve().parent
-for _candidate in (_script_dir, _script_dir.parents[2], _script_dir.parents[3], _script_dir.parents[3] / ".agents"):
-    if (_candidate / "devloops_lib").is_dir() or _candidate == _script_dir:
-        if str(_candidate) not in sys.path:
-            sys.path.insert(0, str(_candidate))
+if str(_script_dir) not in sys.path:
+    sys.path.insert(0, str(_script_dir))
 
 from issue_candidates import fetch_candidates
 

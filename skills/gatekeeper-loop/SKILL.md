@@ -31,14 +31,14 @@ Worker and gatekeeper share one GitHub account, so GitHub's Approve / Request ch
 
 ### Schedulers
 
-Arm via shell loop adapter. The `devloops tick` wrapper holds the lock for the whole tick, so a slow tick cannot overlap the next one:
+Arm via shell loop adapter. The tick wrapper `scripts/tick.py` (the same as `devloops tick gatekeeper`) holds the lock for the whole tick, so a slow tick cannot overlap the next one:
 - **Bash (Linux/macOS)**:
   ```bash
-  while true; do devloops tick gatekeeper --agent-cmd 'agent "/gatekeeper-loop"'; sleep 600; done
+  while true; do python3 "$SKILL_DIR/scripts/tick.py" --agent-cmd 'agent "/gatekeeper-loop"'; sleep 600; done
   ```
 - **PowerShell (Windows)**:
   ```powershell
-  while ($true) { devloops tick gatekeeper --agent-cmd 'agent "/gatekeeper-loop"'; Start-Sleep -Seconds 600 }
+  while ($true) { python3 "$SKILL_DIR/scripts/tick.py" --agent-cmd 'agent "/gatekeeper-loop"'; Start-Sleep -Seconds 600 }
   ```
 Record the PID in state. Alternatively, a cron schedule or a harness-specific scheduler adapter can be used as configured in `devloops.config.yaml`.
 
@@ -56,7 +56,7 @@ Record the PID in state. Alternatively, a cron schedule or a harness-specific sc
 python3 "$SKILL_DIR/scripts/tick_lock.py" --lock
 ```
 
-- `RUN`: the next line is `TOKEN <token>`; keep it as `$TOKEN`. Under `devloops tick gatekeeper` the wrapper already holds the lock, and the command prints the wrapper's token instead of taking the lock again.
+- `RUN`: the next line is `TOKEN <token>`; keep it as `$TOKEN`. Under the tick wrapper (`scripts/tick.py`, or `devloops tick gatekeeper`) the wrapper already holds the lock, and the command prints the wrapper's token instead of taking the lock again.
 - `BUSY` (exit 2): a tick of this gatekeeper slot holds the lock (a duplicate start or this slot's own earlier tick). It does not mean another gatekeeper exists. Stop and do not unlock.
 - At the end of every tick, also after an error: `python3 "$SKILL_DIR/scripts/tick_lock.py" --unlock --token "$TOKEN"`. `LOST` (exit 4) means another tick took over a lock that was not renewed within the TTL; stop without posting further comments. For a review that may run longer than a third of the TTL (`DEVLOOPS_LOCK_TTL_SECONDS`, default 30 minutes), renew first: `tick_lock.py --renew --token "$TOKEN"`.
 

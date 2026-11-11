@@ -1,0 +1,50 @@
+# devloops project config. Copy to the project root and edit.
+project:
+  repo: owner/name            # GitHub repo
+  default_branch: main
+  base_branch: main           # branch that PRs target
+
+commands:
+  test: ""                    # e.g. npm test
+  lint: ""
+  build: ""
+
+protected_paths: []           # findings only, no edits without explicit approval
+
+cleanup:
+  protected_branches: [main, master, develop, release] # branches cleanup task must never propose deleting
+
+state_dir: .devloops          # state.json and tick.lock per loop
+
+labels:
+  producer: auto:producer
+  validated: validated
+  rejected: rejected
+  approved: approved
+
+producer:
+  default_period: 24h
+  max_new_issues_per_run: 3
+  tasks: [security, e2e, uiux, regression, usage-logs, doc-drift, cleanup]
+  task_skills:                # optional mapping of producer tasks to project skills/commands
+    security: ""              # e.g. code-audit-expert
+    e2e: ""
+    uiux: ""
+    regression: ""
+    usage-logs: ""
+    doc-drift: ""
+    cleanup: ""
+  task_periods:               # per-task period overrides (e.g. cleanup: 7d)
+    cleanup: 7d
+  task_max_new_issues:        # per-task cap on new issues per run
+    cleanup: 1
+
+gatekeeper:
+  max_issue_validations_per_tick: 1   # producer issues to validate per tick
+
+worker:
+  max_items_per_tick: 1       # PRs and issues to finish per tick
+  open_pr_limit: 5            # new issues wait while this many unapproved PRs (plus live issue claims without a PR) are open
+  issue_claim_ttl_minutes: 120  # an issue claim not refreshed for this long is stale and can be taken over
+
+# scheduler: shell            # documentation only: shell | cron | harness-specific adapter

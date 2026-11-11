@@ -187,8 +187,10 @@ Set-Location "$TMP"
 uvx --from $wheel devloops install --target "$TMP\dl rel\proj"
 ```
 
-- [ ] `.agents/skills/{worker-loop,gatekeeper-loop,producer-loop}/SKILL.md`,
-      `.agents/devloops_lib/`, and `devloops.config.yaml` all exist.
+- [ ] `.agents/skills/{worker-loop,gatekeeper-loop,producer-loop}/SKILL.md`, each
+      skill's `scripts/devloops_lib/`, and `devloops.config.yaml` all exist.
+- [ ] `python3 scripts/sync_skill_lib.py --check` passes, so the skills ship the
+      released `devloops_lib`.
 - [ ] Every script path referenced by the installed `SKILL.md` files resolves and
       runs `--help` from an unrelated current directory.
 - [ ] The documented library-import one-liners work outside the source tree.
