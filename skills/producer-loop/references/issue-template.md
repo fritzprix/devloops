@@ -23,6 +23,9 @@ Define the requirements to resolve this issue:
 - [ ] Requirement 2: <Add regression test or validation guard>
 - [ ] Requirement 3: <Verify surrounding components remain compatible>
 
+## Recommendation
+State the default approach the worker should take if maintainers do not comment (one short paragraph). Prefer steps the agent can perform (tests, mocks, public docs, diagrams)—not screenshots or live accounts unless unavoidable.
+
 ## Verification Steps
 State the test procedure to confirm the solution:
 1. Run `<test command or reproduction script>`.

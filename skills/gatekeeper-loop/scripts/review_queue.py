@@ -16,7 +16,7 @@ status values:
                conflicts. Worker's turn to fix.
   approved   - approve verdict exists for the current head, base unchanged, CI
                not failing, no newer owner comment.
-  escalate   - round limit reached or unresolvable dispute; hand to the user.
+  escalate   - round limit reached or second dispute on the same finding; maintainer direction.
   needs-human - blocked on a person, not on code: reviewed clean at the current
                head but no CI runs exist when CI is expected. No re-review until
                a new head or genuinely new input arrives.

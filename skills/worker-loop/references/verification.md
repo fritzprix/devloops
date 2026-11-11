@@ -19,6 +19,6 @@ If any command is empty (`""`), verify through standard language tools or inspec
 ## Challenges to the Loop's Behavior
 
 When the user says the loop did something wrong (e.g. "it is only waiting for PRs"):
-1. Check `state.json` `history`, `skipped`, and `needsUser` before answering.
+1. Check `state.json` `history`, `skipped`, and `needsUser` before answering. Open PR limit throttles without `needsUser` ([escalation-policy.md](escalation-policy.md)).
 2. If the records contradict the claim, do not agree: explain what the loop actually did, citing the records.
 3. Say "I will change X" only when behavior actually changes (a skill edit or a state change); never present existing behavior as a fix.

@@ -62,8 +62,8 @@ human ───────────► merge
 - The worker skips producer issues that do not have the `approved` label.
 - The worker and the gatekeeper can share one GitHub account. So verdicts are PR
   comments with a hidden marker, plus a `gatekeeper:*` label.
-- The gatekeeper adds `gatekeeper:needs-human` to security-sensitive PRs and PRs
-  that touch `protected_paths`.
+- The gatekeeper adds `gatekeeper:needs-human` for extra review on security-sensitive PRs and
+  PRs that touch `protected_paths` (the worker still implements; humans merge).
 
 ### Tick gate
 
@@ -151,7 +151,7 @@ Edit `<project>/devloops.config.yaml`:
 | `project.default_branch` | Default branch of the repo |
 | `project.base_branch` | Branch that PRs target |
 | `commands.test`, `commands.lint`, `commands.build` | Project commands that the loops use to verify |
-| `protected_paths` | Paths that need explicit human approval. Producer: findings only. Gatekeeper: `gatekeeper:needs-human`. |
+| `protected_paths` | High-attention paths. Producer: findings only. Worker: edits only when in scope. Gatekeeper: `gatekeeper:needs-human` for stricter review. See `skills/worker-loop/references/escalation-policy.md`. |
 | `cleanup.protected_branches` | Branches that the `cleanup` task never proposes to delete |
 | `state_dir` | Directory for each loop's `state.json` and `tick.lock` (default `.devloops`). `$LOOP_STATE_DIR` overrides it. `--agent-id` scopes the paths to one agent (see `scheduling.md`). |
 | `labels.producer` / `validated` / `rejected` / `approved` | Label names for the issue flow |
@@ -163,7 +163,7 @@ Edit `<project>/devloops.config.yaml`:
 | `producer.task_max_new_issues` | Limit of new issues for each task |
 | `gatekeeper.max_issue_validations_per_tick` | Producer issues the gatekeeper validates per tick (default 1) |
 | `worker.max_items_per_tick` | PRs and issues the worker finishes per tick (default 1). The wrapper renews the lock, so a long tick keeps it. |
-| `worker.open_pr_limit` | Maximum open unapproved PRs plus live issue claims without a PR before the worker stops starting issues (default 5) |
+| `worker.open_pr_limit` | Throttle: worker stops starting issues (idles, no `needsUser`) while this many unapproved PRs plus live issue claims without a PR are open (default 5) |
 | `worker.issue_claim_ttl_minutes` | An issue claim not refreshed for this long can be taken over by another worker slot (default 120) |
 | `scheduler` | Documentation only: `shell`, `cron`, or a harness-specific adapter |
 
@@ -204,8 +204,8 @@ See `.agents/skills/worker-loop/references/scheduling.md` (installed) or `skills
 | `approved` | **human only** | Scope accepted; the worker can take a producer issue |
 | `gatekeeper:changes-requested` | gatekeeper | The worker must answer the findings |
 | `gatekeeper:approved` | gatekeeper | Ready for a human merge |
-| `gatekeeper:escalated` | gatekeeper | Worker and gatekeeper disagree; a human must decide |
-| `gatekeeper:needs-human` | gatekeeper | Security-sensitive or protected paths |
+| `gatekeeper:escalated` | gatekeeper | Review round limit or repeated dispute on the same finding |
+| `gatekeeper:needs-human` | gatekeeper | Stricter review before approve (security, protected paths, loop skills, no CI on head) |
 
 ## Safety rules
 
@@ -217,7 +217,7 @@ The skills encode these rules:
   merges the base into a feature branch.
 - The worker works only in its own worktree, never in the user's checkout.
   It does one unit of work per tick and edits only files for that PR or issue.
-- The worker stops starting issues at `worker.open_pr_limit` open unapproved PRs (default 5).
+- The worker throttles new issues at `worker.open_pr_limit` open unapproved PRs (default 5) without `needsUser`.
   It fixes failing CI from the reproduced cause, runs the full local verification
   before every push, and never reruns a job only to get green.
 - A worker tick that lost its lock or claim cannot push, write PR comments, or run
