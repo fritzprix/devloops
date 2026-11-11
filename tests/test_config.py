@@ -26,6 +26,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(cfg["commands"]["test"], "")
         self.assertEqual(cfg["commands"]["lint"], "")
         self.assertEqual(cfg["commands"]["build"], "")
+        self.assertIn("browser", config.environment_capabilities(cfg))
         self.assertEqual(cfg["protected_paths"], [])
         self.assertEqual(cfg["cleanup"]["protected_branches"], ["main", "master", "develop", "release"])
         self.assertEqual(cfg["state_dir"], ".devloops")
@@ -248,6 +249,8 @@ class ConfigErrorTest(unittest.TestCase):
                 config.load_config(start_dir=tmp)
 
     def test_worker_limits_are_read_and_validated(self):
+        caps = {"environment": {"capabilities": ["cli", "network"]}}
+        self.assertEqual(config.environment_capabilities(caps), ("cli", "network"))
         self.assertEqual(config.open_pr_limit({}), 5)
         self.assertEqual(config.issue_claim_ttl_seconds({}), 7200)
         parsed = config.parse_yaml_subset("worker:\n  open_pr_limit: 2\n  issue_claim_ttl_minutes: 1.5\n")

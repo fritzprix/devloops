@@ -33,6 +33,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "lint": "",
         "build": "",
     },
+    "environment": {
+        "capabilities": [
+            "browser",
+            "screen_capture",
+            "cli",
+            "network",
+            "public_web",
+            "diagrams",
+        ],
+    },
     "protected_paths": [],
     "cleanup": {
         "protected_branches": ["main", "master", "develop", "release"],
@@ -250,6 +260,14 @@ def _positive_number(cfg: dict[str, Any], section: str, key: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         raise ConfigError(f"{section}.{key} must be a positive number, got {value!r}")
     return value
+
+
+def environment_capabilities(cfg: dict[str, Any]) -> tuple[str, ...]:
+    """Declared harness capabilities from environment.capabilities (see escalation-policy.md)."""
+    raw = cfg.get("environment", {}).get("capabilities", DEFAULT_CONFIG["environment"]["capabilities"])
+    if not isinstance(raw, list):
+        raise ConfigError("environment.capabilities must be a list")
+    return tuple(str(item) for item in raw)
 
 
 def open_pr_limit(cfg: dict[str, Any]) -> int:

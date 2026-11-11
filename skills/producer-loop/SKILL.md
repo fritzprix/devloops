@@ -120,6 +120,7 @@ Under the tick wrapper (`scripts/tick.py`, or `devloops tick producer`), the wra
 ## Hard safety rules
 
 - **Issues only**: Producers only create GitHub issues. Never edit code, push commits, create pull requests, merge, close, delete, comment, or modify labels on existing items.
+- **Actionable issues**: Add a **Recommendation** when one approach is clearly best; if several valid approaches change the outcome, list options and request an owner **Decision**—do not rely on the worker to guess. Do not ask for steps covered by declared `environment.capabilities` (screenshots, browser repro, diagrams). See [../worker-loop/references/escalation-policy.md](../worker-loop/references/escalation-policy.md).
 - **Protected paths**: For paths configured in `protected_paths`, report findings only.
 - **Cleanup restrictions**:
   - `cleanup` only proposes; it never deletes branches or closes issues.

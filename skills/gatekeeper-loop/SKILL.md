@@ -16,6 +16,7 @@ worker opens PR ─► gatekeeper verdict (changes-requested, G-items)
 ```
 
 Worker and gatekeeper share one GitHub account, so GitHub's Approve / Request changes buttons are unavailable. Verdicts are PR comments with a hidden marker plus a `gatekeeper:*` label. Read [references/comment-format.md](references/comment-format.md) before posting the first verdict.
+Autonomy and when to involve humans: [../worker-loop/references/escalation-policy.md](../worker-loop/references/escalation-policy.md).
 
 **Path convention**: `$SKILL_DIR` denotes the directory containing this SKILL.md (skill loaders report it on load). All script commands below use `"$SKILL_DIR/scripts/..."`, so they resolve from any current directory — in a repo checkout or in the installed `.agents/skills/` layout.
 
@@ -111,7 +112,7 @@ git -C "$WT" checkout --detach --force "origin/<head>" && git -C "$WT" clean -fd
 
 Keep it between ticks so caches stay warm. Local runs never lead to commits.
 
-`securitySensitive` lists changed paths touching security, auth, permissions, secrets, sandboxing, or `protected_paths` from `devloops.config.yaml`. For such PRs add the label `gatekeeper:needs-human`, and an `approve` is only valid if `### Checked` lists the concrete bypass scenarios you tried and why each is blocked. Never auto-approve them silently.
+`securitySensitive` lists changed paths touching security, auth, permissions, secrets, sandboxing, or `protected_paths` from `devloops.config.yaml`. For such PRs add the label `gatekeeper:needs-human` (stricter review, not a worker stop). An `approve` is only valid if `### Checked` lists the concrete bypass scenarios you tried and why each is blocked. Never auto-approve them silently.
 
 On round ≥ 2, read the worker response first and settle every previous `G` item: fixed (verify in the diff), decline accepted, or disputed (restate once; a second dispute on the same item → escalate).
 
@@ -125,7 +126,7 @@ Decide:
   - **Per-OS CI evidence**: when the diff adds or changes tests or code touching paths, shell, processes or other OS behavior, `### Checked` must name the result of each OS job (ubuntu / windows / macos) for the reviewed head. A skipped or cancelled job is not green. Do not approve on one OS's green.
   - **Stacked PRs**: if the PR targets a non-primary branch, CI does not run; approve directly with the explicit note _"CI requires verification after retargeting"_.
 - **clean, await CI** — code review completed with zero open required findings, but CI checks are still running (`ciPending` not empty on primary-targeted PR). Post a `verdict=clean head=<sha>` marker comment, remove any stale `gatekeeper:changes-requested` label (e.g. `gh pr edit N --remove-label gatekeeper:changes-requested`; does not count as a round), optionally mirror it in state, and move on to the next PR. On a later tick the script reports `await-ci`; once CI completes it reports `review` again: do not re-review the diff, just post `approve` if green (and remove any stale `gatekeeper:changes-requested` label) or diagnose the failure.
-- **escalate** — round limit (5) reached, a repeated dispute, or the right answer is a product/security/data decision for the user.
+- **escalate** — round limit (5) reached; a second dispute on the same `G` item; or an unresolved product/security/data owner decision the worker correctly parked in `needsUser` / PR discussion (see [../worker-loop/references/escalation-policy.md](../worker-loop/references/escalation-policy.md)).
 
 Immediately before posting, re-check the PR, because a review takes time and the PR can move during it:
 
