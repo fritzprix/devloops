@@ -87,10 +87,10 @@ class DoctorSkillInstallTest(unittest.TestCase):
         (project / ".git").mkdir(parents=True)
         return project
 
-    def _skill_lib(self, skills_dir: Path, skill: str, content: str) -> None:
+    def _skill_lib(self, skills_dir: Path, skill: str, content: bytes) -> None:
         lib = skills_dir / skill / "scripts" / "devloops_lib"
         lib.mkdir(parents=True)
-        (lib / "config.py").write_text(content, encoding="utf-8")
+        (lib / "config.py").write_bytes(content)
 
     def test_init_creates_config_in_project_root(self):
         project = self._project()
@@ -121,16 +121,16 @@ class DoctorSkillInstallTest(unittest.TestCase):
 
     def test_skill_libs_match(self):
         skills_dir = self.tmp_dir / "skills"
-        self._skill_lib(skills_dir, "worker-loop", "x = 1\n")
-        self._skill_lib(skills_dir, "gatekeeper-loop", "x = 1\r\n")
+        self._skill_lib(skills_dir, "worker-loop", b"x = 1\n")
+        self._skill_lib(skills_dir, "gatekeeper-loop", b"x = 1\r\n")
         (skills_dir / "unrelated-skill").mkdir()
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertTrue(doctor.check_skill_libs(skills_dir))
 
     def test_skill_libs_differ_after_partial_update(self):
         skills_dir = self.tmp_dir / "skills"
-        self._skill_lib(skills_dir, "worker-loop", "x = 2\n")
-        self._skill_lib(skills_dir, "gatekeeper-loop", "x = 1\n")
+        self._skill_lib(skills_dir, "worker-loop", b"x = 2\n")
+        self._skill_lib(skills_dir, "gatekeeper-loop", b"x = 1\n")
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self.assertFalse(doctor.check_skill_libs(skills_dir))
