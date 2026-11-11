@@ -62,6 +62,7 @@ ORPHAN_AGENT = """\
 import os, subprocess, sys, time
 from pathlib import Path
 work = Path(sys.argv[1])
+(work / "agent.pid").write_text(str(os.getpid()), encoding="utf-8")
 (work / "token").write_text(os.environ["DEVLOOPS_TICK_TOKEN"], encoding="utf-8")
 deadline = time.time() + 60
 while not (work / "go").exists() and time.time() < deadline:
@@ -88,7 +89,9 @@ class _WindowsSafeTempDir:
                     child.wait(timeout=WAIT_SECONDS)
                 except subprocess.TimeoutExpired:
                     terminate_process_tree(child.pid, wait_seconds=5)
-        deadline = time.time() + 5
+        for hb in Path(self.name).rglob("tick.lock.heartbeat"):
+            stop_heartbeat(hb.parent / "tick.lock")
+        deadline = time.time() + 10
         last_err: OSError | None = None
         while time.time() < deadline:
             try:
@@ -127,8 +130,20 @@ class ProcessTestCase(unittest.TestCase):
         patcher = patch.dict(os.environ, self.env, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
+        self.addCleanup(self._reap_children_and_heartbeats)
         self.start_runner = self.root / "start_together.py"
         self.start_runner.write_text(START_TOGETHER, encoding="utf-8")
+
+    def _reap_children_and_heartbeats(self) -> None:
+        for proc in self._children:
+            if proc.poll() is None:
+                terminate_process_tree(proc.pid)
+                try:
+                    proc.wait(timeout=WAIT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    terminate_process_tree(proc.pid, wait_seconds=5)
+        for hb in self.root.rglob("tick.lock.heartbeat"):
+            stop_heartbeat(hb.parent / "tick.lock")
 
     def write(self, name: str, text: str) -> Path:
         path = self.root / name
@@ -322,10 +337,14 @@ class WrapperExitProcessTest(SingleSlotProcessTest):
         finally:
             (work / "go").touch()
         self.wait_for(work / "rc")
-        for proc in self._children:
-            if proc.poll() is None:
-                terminate_process_tree(proc.pid)
-                proc.wait(timeout=WAIT_SECONDS)
+        stop_heartbeat(get_lock_path("worker-loop"))
+        pid_file = work / "agent.pid"
+        if pid_file.exists():
+            try:
+                orphan = int(pid_file.read_text(encoding="utf-8").strip())
+                terminate_process_tree(orphan, wait_seconds=5)
+            except (OSError, ValueError):
+                pass
         self.assertEqual((work / "rc").read_text(encoding="utf-8"), str(EXIT_LOST))
         self.assertFalse((work / "pushed").exists())
         self.assertTrue(tick_gate.lock_is_owned(get_lock_path("worker-loop"), token_of(next_tick.stdout)))

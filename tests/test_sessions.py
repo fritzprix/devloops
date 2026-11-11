@@ -21,10 +21,11 @@ from devloops_lib.sessions import (
 
 def _acquire_in_child(loop_dir: str, session: str, out: multiprocessing.Queue) -> None:
     try:
+        root = Path(__file__).resolve().parent.parent
         env = {
             "LOOP_STATE_DIR": loop_dir,
             "DEVLOOPS_SESSION_ID": session,
-            "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+            "PYTHONPATH": str(root),
         }
         with patch.dict(os.environ, env, clear=False):
             out.put(acquire_checkin(None, Path(loop_dir) / "checkins.json", session=session))
@@ -43,8 +44,9 @@ class SessionsTest(unittest.TestCase):
 
     def test_two_sessions_get_distinct_slots(self):
         with patch.dict(os.environ, {"LOOP_STATE_DIR": str(self.root)}, clear=True):
-            a = acquire_checkin(None, self.checkins, session="session-a", holder=1001)
-            b = acquire_checkin(None, self.checkins, session="session-b", holder=1002)
+            # TTL-only holders (no pid): avoid fake PIDs that may be alive on some hosts.
+            a = acquire_checkin(None, self.checkins, session="session-a", holder=None)
+            b = acquire_checkin(None, self.checkins, session="session-b", holder=None)
         self.assertEqual(a, "default")
         self.assertEqual(b, "default-2")
 
@@ -58,14 +60,14 @@ class SessionsTest(unittest.TestCase):
 
     def test_explicit_agent_id_respected(self):
         with patch.dict(os.environ, {"LOOP_STATE_DIR": str(self.root)}, clear=True):
-            slot = acquire_checkin("worker-a", self.checkins, session="s1", holder=1)
+            slot = acquire_checkin("worker-a", self.checkins, session="s1", holder=os.getpid())
             self.assertEqual(slot, "worker-a")
             self.assertEqual(os.environ[AGENT_ID_ENV], "worker-a")
 
     def test_release_frees_slot(self):
         with patch.dict(os.environ, {"LOOP_STATE_DIR": str(self.root)}, clear=True):
-            acquire_checkin(None, self.checkins, session="s1", holder=1)
-            self.assertTrue(release_checkin("default", self.checkins, session="s1", holder=1))
+            acquire_checkin(None, self.checkins, session="s1", holder=os.getpid())
+            self.assertTrue(release_checkin("default", self.checkins, session="s1", holder=os.getpid()))
             self.assertEqual(load_checkins(self.checkins), {})
 
     def test_concurrent_acquire_distinct_slots(self):
@@ -89,9 +91,10 @@ class SessionsTest(unittest.TestCase):
 
     def test_checkin_scopes_state_path(self):
         with patch.dict(os.environ, {"LOOP_STATE_DIR": str(self.root)}, clear=True):
-            acquire_checkin(None, self.checkins, session="scoped", holder=42)
+            acquire_checkin(None, self.checkins, session="scoped", holder=None)
             path = get_state_path("worker-loop")
-        self.assertIn("/agents/default/", str(path))
+        self.assertEqual(path.parent.name, "default")
+        self.assertEqual(path.parent.parent.name, "agents")
 
 
 if __name__ == "__main__":
