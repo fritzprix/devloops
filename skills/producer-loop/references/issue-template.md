@@ -24,7 +24,7 @@ Define the requirements to resolve this issue:
 - [ ] Requirement 3: <Verify surrounding components remain compatible>
 
 ## Recommendation
-State the default approach the worker should take if maintainers do not comment (one short paragraph). Prefer steps the agent can perform (tests, mocks, public docs, diagrams)—not screenshots or live accounts unless unavoidable.
+If one approach is clearly best, state it here. If multiple valid approaches change the outcome, list them under **Options** and ask for an owner **Decision**—do not imply the worker should pick. Prefer steps covered by `environment.capabilities` (tests, browser, diagrams)—not owner-only busywork.
 
 ## Verification Steps
 State the test procedure to confirm the solution:

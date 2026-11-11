@@ -184,7 +184,8 @@ Edit `<project>/devloops.config.yaml`:
 | `project.default_branch` | Default branch of the repo |
 | `project.base_branch` | Branch that PRs target |
 | `commands.test`, `commands.lint`, `commands.build` | Project commands that the loops use to verify |
-| `protected_paths` | High-attention paths. Producer: findings only. Worker: edits only when in scope. Gatekeeper: `gatekeeper:needs-human` for stricter review. See `skills/worker-loop/references/escalation-policy.md`. |
+| `environment.capabilities` | Declared agent tools (browser, screen_capture, etc.); worker cites a **missing** name before `needsUser`. See escalation-policy.md. |
+| `protected_paths` | High-attention paths. Producer: findings only. Worker: edits when in scope and unambiguous. Gatekeeper: `gatekeeper:needs-human` for stricter review. See `skills/worker-loop/references/escalation-policy.md`. |
 | `cleanup.protected_branches` | Branches that the `cleanup` task never proposes to delete |
 | `state_dir` | Directory for each loop's `state.json` and `tick.lock` (default `.devloops`). `$LOOP_STATE_DIR` overrides it. `--agent-id` scopes the paths to one agent (see `scheduling.md`). |
 | `labels.producer` / `validated` / `rejected` / `approved` | Label names for the issue flow |

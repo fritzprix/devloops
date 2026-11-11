@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Regression tests for shared autonomy / escalation policy (docs)."""
-import re
 import sys
 import unittest
 from pathlib import Path
@@ -11,6 +10,7 @@ if str(REPO_ROOT) not in sys.path:
 
 POLICY = REPO_ROOT / "skills/worker-loop/references/escalation-policy.md"
 WORKER_SKILL = REPO_ROOT / "skills/worker-loop/SKILL.md"
+TEMPLATE = REPO_ROOT / "templates/devloops.config.yaml"
 
 
 class EscalationPolicyTest(unittest.TestCase):
@@ -26,10 +26,16 @@ class EscalationPolicyTest(unittest.TestCase):
         self.assertNotIn('Record `needsUser` ("Waiting for open PRs', text)
         self.assertIn("no** `needsUser` entry", text)
 
-    def test_policy_documents_try_alternatives(self):
+    def test_policy_escalates_ambiguity(self):
         body = POLICY.read_text(encoding="utf-8")
-        for phrase in ("browser", "Mermaid", "secret", "Open PR limit"):
-            self.assertIn(phrase, body)
+        self.assertIn("(a) Ambiguity", body)
+        self.assertNotIn("**Default: proceed.**", body)
+        self.assertIn("environment.capabilities", body)
+
+    def test_template_declares_environment_capabilities(self):
+        text = TEMPLATE.read_text(encoding="utf-8")
+        self.assertIn("environment:", text)
+        self.assertIn("screen_capture", text)
 
 
 if __name__ == "__main__":

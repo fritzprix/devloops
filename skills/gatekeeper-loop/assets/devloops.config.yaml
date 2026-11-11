@@ -9,7 +9,17 @@ commands:
   lint: ""
   build: ""
 
-protected_paths: []           # findings only, no edits without explicit approval
+# Declared agent/harness capabilities; worker checks before needsUser (see escalation-policy.md)
+environment:
+  capabilities:
+    - browser
+    - screen_capture
+    - cli
+    - network
+    - public_web
+    - diagrams              # Mermaid, PlantUML, ASCII sketches
+
+protected_paths: []           # producer: findings only; worker may edit when in scope; gatekeeper: stricter review (gatekeeper:needs-human)
 
 cleanup:
   protected_branches: [main, master, develop, release] # branches cleanup task must never propose deleting
@@ -44,7 +54,7 @@ gatekeeper:
 
 worker:
   max_items_per_tick: 1       # PRs and issues to finish per tick
-  open_pr_limit: 5            # new issues wait while this many unapproved PRs (plus live issue claims without a PR) are open
+  open_pr_limit: 5            # throttle: worker idles without needsUser while this many unapproved PRs (+ live issue claims without PR) are open
   issue_claim_ttl_minutes: 120  # an issue claim not refreshed for this long is stale and can be taken over
 
 # scheduler: shell            # documentation only: shell | cron | harness-specific adapter
