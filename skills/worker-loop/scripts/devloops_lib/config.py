@@ -185,9 +185,53 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
     return result
 
 
-def find_project_root(start_dir: Path | str | None = None) -> Path:
-    """Find project root by walking up from start_dir (or cwd) for config or .git."""
+def resolve_worktree_main_root(start_dir: Path | str | None = None) -> Path | None:
+    """If start_dir (or cwd) is inside a git worktree, return the main checkout root.
+
+    Resolves via the git common directory (commondir) so that sibling worktrees
+    share their state directory and config file with the main checkout.
+    """
     current = Path(start_dir).resolve() if start_dir else Path.cwd().resolve()
+    for directory in [current, *current.parents]:
+        git_target = directory / ".git"
+        if git_target.is_file():
+            try:
+                content = git_target.read_text(encoding="utf-8").strip()
+                if content.startswith("gitdir:"):
+                    raw = content[len("gitdir:"):].strip()
+                    git_dir = Path(raw)
+                    if not git_dir.is_absolute():
+                        git_dir = (directory / git_dir).resolve()
+                    else:
+                        git_dir = git_dir.resolve()
+
+                    commondir_file = git_dir / "commondir"
+                    if commondir_file.is_file():
+                        commondir_rel = commondir_file.read_text(encoding="utf-8").strip()
+                        common_git = (git_dir / commondir_rel).resolve()
+                        if common_git.name == ".git" and common_git.parent.is_dir():
+                            return common_git.parent
+                        if common_git.is_dir():
+                            return common_git
+
+                    # Fallback if commondir is missing but git_dir is <main>/.git/worktrees/<name>
+                    if git_dir.parent.name == "worktrees" and git_dir.parent.parent.name == ".git":
+                        main_root = git_dir.parent.parent.parent
+                        if main_root.is_dir():
+                            return main_root
+            except OSError:
+                pass
+    return None
+
+
+def find_project_root(start_dir: Path | str | None = None) -> Path:
+    """Find project root by walking up from start_dir (or cwd) for config or .git.
+
+    When start_dir (or cwd) is inside a git worktree, resolves to the main
+    checkout via the git common directory.
+    """
+    main_root = resolve_worktree_main_root(start_dir)
+    current = main_root if main_root is not None else (Path(start_dir).resolve() if start_dir else Path.cwd().resolve())
     for directory in [current, *current.parents]:
         if (directory / "devloops.config.yaml").is_file():
             return directory
@@ -199,8 +243,13 @@ def find_project_root(start_dir: Path | str | None = None) -> Path:
 
 
 def find_config_file(start_dir: Path | str | None = None) -> Path | None:
-    """Find devloops.config.yaml or devloops.config.json by walking up."""
-    current = Path(start_dir).resolve() if start_dir else Path.cwd().resolve()
+    """Find devloops.config.yaml or devloops.config.json by walking up.
+
+    When start_dir (or cwd) is inside a git worktree, resolves from the main
+    checkout via the git common directory.
+    """
+    main_root = resolve_worktree_main_root(start_dir)
+    current = main_root if main_root is not None else (Path(start_dir).resolve() if start_dir else Path.cwd().resolve())
     for directory in [current, *current.parents]:
         yaml_file = directory / "devloops.config.yaml"
         if yaml_file.is_file():
@@ -350,7 +399,7 @@ def get_worktree_path(main: Path | str, role: str = "worker") -> Path:
 
     worktree-setup.md and the gatekeeper SKILL document the same form in shell.
     """
-    main = Path(main)
+    main = resolve_worktree_main_root(main) or Path(main)
     agent_id = get_agent_id()
     return main.parent / f"{main.name}.worktrees" / (f"{role}-{agent_id}" if agent_id else role)
 

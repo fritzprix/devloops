@@ -47,11 +47,11 @@ class GuardError(RuntimeError):
 def ownership_problem(token: str, loop: str, pr: int | None = None, issue: int | None = None,
                       repo: Path | None = None) -> str | None:
     """Return None if this tick owns the lock and the item, else what was lost."""
-    lock = get_lock_path(loop)
+    lock = get_lock_path(loop, start_dir=repo)
     if not renew_lock(lock, token):
         return f"tick lock ({describe_lock(lock)})"
-    if pr is not None and not owns_pr(get_claims_dir(), pr, token):
-        return f"PR #{pr} claim (held by {pr_claim_holder(get_claims_dir(), pr)})"
+    if pr is not None and not owns_pr(get_claims_dir(start_dir=repo), pr, token):
+        return f"PR #{pr} claim (held by {pr_claim_holder(get_claims_dir(start_dir=repo), pr)})"
     if issue is not None:
         agent = get_agent_id() or DEFAULT_AGENT
         if not refresh_issue_claim(repo or Path("."), issue, agent):
@@ -150,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
             return subprocess.run(cmd).returncode
         agent = get_agent_id() or DEFAULT_AGENT
         label = f"agent {agent}, tick {token[:8]}, {time.strftime('%Y-%m-%dT%H:%M:%S%z')}"
-        saved = preserve_and_reset(args.repo, get_lock_path(args.loop).parent / "preserved", label)
+        saved = preserve_and_reset(args.repo, get_lock_path(args.loop, start_dir=args.repo).parent / "preserved", label)
         for item in saved:
             print(f"PRESERVED: {item}")
         print(f"RESET: {args.repo}")
