@@ -164,5 +164,29 @@ class ResetWorktreeTest(GuardTestCase):
         self.assertEqual(git("stash", "list", cwd=self.worktrees["a"]), "")
 
 
+class WorktreeGuardTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def test_guard_check_from_worktree_resolves_main_lock(self):
+        remote, (main,) = make_remote(self.root, "main")
+        wt = get_worktree_path(main, "worker")
+        git("worktree", "add", "--detach", str(wt), "origin/main", cwd=main)
+
+        lock_main = get_lock_path("worker-loop", start_dir=main)
+        token = tick_gate.acquire_lock_token(lock_main)
+        self.assertTrue(token)
+
+        out = io.StringIO()
+        with patch.dict(os.environ, {}, clear=False), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            os.environ.pop("LOOP_STATE_DIR", None)
+            os.environ.pop(TOKEN_ENV, None)
+            code = guard.main(["check", "--token", token, "--repo", str(wt)])
+            self.assertEqual((code, out.getvalue().strip()), (EXIT_RUN, "OWNED"))
+
+
 if __name__ == "__main__":
     unittest.main()

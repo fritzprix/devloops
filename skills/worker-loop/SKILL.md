@@ -42,6 +42,9 @@ All edits, builds, commits, and pushes happen in a dedicated, persistent worktre
 Skill files, scripts, the state file, and configuration are read from the main checkout (`$MAIN`).
 See [references/worktree-setup.md](references/worktree-setup.md) for setup commands and lifecycle rules.
 
+> [!NOTE]
+> Run loop scripts (`tick_gate.py`, `claim.py`, `plan_tick.py`, etc.) from the main checkout with `--repo "$WT"`, and invoke git commands via `git -C "$WT"`. When cwd is inside `$WT`, scripts resolve the main checkout and its shared state directory via the worktree's git common directory.
+
 ## Slots, tick locks, and claims
 
 Three separate things, see [references/scheduling.md](references/scheduling.md#slots-tick-locks-and-claims):

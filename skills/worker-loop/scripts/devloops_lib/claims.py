@@ -372,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
     # Subcommand options only: a subparser default would overwrite a value given
     # before the subcommand.
     common.add_argument("--token", default=None, help=f"Tick lock token from `tick_gate.py --lock` (default: ${TOKEN_ENV})")
+    common.add_argument("--repo", type=Path, default=Path("."), help="Git worktree or repository to run in")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_agent_id_argument(parser)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -386,8 +387,6 @@ def main(argv: list[str] | None = None) -> int:
     issue.add_argument("--ttl-minutes", type=float, default=None, help="Stale after this long without refresh (default: worker.issue_claim_ttl_minutes)")
     release_issue_cmd = commands.add_parser("release-issue", help="Release this slot's issue claim", parents=[common])
     release_issue_cmd.add_argument("number", type=int)
-    for sub in (issue, release_issue_cmd):
-        sub.add_argument("--repo", type=Path, default=Path("."), help="Git worktree to run in")
     args = parser.parse_args(argv)
 
     agent = get_agent_id() or DEFAULT_AGENT
@@ -395,30 +394,31 @@ def main(argv: list[str] | None = None) -> int:
     if not token:
         sys.stderr.write(f"claim error: pass the tick lock token (--token or ${TOKEN_ENV})\n")
         return EXIT_ERROR
-    tick_lock = get_lock_path("worker-loop")
+    repo = getattr(args, "repo", Path("."))
+    tick_lock = get_lock_path("worker-loop", start_dir=repo)
     if not renew_lock(tick_lock, token):
         print(f"LOST: this tick no longer owns its tick lock ({describe_lock(tick_lock)})")
         return EXIT_LOST
 
-    cfg = load_config()
+    cfg = load_config(start_dir=repo)
     try:
         if args.command == "pr":
-            if not claim_pr(get_claims_dir(), args.number, agent, tick_lock, token):
-                print(f"BUSY: PR #{args.number} is claimed by {pr_claim_holder(get_claims_dir(), args.number)}")
+            if not claim_pr(get_claims_dir(start_dir=repo), args.number, agent, tick_lock, token):
+                print(f"BUSY: PR #{args.number} is claimed by {pr_claim_holder(get_claims_dir(start_dir=repo), args.number)}")
                 return EXIT_BUSY
             print(f"CLAIMED: PR #{args.number}")
             return EXIT_RUN
         if args.command == "release-pr":
-            released = release_pr(get_claims_dir(), args.number, token)
+            released = release_pr(get_claims_dir(start_dir=repo), args.number, token)
             print(f"RELEASED: PR #{args.number}" if released else f"NOT OWNED: PR #{args.number}")
             return EXIT_RUN
         if args.command == "release-issue":
-            released = release_issue(args.repo, args.number, agent)
+            released = release_issue(repo, args.number, agent)
             print(f"RELEASED: issue #{args.number}" if released else f"NOT OWNED: issue #{args.number}")
             return EXIT_RUN
 
         ttl = int(args.ttl_minutes * 60) if args.ttl_minutes is not None else issue_claim_ttl_seconds(cfg)
-        result = claim_issue(args.repo, args.number, args.base, agent, ttl, args.branch)
+        result = claim_issue(repo, args.number, args.base, agent, ttl, args.branch)
         if result["status"] == "busy":
             print(f"BUSY: issue #{args.number} is claimed by agent {result['owner']} "
                   f"on host {result['host'] or '?'} (refreshed {result['age']}s ago)")
@@ -427,9 +427,9 @@ def main(argv: list[str] | None = None) -> int:
             print(_describe_takeover(args.number, result))
             return EXIT_RUN
         limit = args.limit if args.limit is not None else open_pr_limit(cfg)
-        open_work = _fetch_open_work(args.repo, ttl)
+        open_work = _fetch_open_work(repo, ttl)
         if open_work > limit:
-            release_issue(args.repo, args.number, agent)
+            release_issue(repo, args.number, agent)
             print(f"OVER LIMIT: {open_work} open items, limit {limit}; claim on issue #{args.number} released")
             return EXIT_NOOP
         print(f"{_describe_takeover(args.number, result)} ({open_work} open items)")

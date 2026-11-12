@@ -35,3 +35,4 @@ All edits, builds, commits, and pushes happen in a dedicated, persistent worktre
   - an unfinished rebase, merge, cherry-pick, or revert is saved as a patch under `<state_dir>/worker-loop/preserved/` and aborted;
   - remaining uncommitted changes, untracked files included, are stashed (`git -C "$WT" stash list`) before `reset --hard` and `clean -fd`.
 - Never reset `$MAIN` or another slot's worktree (`worker-<id>`).
+- Run skill scripts (`tick_gate.py`, `claim.py`, etc.) from `$MAIN` with `--repo "$WT"`, using `git -C "$WT"` for git operations. Scripts resolve the main checkout and state directory via the worktree's git common directory even when invoked from inside `$WT`.

@@ -238,6 +238,45 @@ producer:
         self.assertEqual(merged["producer"]["task_max_new_issues"]["cleanup"], 1)
         self.assertEqual(merged["producer"]["task_max_new_issues"]["security"], 5)
 
+    def test_worktree_resolves_to_main_checkout(self):
+        def git(*args, cwd):
+            subprocess.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],
+                cwd=cwd, check=True, capture_output=True, text=True,
+            )
+
+        main = self.tmp_dir / "proj"
+        main.mkdir()
+        git("init", cwd=main)
+        (main / "devloops.config.yaml").write_text("state_dir: .custom_loops\n", encoding="utf-8")
+        git("add", "devloops.config.yaml", cwd=main)
+        git("commit", "-m", "init", cwd=main)
+
+        wt = config.get_worktree_path(main, "worker")
+        git("worktree", "add", "--detach", str(wt), "HEAD", cwd=main)
+
+        # Worktree root and nested directory should both resolve to main
+        self.assertEqual(config.resolve_worktree_main_root(wt), main.resolve())
+        nested = wt / "subdir" / "deep"
+        nested.mkdir(parents=True)
+        self.assertEqual(config.resolve_worktree_main_root(nested), main.resolve())
+
+        # find_project_root and find_config_file from wt resolve to main
+        self.assertEqual(config.find_project_root(wt), main.resolve())
+        self.assertEqual(config.find_project_root(nested), main.resolve())
+        self.assertEqual(config.find_config_file(wt), (main / "devloops.config.yaml").resolve())
+
+        # State and lock paths resolve to main's state_dir
+        expected_state = (main / ".custom_loops" / "worker-loop" / "state.json").resolve()
+        expected_lock = (main / ".custom_loops" / "worker-loop" / "tick.lock").resolve()
+        expected_claims = (main / ".custom_loops" / "claims").resolve()
+        self.assertEqual(config.get_state_path("worker-loop", start_dir=wt), expected_state)
+        self.assertEqual(config.get_lock_path("worker-loop", start_dir=wt), expected_lock)
+        self.assertEqual(config.get_claims_dir(start_dir=wt), expected_claims)
+
+        # get_worktree_path called with wt as input does not double-nest .worktrees
+        self.assertEqual(config.get_worktree_path(wt, "worker"), wt.resolve())
+
 
 class ConfigErrorTest(unittest.TestCase):
     def test_unreadable_config_raises_instead_of_using_defaults(self):

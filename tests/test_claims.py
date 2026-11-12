@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from devloops_lib import claims, tick_gate
+from devloops_lib import claims, config, tick_gate
 from devloops_lib.config import AGENT_ID_ENV, get_lock_path
 
 
@@ -309,6 +309,51 @@ class CountOpenWorkTest(unittest.TestCase):
         # 5 has no PR, and 9 is a leftover claim on a closed issue.
         count = claims.count_open_work(prs, {1, 2, 3, 4, 5}, {1, 2, 3, 4, 5, 9})
         self.assertEqual(count, 3)
+
+
+class WorktreeClaimTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def test_claim_from_sibling_worktree_shares_main_tick_lock(self):
+        remote, (main,) = make_remote(self.root, "main")
+        wt = config.get_worktree_path(main, "worker")
+        git("worktree", "add", "--detach", str(wt), "origin/main", cwd=main)
+
+        # Acquire tick lock from main checkout
+        lock_main = config.get_lock_path("worker-loop", start_dir=main)
+        token = tick_gate.acquire_lock_token(lock_main)
+        self.assertTrue(token)
+
+        out = io.StringIO()
+        base = ("--base", "origin/main")
+        with patch.object(claims, "_fetch_open_work", return_value=1), \
+                patch.dict(os.environ, {}, clear=False), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            os.environ.pop("LOOP_STATE_DIR", None)
+            os.environ.pop(tick_gate.TOKEN_ENV, None)
+            # 1. From outside, pass --repo wt
+            code = claims.main(["issue", "10", *base, "--repo", str(wt), "--token", token])
+            self.assertEqual(code, tick_gate.EXIT_RUN, out.getvalue())
+            self.assertIn("CLAIMED: issue #10", out.getvalue())
+
+        # 2. When cwd is the sibling worktree without --repo
+        out2 = io.StringIO()
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(str(wt))
+            with patch.object(claims, "_fetch_open_work", return_value=1), \
+                    patch.dict(os.environ, {}, clear=False), \
+                    contextlib.redirect_stdout(out2), contextlib.redirect_stderr(out2):
+                os.environ.pop("LOOP_STATE_DIR", None)
+                os.environ.pop(tick_gate.TOKEN_ENV, None)
+                code = claims.main(["issue", "11", *base, "--token", token])
+                self.assertEqual(code, tick_gate.EXIT_RUN, out2.getvalue())
+                self.assertIn("CLAIMED: issue #11", out2.getvalue())
+        finally:
+            os.chdir(old_cwd)
 
 
 if __name__ == "__main__":
