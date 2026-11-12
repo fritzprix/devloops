@@ -50,7 +50,7 @@ Approve:
 ```
 
 > [!IMPORTANT]
-> The `### Checked` section is **mandatory**. Every acceptance criterion from the linked issue, every finding from earlier rounds and every owner concern must be listed with concrete verification evidence (`file:line`). For security-sensitive PRs (shell policy, tool approval, permissions, secrets) also list the bypass scenarios checked. For OS-sensitive changes also list the per-OS CI job results (ubuntu / windows / macos) for the reviewed head. If this section is missing or empty, an `approve` verdict cannot be issued.
+> The `### Checked` section is **mandatory**. Every acceptance criterion from the linked issue, every finding from earlier rounds and every owner concern must be listed with concrete verification evidence (`file:line`). For PRs that, after reading the files, actually change shell policy, tool approval, permission, secret, or sandbox code or config, also list the bypass scenarios checked. For OS-sensitive changes also list the per-OS CI job results (ubuntu / windows / macos) for the reviewed head. If this section is missing or empty, an `approve` verdict cannot be issued.
 
 Clean, waiting for CI (no label change, not a round; lets any tick or machine see the review is done):
 
@@ -72,7 +72,7 @@ Needs human (not a verdict, does not count as a round; post once per reason+head
 <Concrete draft rubric or checklist the owner must confirm or edit — not open-ended questions.>
 ```
 
-Reasons: `ambiguous review criteria`, `changes loop skill files`, `security-sensitive paths`. Missing repo CI is **not** needs-human: the gatekeeper opens a bootstrap CI PR instead.
+Reasons: `ambiguous review criteria`, `changes loop skill files`. A path-name match is never a reason. Missing repo CI is **not** needs-human: the gatekeeper opens a bootstrap CI PR instead.
 
 Escalate (round limit or second dispute on the same `G` item):
 
@@ -107,7 +107,7 @@ Every `G` item must be answered as **fixed** or **declined**. Suggestions may be
 | `gatekeeper:changes-requested` | gatekeeper | Latest verdict requests changes                                                          |
 | `gatekeeper:approved`          | gatekeeper | Approved at the current head; ready for a human merge                                    |
 | `gatekeeper:escalated`         | gatekeeper | Round limit or repeated dispute on the same finding; maintainer picks direction          |
-| `gatekeeper:needs-human`       | gatekeeper | Extra scrutiny before approve: security-sensitive or `protected_paths`, loop-skill change, or clean head with no CI—not a worker stop. Kept alongside the verdict label; removed when its reason no longer applies |
+| `gatekeeper:needs-human`       | gatekeeper | Human attention: ambiguous review criteria or loop-skill change—not a worker stop. Never set from a path-name match. Kept alongside the verdict label; removed when its reason no longer applies |
 
 Unmarked comments from the repo owner (or `@me`) posted after the last marker are read as required items and trigger a review.
 

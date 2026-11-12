@@ -50,12 +50,12 @@ When blocked on (a), quote the ambiguous lines in `question` and stop work that 
 
 ## Sensitive paths and CI config
 
-- **Clear scope** in the issue/PR: edit `protected_paths`, `.github/workflows`, or release config as required; expect **`gatekeeper:needs-human`** stricter review. Worker does not stall for sensitivity alone.
+- **Clear scope** in the issue/PR: edit `protected_paths`, `.github/workflows`, or release config as required; expect stricter gatekeeper review (bypass scenarios in `### Checked`). Worker does not stall for sensitivity alone.
 - **Ambiguous scope or approach** for those areas → **(a) Ambiguity** → `needsUser` before large edits.
 
 ## Gatekeeper: `escalate` and `gatekeeper:needs-human`
 
-- **`gatekeeper:needs-human`**: Extra scrutiny before approve (security-sensitive, `protected_paths`, loop-skill edits, no CI on head). Worker may still implement.
+- **`gatekeeper:needs-human`**: Human attention for ambiguous review criteria or loop-skill edits. Never applied from a path-name match; real permission/secret/policy/sandbox changes get stricter gatekeeper review instead. Worker may still implement.
 - **`verdict=escalate`**: Round limit (5); second dispute on the same `G` item; or an unresolved **product/security/data owner decision** the worker flagged and the thread does not settle—hand to maintainer with both positions.
 
 ## Producer

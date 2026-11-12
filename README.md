@@ -67,7 +67,8 @@ human ───────────► merge
 - The gatekeeper **expands its own prerequisites** (CI workflows, review rubrics, fixtures)
   when missing, instead of blocking on `needs-human`. Humans collaborate only when judgment
   criteria are ambiguous (draft rubric for confirm/edit). `gatekeeper:needs-human` remains for
-  security-sensitive paths, loop-skill edits, and ambiguous criteria.
+  loop-skill edits and ambiguous criteria. Sensitive-looking paths are read and get stricter
+  review from the gatekeeper, not a human gate.
 
 ### Tick gate
 
