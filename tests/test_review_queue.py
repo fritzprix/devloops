@@ -25,6 +25,7 @@ is_rebased = _module.is_rebased
 owner_comments_after = _module.owner_comments_after
 parse_markers = _module.parse_markers
 needs_human_guidance = _module.needs_human_guidance
+sensitive_candidates = _module.sensitive_candidates
 split_markers = _module.split_markers
 
 
@@ -462,7 +463,7 @@ class Issue14NeedsHumanTests(unittest.TestCase):
         self.assertEqual(len(needs), 2)  # tick sees commentPresent and posts nothing new
 
     def test_human_only_guidance(self) -> None:
-        guidance = needs_human_guidance(status="human-only", own_skill=True, sensitive=[],
+        guidance = needs_human_guidance(status="human-only", own_skill=True,
                                         labels=["gatekeeper:needs-human"], needs_comment_present=True)
         self.assertEqual(guidance["reason"], "changes loop skill files")
         self.assertTrue(guidance["labelPresent"])
@@ -470,7 +471,7 @@ class Issue14NeedsHumanTests(unittest.TestCase):
         self.assertFalse(guidance["staleLabel"])
 
     def test_ambiguous_rubric_guidance(self) -> None:
-        guidance = needs_human_guidance(status="needs-human", own_skill=False, sensitive=[],
+        guidance = needs_human_guidance(status="needs-human", own_skill=False,
                                         labels=[], needs_comment_present=False)
         self.assertEqual(guidance["reason"], "ambiguous review criteria")
         self.assertFalse(guidance["labelPresent"])
@@ -478,7 +479,7 @@ class Issue14NeedsHumanTests(unittest.TestCase):
 
     def test_resolved_needs_human_label_is_stale(self) -> None:
         guidance = needs_human_guidance(
-            status="review", own_skill=False, sensitive=[],
+            status="review", own_skill=False,
             labels=["gatekeeper:needs-human", "gatekeeper:changes-requested"],
             needs_comment_present=True)
         self.assertTrue(guidance["staleLabel"])
@@ -486,14 +487,28 @@ class Issue14NeedsHumanTests(unittest.TestCase):
 
     def test_no_needs_human_when_clean_and_unlabelled(self) -> None:
         self.assertIsNone(needs_human_guidance(
-            status="approved", own_skill=False, sensitive=[],
+            status="approved", own_skill=False,
             labels=["gatekeeper:approved"], needs_comment_present=False))
 
-    def test_security_sensitive_reason(self) -> None:
+    def test_path_name_match_is_candidate_not_needs_human(self) -> None:
+        paths = ["docs/research/permissions-notes.md", "src/app.py"]
+        self.assertEqual(sensitive_candidates(paths), ["docs/research/permissions-notes.md"])
+        # A reviewable PR whose only signal is a path-name match gets no human gate.
+        self.assertIsNone(needs_human_guidance(
+            status="review", own_skill=False, labels=[], needs_comment_present=False))
+
+    def test_path_only_needs_human_label_is_stale(self) -> None:
         guidance = needs_human_guidance(
-            status="review", own_skill=False, sensitive=["src/permissions.py"],
-            labels=[], needs_comment_present=False)
-        self.assertEqual(guidance["reason"], "security-sensitive paths")
+            status="review", own_skill=False,
+            labels=["gatekeeper:needs-human"], needs_comment_present=True)
+        self.assertTrue(guidance["staleLabel"])
+
+    def test_real_sensitive_files_still_surface_as_candidates(self) -> None:
+        paths = ["src/shell_policy.rs", "config/credentials.yaml", "src/sandbox/mod.rs",
+                 "secure/keys.toml", "README.md"]
+        self.assertEqual(
+            sensitive_candidates(paths, ("secure/",)),
+            ["config/credentials.yaml", "secure/keys.toml", "src/sandbox/mod.rs", "src/shell_policy.rs"])
 
 
 if __name__ == "__main__":

@@ -92,7 +92,7 @@ Other statuses:
 
 - `await-ci` — a `verdict=clean` marker exists for this head; waiting only for CI completion. Remove any stale `gatekeeper:changes-requested` label (e.g. `gh pr edit N --remove-label gatekeeper:changes-requested`). If CI turned green, post `approve` and remove any stale `gatekeeper:changes-requested` label (e.g. `gh pr edit N --add-label gatekeeper:approved --remove-label gatekeeper:changes-requested,gatekeeper:escalated`); if failed, diagnose failure and post `changes-requested`.
 - `await-bootstrap` — code review is done for this head but repo CI or rubric bootstrap is still in flight (`readiness.gaps`). Finish autonomous work first; do not approve until CI can run on the head and criteria are explicit.
-- `needs-human` — **ambiguous review criteria** only (plus security-sensitive paths and loop-skill edits as before). Post a draft rubric/checklist for the owner; do not use this status for missing CI (bootstrap CI instead).
+- `needs-human` — **ambiguous review criteria** only (loop-skill edits use `human-only`; path names are never a reason). Post a draft rubric/checklist for the owner; do not use this status for missing CI (bootstrap CI instead).
 - `wait-worker` — worker's turn (changes requested at current head without response, or merge conflicts).
 - `approved` — nothing to do; make sure the label is `gatekeeper:approved`. For any PR with `staleApprovedLabel: true` (status no longer `approved`), swap the label right away (`gatekeeper:changes-requested` if CI is failing, otherwise remove `gatekeeper:approved`) before reviewing, so a stale approve is never visible. The script already turns an approve back into `review` when the head changed (a push after an approve **always requires re-review**), CI fails, the base changed (e.g. stacked PR retargeted), or the owner commented.
 - `escalate` — post an `escalate` verdict if none exists yet and swap the label to `gatekeeper:escalated`. Note: An owner comment on an escalated PR resets status to `review` so the gatekeeper can incorporate owner direction.
@@ -126,7 +126,12 @@ git -C "$WT" checkout --detach --force "origin/<head>" && git -C "$WT" clean -fd
 
 Keep it between ticks so caches stay warm. Local runs never lead to commits.
 
-`securitySensitive` lists changed paths touching security, auth, permissions, secrets, sandboxing, or `protected_paths` from `devloops.config.yaml`. For such PRs add the label `gatekeeper:needs-human` (stricter review, not a worker stop). An `approve` is only valid if `### Checked` lists the concrete bypass scenarios you tried and why each is blocked. Never auto-approve them silently.
+`sensitiveCandidates` is a first-pass **hint**, not a verdict: changed paths whose names suggest security, permissions, secrets, sandboxing, or that fall under `protected_paths` from `devloops.config.yaml`. Open and read each one and decide from its contents:
+
+- It changes permission, secret, policy, approval, or sandbox **code or config** → review it more strictly yourself: an `approve` is only valid if `### Checked` lists the concrete bypass scenarios you tried and why each is blocked. Never auto-approve it silently.
+- It does not (research notes, docs, and similar) → review normally.
+
+Never add `gatekeeper:needs-human` or a `kind=needs-human` marker because of a path-name match. Stricter review is the gatekeeper's job, not a human escalation.
 
 On round ≥ 2, read the worker response first and settle every previous `G` item: fixed (verify in the diff), decline accepted, or disputed (restate once; a second dispute on the same item → escalate).
 

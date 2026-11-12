@@ -61,6 +61,8 @@ PROTECTED_SKILL_PREFIXES = (
     ".agents/skills/worker-loop/",
 )
 OWNER_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+# First-pass hint only: a name match lists the path for the gatekeeper to open and
+# read. It is never a verdict and never by itself a reason for needs-human.
 SENSITIVE_PATH = re.compile(
     r"(shell[_-]?policy|tool[_-]?approval|permission|secret|credential|keychain|sandbox)", re.I
 )
@@ -239,11 +241,18 @@ def determine_status(**kwargs) -> str:
     return classify(**kwargs)[0]
 
 
+def sensitive_candidates(paths: list[str], protected_paths: tuple[str, ...] = ()) -> list[str]:
+    """Changed paths the gatekeeper should open before deciding on stricter review."""
+    return sorted(
+        p for p in paths
+        if SENSITIVE_PATH.search(p) or (protected_paths and p.startswith(protected_paths))
+    )
+
+
 def needs_human_guidance(
     *,
     status: str,
     own_skill: bool,
-    sensitive: list[str],
     labels: list[str],
     needs_comment_present: bool,
 ) -> dict | None:
@@ -252,14 +261,14 @@ def needs_human_guidance(
     Idempotency lives here: `commentPresent`/`labelPresent` tell the tick to skip
     work it already did. `staleLabel` marks a `gatekeeper:needs-human` label whose
     reason no longer applies; labels this loop did not add are never removed.
+    Path-name matches (`sensitiveCandidates`) are deliberately not a reason: the
+    gatekeeper reads those files and applies stricter review itself.
     """
     label_present = "gatekeeper:needs-human" in labels
     if status == "human-only":
         reason = "changes loop skill files"
     elif status == "needs-human":
         reason = "ambiguous review criteria"
-    elif sensitive:
-        reason = "security-sensitive paths"
     else:
         reason = None
     if reason is None:
@@ -327,10 +336,7 @@ def summarize(
     paths = [f["path"] for f in pr.get("files") or []]
     own_skill = any(p.startswith(PROTECTED_SKILL_PREFIXES) for p in paths)
     protected_config_paths = tuple(cfg.get("protected_paths", []))
-    sensitive = sorted(
-        p for p in paths
-        if SENSITIVE_PATH.search(p) or (protected_config_paths and any(p.startswith(pref) for pref in protected_config_paths))
-    )
+    candidates = sensitive_candidates(paths, protected_config_paths)
 
     status, reason, priority = classify(
         mergeable=pr.get("mergeable"),
@@ -358,7 +364,7 @@ def summarize(
 
     needs_at_head = next((m for m in reversed(needs) if m.get("head") == head), None)
     needs_human = needs_human_guidance(
-        status=status, own_skill=own_skill, sensitive=sensitive,
+        status=status, own_skill=own_skill,
         labels=labels, needs_comment_present=bool(needs_at_head),
     )
 
@@ -384,7 +390,7 @@ def summarize(
         "cleanMarker": clean,
         "workerResponse": response,
         "ownerComments": owner,
-        "securitySensitive": sensitive,
+        "sensitiveCandidates": candidates,
         "labels": labels,
         "staleApprovedLabel": GATEKEEPER_APPROVED_LABEL in labels and status != "approved",
         "needsHuman": needs_human,
