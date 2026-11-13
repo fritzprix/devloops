@@ -89,6 +89,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "default_delegation": "cursor",
         "peer_loops": ["worker-loop", "gatekeeper-loop", "producer-loop"],
         "board_provider": "github",
+        "definition_of_done": {},
     },
     "scheduler": "shell",
 }

@@ -51,8 +51,12 @@ def build_project_profile(
         "producer": "producer-loop/SKILL.md",
     }
     project = config.get("project") or {}
+    from devloops_lib.issue_close import profile_default_definition_of_done
+
+    project_type = infer_project_type(signals)
     return {
-        "projectType": infer_project_type(signals),
+        "projectType": project_type,
+        "definitionOfDone": profile_default_definition_of_done(project_type),
         "repo": project.get("repo"),
         "baseBranch": project.get("base_branch", project.get("default_branch")),
         "labels": dict(config.get("labels") or {}),

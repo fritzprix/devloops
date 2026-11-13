@@ -66,6 +66,7 @@ pm:
   default_delegation: cursor  # cursor | claude | harness — not silently switched when unavailable
   peer_loops: [worker-loop, gatekeeper-loop, producer-loop]
   board_provider: github      # github | jira (jira board IDs live in project config, not in the PM skill)
+  definition_of_done: {}      # optional signals list or {signals: [...]}; else projectProfile default
 
 # scheduler: shell            # documentation only: shell | cron | harness-specific adapter
 # When pm-loop is armed, only the PM scheduler runs; it cascades ticks to peer loops.

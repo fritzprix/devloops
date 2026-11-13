@@ -14,7 +14,7 @@ if str(_script_dir) not in sys.path:
 from devloops_lib.config import find_project_root, get_state_path, load_config, run_main
 from devloops_lib.pm_budget import budget_summary, get_budget, prompts_needed
 from devloops_lib.pm_induction import induction_required
-from devloops_lib.pm_issue_close import closable_merged_issues
+from devloops_lib.issue_close import closable_issues, resolve_definition_of_done
 from devloops_lib.pm_schedule import cascade_plan, exclusivity_report
 from devloops_lib.tick_gate import load_state
 
@@ -29,7 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--board-json",
         default=None,
-        help="Optional board snapshot with openIssues and mergedWork for close-merged planning",
+        help="Optional board snapshot with openIssues and workItems for close planning",
     )
     parser.add_argument("--state-file", type=Path, default=None)
     args = parser.parse_args(argv)
@@ -52,7 +52,14 @@ def main(argv: list[str] | None = None) -> int:
     budget = budget_summary(state, cfg)
     slots = budget.get("slots") or 1
 
-    merged_closures: list[dict] = []
+    closable_issues_list: list[dict] = []
+    definition_of_done: dict | None = None
+    profile = state.get("projectProfile")
+    if isinstance(profile, dict):
+        definition_of_done = resolve_definition_of_done(cfg, profile)
+    else:
+        definition_of_done = resolve_definition_of_done(cfg, None)
+
     if args.board_json:
         try:
             board = json.loads(args.board_json)
@@ -61,9 +68,13 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         if isinstance(board, dict):
             open_issues = board.get("openIssues") or board.get("open_issues") or []
-            merged_work = board.get("mergedWork") or board.get("merged_work") or []
-            if isinstance(open_issues, list) and isinstance(merged_work, list):
-                merged_closures = closable_merged_issues(open_issues, merged_work)
+            work_items = board.get("workItems") or board.get("work_items") or []
+            if isinstance(open_issues, list) and isinstance(work_items, list):
+                closable_issues_list = closable_issues(
+                    open_issues,
+                    work_items,
+                    definition_of_done=definition_of_done,
+                )
 
     plan = {
         "budget": budget,
@@ -72,7 +83,8 @@ def main(argv: list[str] | None = None) -> int:
         "inductionRequired": induction_required(state),
         "projectProfile": state.get("projectProfile"),
         "cascade": cascade_plan(slots=int(slots), pipeline=pipeline),
-        "mergedIssueClosures": merged_closures,
+        "definitionOfDone": definition_of_done,
+        "closableIssues": closable_issues_list,
         "constraints": {
             "neverApprove": True,
             "neverMerge": True,

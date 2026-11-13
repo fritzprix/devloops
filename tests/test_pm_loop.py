@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from devloops_lib import pm_budget, pm_command, pm_induction, pm_invoke, pm_issue_close, pm_schedule
+from devloops_lib import issue_close, pm_budget, pm_command, pm_induction, pm_invoke, pm_schedule
 from devloops_lib.tick_gate import load_state, save_state
 
 
@@ -108,10 +108,11 @@ class PmInductionTest(unittest.TestCase):
         self.assertNotIn("slots", json.dumps(profile))
 
 
-class PmMergedIssueCloseTest(unittest.TestCase):
-    def test_closes_open_issue_when_pr_merged(self):
-        board_open = [{"number": 41, "state": "OPEN"}]
-        merged = [
+class PmIssueCloseTest(unittest.TestCase):
+    def test_software_merged_pr_signal(self):
+        dod = {"signals": ["merged_pr"]}
+        open_issues = [{"number": 41, "state": "OPEN"}]
+        work = [
             {
                 "number": 42,
                 "merged": True,
@@ -120,22 +121,38 @@ class PmMergedIssueCloseTest(unittest.TestCase):
                 "url": "https://github.com/o/r/pull/42",
             }
         ]
-        actions = pm_issue_close.closable_merged_issues(board_open, merged)
+        actions = issue_close.closable_issues(open_issues, work, definition_of_done=dod)
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0]["issueNumber"], 41)
-        self.assertIn("pm-loop: close-merged", actions[0]["comment"])
-        self.assertIn("https://github.com/o/r/pull/42", actions[0]["comment"])
+        self.assertEqual(actions[0]["matchedSignals"], ["merged_pr"])
+        self.assertIn("definition of done", actions[0]["comment"])
+
+    def test_writing_approved_manuscript_signal(self):
+        dod = {"signals": ["approved_manuscript"]}
+        issues = [{"number": 7, "state": "OPEN"}]
+        work = [
+            {
+                "title": "Chapter draft",
+                "closesIssues": [7],
+                "approvedManuscript": True,
+                "url": "https://docs.example/ms-7",
+            }
+        ]
+        actions = issue_close.closable_issues(issues, work, definition_of_done=dod)
+        self.assertEqual(actions[0]["issueNumber"], 7)
+        self.assertEqual(actions[0]["matchedSignals"], ["approved_manuscript"])
 
     def test_skips_when_issue_already_closed(self):
         issues = [{"number": 41, "state": "CLOSED"}]
-        merged = [{"number": 1, "merged": True, "title": "Fixes #41", "body": "Fixes #41"}]
-        self.assertEqual(pm_issue_close.closable_merged_issues(issues, merged), [])
+        work = [{"merged": True, "body": "Fixes #41"}]
+        self.assertEqual(issue_close.closable_issues(issues, work, signals=["merged_pr"]), [])
 
-    def test_jira_explicit_closes_issues(self):
-        issues = [{"number": 100, "state": "Open"}]
-        merged = [{"id": "PROJ-9", "merged": True, "closesIssues": [100], "webUrl": "https://jira/x/PROJ-9"}]
-        actions = pm_issue_close.closable_merged_issues(issues, merged)
-        self.assertEqual(actions[0]["issueNumber"], 100)
+    def test_resolve_definition_of_done_prefers_config(self):
+        cfg = {"pm": {"definition_of_done": {"signals": ["approved_manuscript"]}}}
+        profile = {"projectType": "software", "definitionOfDone": ["merged_pr"]}
+        dod = issue_close.resolve_definition_of_done(cfg, profile)
+        self.assertEqual(dod["signals"], ["approved_manuscript"])
+        self.assertEqual(dod["source"], "config")
 
 
 class PmInvokeIntegrationTest(unittest.TestCase):

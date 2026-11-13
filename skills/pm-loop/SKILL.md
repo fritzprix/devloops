@@ -13,7 +13,7 @@ The PM **does not** implement code, review PRs, or file producer issues itself: 
 The PM owns the board and the schedule. It references **worker-loop**, **gatekeeper-loop**, and **producer-loop** and decides when to start them.
 
 - Keep the pipeline moving while approved work exists; delegate gatekeeper review; drive work to merge-ready.
-- **Close issues whose work has merged.** Each tick, check merged work against its issue, post a comment that links the merged change, and close the issue on the board. This works on GitHub, Jira, and other boards without relying on platform auto-close.
+- Close an issue when it is judged complete under the project's definition of done.
 - Cascade ticks only through the PM schedule while the PM scheduler is armed.
 
 **Hard limits (never violate)**
@@ -137,15 +137,13 @@ python3 "$SKILL_DIR/../gatekeeper-loop/scripts/tick.py" --agent-cmd 'agent "/gat
 
 Run **producer-loop** only when the plan includes it and duplicate search is clean.
 
-### 4. Close issues for merged work
-
-Each tick, find open issues whose work has already merged. Close them with a comment that links the merged change. Use the board provider API (GitHub `gh`, Jira REST, and so on); do not depend on platform auto-close.
+### 4. Close issues judged complete
 
 ```bash
-python3 "$SKILL_DIR/scripts/merged_issue_close.py" --board-json '{"openIssues":[...],"mergedWork":[...]}'
+python3 "$SKILL_DIR/scripts/issue_close.py" --board-json '{"openIssues":[...],"workItems":[...]}'
 ```
 
-For each entry in `closable`, post `comment`, then close the issue. Record the action in `history`.
+Use the definition of done from role skills, `devloops.config.yaml`, and `projectProfile`. For each entry in `closableIssues`, post `comment`, then close the issue.
 
 ### 5. needsHuman and customer contact
 
