@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from devloops_lib import pm_budget, pm_command, pm_induction, pm_invoke, pm_schedule
+from devloops_lib import pm_budget, pm_command, pm_induction, pm_invoke, pm_issue_close, pm_schedule
 from devloops_lib.tick_gate import load_state, save_state
 
 
@@ -106,6 +106,36 @@ class PmInductionTest(unittest.TestCase):
         profile = pm_induction.build_project_profile(config={"project": {"repo": "o/r"}}, signals={"hasCi": True})
         self.assertIn("humanOnly", profile)
         self.assertNotIn("slots", json.dumps(profile))
+
+
+class PmMergedIssueCloseTest(unittest.TestCase):
+    def test_closes_open_issue_when_pr_merged(self):
+        board_open = [{"number": 41, "state": "OPEN"}]
+        merged = [
+            {
+                "number": 42,
+                "merged": True,
+                "title": "Add pm-loop",
+                "body": "Fixes #41",
+                "url": "https://github.com/o/r/pull/42",
+            }
+        ]
+        actions = pm_issue_close.closable_merged_issues(board_open, merged)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["issueNumber"], 41)
+        self.assertIn("pm-loop: close-merged", actions[0]["comment"])
+        self.assertIn("https://github.com/o/r/pull/42", actions[0]["comment"])
+
+    def test_skips_when_issue_already_closed(self):
+        issues = [{"number": 41, "state": "CLOSED"}]
+        merged = [{"number": 1, "merged": True, "title": "Fixes #41", "body": "Fixes #41"}]
+        self.assertEqual(pm_issue_close.closable_merged_issues(issues, merged), [])
+
+    def test_jira_explicit_closes_issues(self):
+        issues = [{"number": 100, "state": "Open"}]
+        merged = [{"id": "PROJ-9", "merged": True, "closesIssues": [100], "webUrl": "https://jira/x/PROJ-9"}]
+        actions = pm_issue_close.closable_merged_issues(issues, merged)
+        self.assertEqual(actions[0]["issueNumber"], 100)
 
 
 class PmInvokeIntegrationTest(unittest.TestCase):

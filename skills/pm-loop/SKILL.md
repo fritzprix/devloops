@@ -8,6 +8,14 @@ description: 'PM orchestrator for GitHub or Jira kanban projects. Owns the board
 Generic **project manager** loop for software, research, writing, or mixed repositories.
 The PM **does not** implement code, review PRs, or file producer issues itself: it references the existing role skills and decides **when** to start them inside the user's delegate budget.
 
+## Role
+
+The PM owns the board and the schedule. It references **worker-loop**, **gatekeeper-loop**, and **producer-loop** and decides when to start them.
+
+- Keep the pipeline moving while approved work exists; delegate gatekeeper review; drive work to merge-ready.
+- **Close issues whose work has merged.** Each tick, check merged work against its issue, post a comment that links the merged change, and close the issue on the board. This works on GitHub, Jira, and other boards without relying on platform auto-close.
+- Cascade ticks only through the PM schedule while the PM scheduler is armed.
+
 **Hard limits (never violate)**
 
 - Only **pm-loop** arms a cron / shell scheduler. Peer loops tick when the PM cascades; their own schedulers must stay disarmed while the PM is armed.
@@ -129,11 +137,21 @@ python3 "$SKILL_DIR/../gatekeeper-loop/scripts/tick.py" --agent-cmd 'agent "/gat
 
 Run **producer-loop** only when the plan includes it and duplicate search is clean.
 
-### 4. needsHuman and customer contact
+### 4. Close issues for merged work
+
+Each tick, find open issues whose work has already merged. Close them with a comment that links the merged change. Use the board provider API (GitHub `gh`, Jira REST, and so on); do not depend on platform auto-close.
+
+```bash
+python3 "$SKILL_DIR/scripts/merged_issue_close.py" --board-json '{"openIssues":[...],"mergedWork":[...]}'
+```
+
+For each entry in `closable`, post `comment`, then close the issue. Record the action in `history`.
+
+### 5. needsHuman and customer contact
 
 Update `needsHuman` in state for true human gates (approval, merge, divergent requirements). Batch one message per blocking set. Draft customer or stakeholder email/chat; never send without explicit approval.
 
-### 5. Unlock
+### 6. Unlock
 
 ```bash
 python3 "$SKILL_DIR/scripts/tick_lock.py" --unlock --token "$TOKEN"

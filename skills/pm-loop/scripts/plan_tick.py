@@ -14,6 +14,7 @@ if str(_script_dir) not in sys.path:
 from devloops_lib.config import find_project_root, get_state_path, load_config, run_main
 from devloops_lib.pm_budget import budget_summary, get_budget, prompts_needed
 from devloops_lib.pm_induction import induction_required
+from devloops_lib.pm_issue_close import closable_merged_issues
 from devloops_lib.pm_schedule import cascade_plan, exclusivity_report
 from devloops_lib.tick_gate import load_state
 
@@ -24,6 +25,11 @@ def main(argv: list[str] | None = None) -> int:
         "--pipeline-json",
         default="{}",
         help="Optional pipeline counters: approvedIssues, prsNeedingReview, producerDue, boardFull",
+    )
+    parser.add_argument(
+        "--board-json",
+        default=None,
+        help="Optional board snapshot with openIssues and mergedWork for close-merged planning",
     )
     parser.add_argument("--state-file", type=Path, default=None)
     args = parser.parse_args(argv)
@@ -46,6 +52,19 @@ def main(argv: list[str] | None = None) -> int:
     budget = budget_summary(state, cfg)
     slots = budget.get("slots") or 1
 
+    merged_closures: list[dict] = []
+    if args.board_json:
+        try:
+            board = json.loads(args.board_json)
+        except json.JSONDecodeError as exc:
+            sys.stderr.write(f"invalid --board-json: {exc}\n")
+            return 2
+        if isinstance(board, dict):
+            open_issues = board.get("openIssues") or board.get("open_issues") or []
+            merged_work = board.get("mergedWork") or board.get("merged_work") or []
+            if isinstance(open_issues, list) and isinstance(merged_work, list):
+                merged_closures = closable_merged_issues(open_issues, merged_work)
+
     plan = {
         "budget": budget,
         "promptsNeeded": prompts_needed(get_budget(state)),
@@ -53,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         "inductionRequired": induction_required(state),
         "projectProfile": state.get("projectProfile"),
         "cascade": cascade_plan(slots=int(slots), pipeline=pipeline),
+        "mergedIssueClosures": merged_closures,
         "constraints": {
             "neverApprove": True,
             "neverMerge": True,
