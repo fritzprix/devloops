@@ -1,0 +1,71 @@
+# devloops project config. Copy to the project root and edit.
+project:
+  repo: owner/name            # GitHub repo
+  default_branch: main
+  base_branch: main           # branch that PRs target
+
+commands:
+  test: ""                    # e.g. npm test
+  lint: ""
+  build: ""
+
+# Declared agent/harness capabilities; worker checks before needsUser (see escalation-policy.md)
+environment:
+  capabilities:
+    - browser
+    - screen_capture
+    - cli
+    - network
+    - public_web
+    - diagrams              # Mermaid, PlantUML, ASCII sketches
+
+protected_paths: []           # producer: findings only; worker may edit when in scope; gatekeeper: stricter review (gatekeeper:needs-human)
+
+cleanup:
+  protected_branches: [main, master, develop, release] # branches cleanup task must never propose deleting
+
+state_dir: .devloops          # state.json and tick.lock per loop
+
+labels:
+  producer: auto:producer
+  validated: validated
+  rejected: rejected
+  approved: approved
+
+producer:
+  default_period: 24h
+  max_new_issues_per_run: 3
+  tasks: [security, e2e, uiux, regression, usage-logs, doc-drift, cleanup]
+  task_skills:                # optional mapping of producer tasks to project skills/commands
+    security: ""              # e.g. code-audit-expert
+    e2e: ""
+    uiux: ""
+    regression: ""
+    usage-logs: ""
+    doc-drift: ""
+    cleanup: ""
+  task_periods:               # per-task period overrides (e.g. cleanup: 7d)
+    cleanup: 7d
+  task_max_new_issues:        # per-task cap on new issues per run
+    cleanup: 1
+
+gatekeeper:
+  max_issue_validations_per_tick: 1   # producer issues to validate per tick
+  rubric_paths: []                    # extra REVIEW_RUBRIC.md paths (see gatekeeper-loop SKILL)
+  issue_rules_paths: []               # ISSUE_RULES.md paths for acceptance criteria
+
+worker:
+  max_items_per_tick: 1       # PRs and issues to finish per tick
+  open_pr_limit: 5            # throttle: worker idles without needsUser while this many unapproved PRs (+ live issue claims without PR) are open
+  issue_claim_ttl_minutes: 120  # an issue claim not refreshed for this long is stale and can be taken over
+  lock_ttl_seconds: 1800        # tick lock TTL; DEVLOOPS_LOCK_TTL_SECONDS env overrides
+
+pm:
+  default_interval: 10m       # PM cron interval when /pm-loop arms scheduling
+  default_slots: 1            # initial hint only; slot cap is persisted in pm-loop state after you answer once
+  default_delegation: cursor  # cursor | claude | harness — not silently switched when unavailable
+  peer_loops: [worker-loop, gatekeeper-loop, producer-loop]
+  board_provider: github      # github | jira (jira board IDs live in project config, not in the PM skill)
+
+# scheduler: shell            # documentation only: shell | cron | harness-specific adapter
+# When pm-loop is armed, only the PM scheduler runs; it cascades ticks to peer loops.

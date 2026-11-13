@@ -2,7 +2,7 @@
 
 Reusable agent-loop skills for coding agents.
 
-devloops gives a coding agent three loops: **producer**, **worker**, and **gatekeeper**.
+devloops gives a coding agent four loops: **producer**, **worker**, **gatekeeper**, and an optional **PM orchestrator** (`pm-loop`).
 Each loop is a self-contained skill (`SKILL.md` plus helper scripts). You install the
 skills into your project with `npx skills add fritzprix/devloops`. A per-project file,
 `devloops.config.yaml`, holds the project values (repo, branches, commands, protected
@@ -228,6 +228,8 @@ Then tell your agent:
 `/gatekeeper-loop` and `/producer-loop` use the same forms. `/gatekeeper-loop 10m --pr N`
 reviews one PR. `/producer-loop <task>` runs one producer task.
 
+`/pm-loop` orchestrates the three role loops: only the PM arms a cron; it cascades ticks downward while peer schedulers stay disarmed. See `pm-loop/SKILL.md`.
+
 A cron example that starts the agent only when the gate says RUN, through each skill's
 tick wrapper `scripts/tick.py`:
 
@@ -298,7 +300,7 @@ Python 3.8 and 3.13, on every PR head and on `main`.
 
 | Path | Purpose |
 | --- | --- |
-| `skills/` | `worker-loop`, `gatekeeper-loop`, `producer-loop`. Each has `SKILL.md`, `references/`, `scripts/` (with a generated `devloops_lib/` copy), and `assets/` (generated config template). |
+| `skills/` | `worker-loop`, `gatekeeper-loop`, `producer-loop`, `pm-loop`. Each has `SKILL.md`, `references/`, `scripts/` (with a generated `devloops_lib/` copy), and `assets/` (generated config template). |
 | `devloops_lib/` | Shared code (the source of the copies): config, tick gate, claims, ownership guard, PR status, issue queue, producer, doctor |
 | `templates/devloops.config.yaml` | Project config template (the source of the copies) |
 | `scripts/sync_skill_lib.py` | Copies `devloops_lib/` and the template into each skill; `--check` reports stale copies |

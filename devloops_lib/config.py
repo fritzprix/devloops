@@ -83,6 +83,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "issue_claim_ttl_minutes": 120,
         "lock_ttl_seconds": 1800,
     },
+    "pm": {
+        "default_interval": "10m",
+        "default_slots": 1,
+        "default_delegation": "cursor",
+        "peer_loops": ["worker-loop", "gatekeeper-loop", "producer-loop"],
+        "board_provider": "github",
+    },
     "scheduler": "shell",
 }
 

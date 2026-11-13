@@ -15,7 +15,7 @@ import sync_skill_lib
 class SkillLibSyncTest(unittest.TestCase):
     def test_every_skill_is_found(self):
         names = [p.name for p in sync_skill_lib.skill_dirs()]
-        self.assertEqual(names, ["gatekeeper-loop", "producer-loop", "worker-loop"])
+        self.assertEqual(names, ["gatekeeper-loop", "pm-loop", "producer-loop", "worker-loop"])
 
     def test_vendored_copies_match_sources(self):
         out = io.StringIO()

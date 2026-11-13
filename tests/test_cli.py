@@ -32,11 +32,11 @@ class CliInstallTest(unittest.TestCase):
         output = stdout_buf.getvalue()
 
         # Check skills
-        for s in ["worker-loop", "gatekeeper-loop", "producer-loop"]:
+        for s in ["worker-loop", "gatekeeper-loop", "producer-loop", "pm-loop"]:
             self.assertTrue((target / ".agents" / "skills" / s / "SKILL.md").is_file())
 
         # Each skill carries its own devloops_lib; there is no shared copy
-        for s in ["worker-loop", "gatekeeper-loop", "producer-loop"]:
+        for s in ["worker-loop", "gatekeeper-loop", "producer-loop", "pm-loop"]:
             lib = target / ".agents" / "skills" / s / "scripts" / "devloops_lib"
             self.assertTrue((lib / "config.py").is_file())
             self.assertTrue((lib / "cli.py").is_file())
@@ -106,7 +106,7 @@ class CliInstallTest(unittest.TestCase):
         custom_skills_dir.mkdir()
 
         # Copy required skills
-        for s in ["worker-loop", "gatekeeper-loop", "producer-loop"]:
+        for s in ["worker-loop", "gatekeeper-loop", "producer-loop", "pm-loop"]:
             s_dir = custom_skills_dir / s
             s_dir.mkdir()
             (s_dir / "SKILL.md").write_text(f"# {s}", encoding="utf-8")
@@ -139,7 +139,7 @@ class CliInstallTest(unittest.TestCase):
         # Create bundled wheel structure: pkg_dir/assets/skills and pkg_dir/assets/templates
         bundled_skills = fake_pkg / "assets" / "skills"
         bundled_templates = fake_pkg / "assets" / "templates"
-        for s in ["worker-loop", "gatekeeper-loop", "producer-loop"]:
+        for s in ["worker-loop", "gatekeeper-loop", "producer-loop", "pm-loop"]:
             s_dir = bundled_skills / s
             s_dir.mkdir(parents=True)
             (s_dir / "SKILL.md").write_text(f"# {s}", encoding="utf-8")
