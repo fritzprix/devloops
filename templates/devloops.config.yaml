@@ -60,4 +60,13 @@ worker:
   issue_claim_ttl_minutes: 120  # an issue claim not refreshed for this long is stale and can be taken over
   lock_ttl_seconds: 1800        # tick lock TTL; DEVLOOPS_LOCK_TTL_SECONDS env overrides
 
+pm:
+  default_interval: 10m       # PM cron interval when /pm-loop arms scheduling
+  default_slots: 1            # initial hint only; slot cap is persisted in pm-loop state after you answer once
+  default_delegation: cursor  # cursor | claude | harness — not silently switched when unavailable
+  peer_loops: [worker-loop, gatekeeper-loop, producer-loop]
+  board_provider: github      # github | jira (jira board IDs live in project config, not in the PM skill)
+  definition_of_done: {}      # optional signals list or {signals: [...]}; else projectProfile default
+
 # scheduler: shell            # documentation only: shell | cron | harness-specific adapter
+# When pm-loop is armed, only the PM scheduler runs; it cascades ticks to peer loops.

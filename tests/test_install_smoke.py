@@ -43,7 +43,7 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-REQUIRED_SKILLS = ["worker-loop", "gatekeeper-loop", "producer-loop"]
+REQUIRED_SKILLS = ["worker-loop", "gatekeeper-loop", "producer-loop", "pm-loop"]
 
 # `python3 "$SKILL_DIR/<rel>.py"` commands in skill docs; resolved against the
 # skill's own installed directory.

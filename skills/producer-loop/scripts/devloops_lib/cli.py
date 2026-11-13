@@ -93,7 +93,7 @@ def install_command(target_dir: Path) -> int:
         return 1
 
     # Verify required skill directories exist
-    required_skills = ["worker-loop", "gatekeeper-loop", "producer-loop"]
+    required_skills = ["worker-loop", "gatekeeper-loop", "producer-loop", "pm-loop"]
     for s in required_skills:
         if not (skills_src / s).is_dir():
             sys.stderr.write(f"Error: Required skill directory '{s}' not found in {skills_src}.\n")
@@ -341,7 +341,20 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     tick_parser = subparsers.add_parser("tick", help="Run preflight gate, lock, execute agent command, and unlock safely")
-    tick_parser.add_argument("loop", choices=["worker", "worker-loop", "producer", "producer-loop", "gatekeeper", "gatekeeper-loop"], help="Loop name to tick")
+    tick_parser.add_argument(
+        "loop",
+        choices=[
+            "worker",
+            "worker-loop",
+            "producer",
+            "producer-loop",
+            "gatekeeper",
+            "gatekeeper-loop",
+            "pm",
+            "pm-loop",
+        ],
+        help="Loop name to tick",
+    )
     add_tick_options(tick_parser)
 
     args = parser.parse_args(argv)

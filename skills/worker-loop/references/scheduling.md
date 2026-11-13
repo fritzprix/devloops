@@ -27,6 +27,8 @@ The wrapper owns the lock for the whole agent run and releases it, with the tick
 
 The gatekeeper and producer use the same form with their own skill's wrapper: `gatekeeper-loop/scripts/tick.py --agent-cmd 'agent "/gatekeeper-loop"'` and `producer-loop/scripts/tick.py --agent-cmd 'agent "/producer-loop"'`. Only the worker gets the wrapper's fingerprint check. The producer selects its task inside the agent, with `producer_gate.py`.
 
+When **pm-loop** is armed (`/pm-loop 10m`), only the PM runs a recurring schedule. It cascades ticks to worker, gatekeeper, and producer; do not arm peer-loop crons at the same time. See `pm-loop/references/scheduling-exclusivity.md`.
+
 ### 2. Cron Schedule
 Schedule via cron using the tick wrapper (which performs the gate check, holds the lock, runs the command, and unlocks on exit). Use the path where the skill is installed, for example `.agents/skills/`:
 ```cron
