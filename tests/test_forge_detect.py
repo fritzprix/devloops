@@ -262,6 +262,51 @@ class DoctorForgeTest(unittest.TestCase):
         # gh auth must not be called for non-GitHub forges.
         mock_sub.assert_not_called()
 
+    def test_embedded_remote_credentials_never_persisted_to_state(self):
+        secret = "ghp_EMBEDDED_SECRET_TOKEN_999"
+        state: dict = {}
+        info = detect_forge(
+            {"forge": {"type": "auto"}},
+            state=state,
+            remote_url=f"https://oauth2:{secret}@github.com/octo/repo.git",
+        )
+        self.assertEqual(info["type"], "github")
+        self.assertEqual(info["remote_url"], "https://github.com/octo/repo.git")
+        self.assertNotIn(secret, json.dumps(state))
+
+    def test_tick_gate_preflight_persists_forge_and_fails_closed(self):
+        import tempfile
+        from devloops_lib import tick_gate
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "state.json"
+            state_file.write_text(json.dumps({"current": {"issue": 1}}), encoding="utf-8")
+
+            # 1. Valid remote: tick_gate preflight detects and persists state["forge"].
+            with patch("devloops_lib.forge.detect.read_git_remote_url", return_value="https://github.com/octo/repo.git"), \
+                    patch("devloops_lib.tick_gate.load_config", return_value={"forge": {"type": "auto", "url": "", "remote": "origin"}}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(SystemExit) as ctx:
+                    tick_gate.main(["--state-file", str(state_file), "--agent-id", "t1"])
+            self.assertEqual(ctx.exception.code, tick_gate.EXIT_RUN)
+            saved = json.loads(state_file.read_text(encoding="utf-8"))
+            self.assertEqual(saved["forge"]["type"], "github")
+            self.assertEqual(saved["forge"]["source"], "url")
+
+            # 2. Unsupported forge: tick_gate exits EXIT_ERROR (3) before preflight_decision runs.
+            err_buf = io.StringIO()
+            with patch("devloops_lib.forge.detect.read_git_remote_url", return_value="https://gitlab.example.com/org/proj.git"), \
+                    patch("devloops_lib.forge.detect.probe_forge", return_value=ProbeResult("gitlab", "17.0")), \
+                    patch("devloops_lib.tick_gate.load_config", return_value={"forge": {"type": "auto", "url": "", "remote": "origin"}}), \
+                    patch("devloops_lib.tick_gate.preflight_decision") as mock_pd, \
+                    contextlib.redirect_stderr(err_buf):
+                with self.assertRaises(SystemExit) as ctx2:
+                    tick_gate.main(["--state-file", str(state_file), "--agent-id", "t1"])
+            self.assertEqual(ctx2.exception.code, tick_gate.EXIT_ERROR)
+            mock_pd.assert_not_called()
+            self.assertIn("gitlab", err_buf.getvalue())
+            self.assertIn("forge.type", err_buf.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

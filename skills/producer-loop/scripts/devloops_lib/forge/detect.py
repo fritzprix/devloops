@@ -280,6 +280,30 @@ def _fail_conflict(explicit: str, detected: str, host: str) -> ForgeDetectionErr
     )
 
 
+def sanitize_remote_url(raw: str) -> str:
+    """Strip any embedded userinfo (e.g. ``user:TOKEN@``) from a git remote URL."""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    if "://" in text:
+        parsed = urllib.parse.urlparse(text)
+        host = (parsed.hostname or "").lower()
+        if not host:
+            return ""
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        netloc = f"{host}:{port}" if port else host
+        return urllib.parse.urlunparse((parsed.scheme.lower(), netloc, parsed.path, "", "", ""))
+    match = _SCP_REMOTE_RE.match(text)
+    if match:
+        return f"{match.group('host').lower()}:{match.group('path')}"
+    if "@" in text:
+        return text.split("@", 1)[1]
+    return text
+
+
 def _cached_is_valid(
     cached: Any,
     remote_url: str,
@@ -311,7 +335,8 @@ def detect_forge(
     and forge config, it is reused without probing. No token value is ever stored.
     """
     cfg = _normalize_forge_config(config)
-    resolved_remote = remote_url if remote_url is not None else read_git_remote_url(cfg["remote"], cwd=cwd)
+    raw_remote = remote_url if remote_url is not None else read_git_remote_url(cfg["remote"], cwd=cwd)
+    resolved_remote = sanitize_remote_url(raw_remote)
     parsed = parse_remote_url(resolved_remote)
 
     if state is not None and _cached_is_valid(state.get("forge"), resolved_remote, cfg):
