@@ -33,12 +33,12 @@ from typing import Sequence
 
 # Support running directly or as module
 try:
-    from devloops_lib.config import find_config_file, find_project_root, load_config
+    from devloops_lib.config import board_decision_issues, find_config_file, find_project_root, load_config, resolve_board
 except ImportError:
     _root = Path(__file__).resolve().parent.parent
     if str(_root) not in sys.path:
         sys.path.insert(0, str(_root))
-    from devloops_lib.config import find_config_file, find_project_root, load_config
+    from devloops_lib.config import board_decision_issues, find_config_file, find_project_root, load_config, resolve_board
 
 NETWORK_TIMEOUT_SECONDS = 5
 CONFIG_NAME = "devloops.config.yaml"
@@ -199,6 +199,14 @@ def main(argv: Sequence[str] = (), skill_dir: Path | None = None) -> int:
                 parts = shlex.split(cmd_str.strip())
                 if parts:
                     all_ok &= check(f"command.{cmd_name} ({parts[0]})", [parts[0], "--version"])
+        # Board decision (issue #49): a user decision, never a silent default.
+        for level, message in board_decision_issues(cfg):
+            print(f"  [{'FAIL' if level == 'fail' else 'WARN'}] Board: {message}")
+            if level == "fail":
+                all_ok = False
+        decided = resolve_board(cfg)
+        if decided["provider"] and decided["confirmed"]:
+            print(f"  [OK] Board: provider={decided['provider']} (confirmed)")
     except Exception:
         pass
 

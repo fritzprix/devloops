@@ -159,4 +159,4 @@ After productive work on an idle board, use `tick_lock.py --update` only when a 
 
 ## Jira and mixed projects
 
-`pm.board_provider` in config may be `github` or `jira`. Board column mapping and credentials belong in **project config**, not in this skill. Classification (`software` / `research` / `writing` / `mixed`) is a default for practices, not an identity.
+`board.provider` in config records the board decision (`forge` | `ak5` | `jira` | `none`; empty = not decided, and the PM loop fails closed until the user confirms it during setup). `pm.board_provider` (`github` | `jira`) is read only as a legacy alias (`github` -> `forge`) and always stays unconfirmed. Board column mapping and credentials belong in **project config**, not in this skill. Classification (`software` / `research` / `writing` / `mixed`) is a default for practices, not an identity.

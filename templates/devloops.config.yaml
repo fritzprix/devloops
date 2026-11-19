@@ -65,8 +65,13 @@ pm:
   default_slots: 1            # initial hint only; slot cap is persisted in pm-loop state after you answer once
   default_delegation: cursor  # cursor | claude | harness — not silently switched when unavailable
   peer_loops: [worker-loop, gatekeeper-loop, producer-loop]
-  board_provider: github      # github | jira (jira board IDs live in project config, not in the PM skill)
   definition_of_done: {}      # optional signals list or {signals: [...]}; else projectProfile default
+
+board:
+  provider: ""          # forge | ak5 | jira | none (empty = not decided; forge = the board bundled with the detected forge)
+  url: ""               # board or project URL (external boards, or a forge Projects board)
+  ref: ""               # optional board/project id inside the provider
+  confirmed: false      # true only after the user confirmed during setup
 
 # scheduler: shell            # documentation only: shell | cron | harness-specific adapter
 # When pm-loop is armed, only the PM scheduler runs; it cascades ticks to peer loops.

@@ -324,5 +324,75 @@ class ConfigErrorTest(unittest.TestCase):
                     self.assertIn("devloops config error", result.stderr)
 
 
+
+class BoardDecisionTest(unittest.TestCase):
+    """Board provider decoupling (issue #49): decision model + legacy migration."""
+
+    def test_no_board_default_in_pm(self):
+        self.assertNotIn("board_provider", config.DEFAULT_CONFIG["pm"])
+        self.assertEqual(config.DEFAULT_CONFIG["board"]["provider"], "")
+
+    def test_default_config_is_unset(self):
+        decided = config.resolve_board(config.DEFAULT_CONFIG)
+        self.assertEqual(decided["source"], "unset")
+        self.assertEqual(decided["provider"], "")
+        self.assertFalse(decided["confirmed"])
+        issues = config.board_decision_issues(config.DEFAULT_CONFIG)
+        self.assertEqual([level for level, _ in issues], ["warn"])
+
+    def test_legacy_github_maps_to_forge_unconfirmed(self):
+        cfg = {"pm": {"board_provider": "github"}}
+        decided = config.resolve_board(cfg)
+        self.assertEqual(decided["provider"], "forge")
+        self.assertEqual(decided["source"], "legacy")
+        self.assertFalse(decided["confirmed"])
+        issues = config.board_decision_issues(cfg)
+        self.assertEqual([level for level, _ in issues], ["warn"])
+
+    def test_legacy_jira_maps_to_jira(self):
+        decided = config.resolve_board({"pm": {"board_provider": "jira"}})
+        self.assertEqual((decided["provider"], decided["source"], decided["confirmed"]), ("jira", "legacy", False))
+
+    def test_legacy_unknown_provider_fails(self):
+        cfg = {"pm": {"board_provider": "trello"}}
+        decided = config.resolve_board(cfg)
+        self.assertEqual(decided["provider"], "trello")
+        issues = config.board_decision_issues(cfg)
+        self.assertIn("fail", [level for level, _ in issues])
+
+    def test_board_block_wins_over_legacy(self):
+        cfg = {
+            "board": {"provider": "ak5", "url": "https://ak5.example/b/1", "ref": "b-1", "confirmed": True},
+            "pm": {"board_provider": "jira"},
+        }
+        decided = config.resolve_board(cfg)
+        self.assertEqual(decided["provider"], "ak5")
+        self.assertEqual(decided["source"], "board")
+        self.assertTrue(decided["confirmed"])
+        self.assertEqual(decided["url"], "https://ak5.example/b/1")
+        self.assertEqual(decided["ref"], "b-1")
+        issues = config.board_decision_issues(cfg)
+        self.assertEqual([level for level, _ in issues], ["warn"])  # conflict warning only
+
+    def test_empty_board_block_falls_back_to_legacy(self):
+        cfg = {"board": {"provider": "", "url": "", "ref": "", "confirmed": False}, "pm": {"board_provider": "github"}}
+        decided = config.resolve_board(cfg)
+        self.assertEqual((decided["provider"], decided["source"]), ("forge", "legacy"))
+        self.assertFalse(decided["confirmed"])
+
+    def test_consistent_legacy_no_conflict_warning(self):
+        cfg = {"board": {"provider": "forge", "confirmed": True}, "pm": {"board_provider": "github"}}
+        self.assertEqual(config.board_decision_issues(cfg), [])
+
+    def test_confirmed_board_has_no_issues(self):
+        cfg = {"board": {"provider": "none", "confirmed": True}}
+        self.assertEqual(config.board_decision_issues(cfg), [])
+
+    def test_unknown_board_provider_fails(self):
+        cfg = {"board": {"provider": "trello", "confirmed": True}}
+        issues = config.board_decision_issues(cfg)
+        self.assertEqual([level for level, _ in issues], ["fail"])
+
+
 if __name__ == "__main__":
     unittest.main()
