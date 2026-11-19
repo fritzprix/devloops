@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from devloops_lib.config import AGENT_ID_ENV, get_state_path
 from devloops_lib.sessions import (
+    _exclusive,
     CheckinError,
     acquire_checkin,
     is_checkin_stale,
@@ -95,6 +96,28 @@ class SessionsTest(unittest.TestCase):
             path = get_state_path("worker-loop")
         self.assertEqual(path.parent.name, "default")
         self.assertEqual(path.parent.parent.name, "agents")
+
+
+
+class ExclusiveCheckinLockTest(unittest.TestCase):
+    """_exclusive must treat Windows PermissionError as a busy lock, not a crash."""
+
+    def test_permission_error_on_open_is_retried(self):
+        real_open = os.open
+        calls = []
+
+        def flaky_open(path, flags, mode=0o777):
+            calls.append(path)
+            if len(calls) == 1:
+                raise PermissionError(13, "Permission denied", path)
+            return real_open(path, flags, mode)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = Path(tmp) / "checkins.json.lock"
+            with patch("devloops_lib.sessions.os.open", side_effect=flaky_open):
+                with _exclusive(lock):
+                    self.assertTrue(lock.exists())
+        self.assertEqual(len(calls), 2)
 
 
 if __name__ == "__main__":
