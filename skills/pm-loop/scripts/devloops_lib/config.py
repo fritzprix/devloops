@@ -88,8 +88,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "default_slots": 1,
         "default_delegation": "cursor",
         "peer_loops": ["worker-loop", "gatekeeper-loop", "producer-loop"],
-        "board_provider": "github",
         "definition_of_done": {},
+    },
+    "board": {
+        "provider": "",
+        "url": "",
+        "ref": "",
+        "confirmed": False,
     },
     "scheduler": "shell",
 }
@@ -320,6 +325,68 @@ def _positive_number(cfg: dict[str, Any], section: str, key: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         raise ConfigError(f"{section}.{key} must be a positive number, got {value!r}")
     return value
+
+
+BOARD_PROVIDERS = ("forge", "ak5", "jira", "none")
+_LEGACY_BOARD_PROVIDERS = {"github": "forge", "jira": "jira"}
+
+
+def resolve_board(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Resolve the board decision from the board: block or legacy pm.board_provider.
+
+    Returns {provider, url, ref, confirmed, source} where source is:
+    - "board":  the board: block carries a provider (it wins over the legacy key)
+    - "legacy": only the legacy pm.board_provider is set; mapped github->forge,
+      jira->jira and always treated as unconfirmed until the user confirms it
+    - "unset":  no board decision recorded anywhere
+
+    provider is "" when unset; an unknown value passes through unchanged and
+    board_decision_issues() marks it a failure for doctor to report.
+    """
+    board = cfg.get("board") or {}
+    provider = str(board.get("provider") or "").strip()
+    if provider:
+        return {
+            "provider": provider,
+            "url": str(board.get("url") or ""),
+            "ref": str(board.get("ref") or ""),
+            "confirmed": bool(board.get("confirmed")),
+            "source": "board",
+        }
+    legacy = str((cfg.get("pm") or {}).get("board_provider") or "").strip()
+    if legacy:
+        return {
+            "provider": _LEGACY_BOARD_PROVIDERS.get(legacy.lower(), legacy),
+            "url": "",
+            "ref": "",
+            "confirmed": False,
+            "source": "legacy",
+        }
+    return {"provider": "", "url": "", "ref": "", "confirmed": False, "source": "unset"}
+
+
+def board_decision_issues(cfg: dict[str, Any]) -> list[tuple[str, str]]:
+    """Board decision findings as (level, message) pairs, level "warn" or "fail".
+
+    An empty list means the decision is set and confirmed. Doctor prints these;
+    a "fail" must make doctor exit non-zero.
+    """
+    decided = resolve_board(cfg)
+    provider = decided["provider"]
+    issues: list[tuple[str, str]] = []
+    if not provider:
+        issues.append(("warn", "provider UNSET: confirm the board during setup (board.provider: forge | ak5 | jira | none)"))
+    elif provider not in BOARD_PROVIDERS:
+        issues.append(("fail", f"provider unknown: {provider!r} (expected one of {', '.join(BOARD_PROVIDERS)})"))
+    elif not decided["confirmed"]:
+        suffix = " (from legacy pm.board_provider)" if decided["source"] == "legacy" else ""
+        issues.append(("warn", f"provider {provider} unconfirmed{suffix}: confirm during setup"))
+    legacy_raw = str((cfg.get("pm") or {}).get("board_provider") or "").strip()
+    if decided["source"] == "board" and legacy_raw:
+        mapped = _LEGACY_BOARD_PROVIDERS.get(legacy_raw.lower(), legacy_raw.lower())
+        if mapped != provider.lower():
+            issues.append(("warn", f"pm.board_provider ({legacy_raw}) disagrees with board.provider ({provider}); the legacy key is ignored and should be removed"))
+    return issues
 
 
 def environment_capabilities(cfg: dict[str, Any]) -> tuple[str, ...]:
