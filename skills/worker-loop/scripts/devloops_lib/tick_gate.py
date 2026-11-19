@@ -99,7 +99,7 @@ DEFAULT_AGENT = "default"
 # wait briefly for it; reclaim never waits (a guard holder means "busy").
 GUARD_RELEASE_WAIT_SECONDS = 1.0
 # Windows refuses to delete a file another process has open for reading.
-UNLINK_WAIT_SECONDS = 0.2
+UNLINK_WAIT_SECONDS = 1.0
 RETRY_INTERVAL_SECONDS = 0.01
 # os.link errors meaning "this filesystem has no hard links".
 LINK_UNSUPPORTED_ERRNOS = frozenset(
@@ -183,7 +183,15 @@ def save_state(path: Path, state: dict) -> None:
     temp_path = path.with_suffix(f".tmp.{os.getpid()}.{time.time_ns()}")
     try:
         temp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp_path.replace(path)
+        deadline = time.monotonic() + max(UNLINK_WAIT_SECONDS, 1.0)
+        while True:
+            try:
+                temp_path.replace(path)
+                return
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(RETRY_INTERVAL_SECONDS)
     except BaseException:
         if temp_path.exists():
             try:
@@ -439,13 +447,20 @@ def _removal_guard(lock_file: Path, wait_seconds: float = 0.0):
     closed: a stale lock then needs an operator `--unlock`.
     """
     guard_path = lock_file.parent / f"{lock_file.name}.guard"
-    try:
-        fd = os.open(str(guard_path), os.O_RDWR | os.O_CREAT, 0o644)
-    except OSError:
-        yield False
-        return
-    held = False
     deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            fd = os.open(str(guard_path), os.O_RDWR | os.O_CREAT, 0o644)
+            break
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                yield False
+                return
+            time.sleep(RETRY_INTERVAL_SECONDS)
+        except OSError:
+            yield False
+            return
+    held = False
     try:
         while True:
             try:
@@ -564,7 +579,7 @@ def _replace_payload(lock_file: Path, data: bytes) -> bool:
     """
     tmp = lock_file.parent / f".{lock_file.name}.renew.{uuid.uuid4().hex}"
     tmp.write_bytes(data)
-    deadline = time.monotonic() + UNLINK_WAIT_SECONDS * 5
+    deadline = time.monotonic() + max(UNLINK_WAIT_SECONDS, 1.0)
     try:
         while True:
             try:

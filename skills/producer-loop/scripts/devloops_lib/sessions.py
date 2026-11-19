@@ -271,17 +271,42 @@ def _exclusive(lock_path: Path):
     try:
         yield
     finally:
-        try:
-            lock_path.unlink()
-        except OSError:
-            pass
+        unlink_deadline = time.monotonic() + 1.0
+        while True:
+            try:
+                lock_path.unlink()
+                break
+            except FileNotFoundError:
+                break
+            except PermissionError:
+                if time.monotonic() >= unlink_deadline:
+                    break
+                time.sleep(0.01)
+            except OSError:
+                break
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(f".tmp.{os.getpid()}.{time.time_ns()}")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        deadline = time.monotonic() + 1.0
+        while True:
+            try:
+                tmp.replace(path)
+                return
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+    except BaseException:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def acquire_checkin(
@@ -351,6 +376,9 @@ def release_checkin(
     else:
         resolved = holder  # type: ignore[assignment]
     sess = session or session_key()
+
+    if not path.is_file():
+        return False
 
     if slot is None:
         slot = find_slot_by_session(sess, path) or find_slot_by_holder_pid(resolved, path)

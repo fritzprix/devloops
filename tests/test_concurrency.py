@@ -234,13 +234,14 @@ class TickLockProcessTest(SingleSlotProcessTest):
             results = self.together([[SCRIPTS / "tick_gate.py", "--lock"]] * PROCESSES)
             winners = [r for r in results if r[0] == EXIT_RUN]
             self.assertEqual(len(winners), 1, results)
-            for code, out, _ in results:
+            for code, out, err in results:
                 if code != EXIT_RUN:
-                    self.assertEqual(code, EXIT_BUSY, out)
+                    self.assertEqual(code, EXIT_BUSY, out + err)
                     self.assertIn("BUSY", out)
             token = token_of(winners[0][1])
             self.assertTrue(tick_gate.lock_is_owned(lock, token))
-            self.assertEqual(self.script("tick_gate.py", "--unlock", "--token", token).returncode, EXIT_RUN)
+            unlock = self.script("tick_gate.py", "--unlock", "--token", token)
+            self.assertEqual(unlock.returncode, EXIT_RUN, unlock.stdout + unlock.stderr)
             self.assertFalse(lock.exists())
 
 
@@ -301,7 +302,8 @@ class LostOwnershipProcessTest(SingleSlotProcessTest):
                             sys.executable, "-c", f"open({str(marker)!r}, 'w').close()")
         self.assertEqual(owner.returncode, 0, owner.stdout + owner.stderr)
         self.assertTrue(marker.exists())
-        self.assertEqual(self.script("tick_gate.py", "--unlock", "--token", second).returncode, EXIT_RUN)
+        unlock = self.script("tick_gate.py", "--unlock", "--token", second)
+        self.assertEqual(unlock.returncode, EXIT_RUN, unlock.stdout + unlock.stderr)
 
 
 class WrapperExitProcessTest(SingleSlotProcessTest):
@@ -365,8 +367,8 @@ class PrClaimProcessTest(ProcessTestCase):
             self.assertEqual(codes.count(EXIT_BUSY), PROCESSES - 1, results)
             winner = slots[codes.index(EXIT_RUN)]
             self.assertTrue(claims.owns_pr(get_claims_dir(), 7, tokens[winner]))
-            self.assertEqual(self.script("claim.py", "release-pr", "7", "--agent-id", winner,
-                                         "--token", tokens[winner]).returncode, EXIT_RUN)
+            rel = self.script("claim.py", "release-pr", "7", "--agent-id", winner, "--token", tokens[winner])
+            self.assertEqual(rel.returncode, EXIT_RUN, rel.stdout + rel.stderr)
 
 
 class LiveTickClaimProcessTest(ProcessTestCase):

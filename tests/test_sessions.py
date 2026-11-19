@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from devloops_lib.config import AGENT_ID_ENV, get_state_path
 from devloops_lib.sessions import (
+    _atomic_write_json,
     _exclusive,
     CheckinError,
     acquire_checkin,
@@ -118,6 +119,49 @@ class ExclusiveCheckinLockTest(unittest.TestCase):
                 with _exclusive(lock):
                     self.assertTrue(lock.exists())
         self.assertEqual(len(calls), 2)
+
+    def test_permission_error_on_unlink_is_retried(self):
+        real_unlink = Path.unlink
+        calls = 0
+
+        def flaky_unlink(path_self, *args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise PermissionError(13, "sharing violation")
+            return real_unlink(path_self, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = Path(tmp) / "checkins.json.lock"
+            with patch.object(Path, "unlink", flaky_unlink):
+                with _exclusive(lock):
+                    self.assertTrue(lock.exists())
+            self.assertFalse(lock.exists())
+        self.assertEqual(calls, 2)
+
+    def test_atomic_write_json_retries_replace_on_permission_error(self):
+        real_replace = Path.replace
+        calls = 0
+
+        def flaky_replace(path_self, target):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise PermissionError(13, "sharing violation")
+            return real_replace(path_self, target)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "checkins.json"
+            with patch.object(Path, "replace", flaky_replace):
+                _atomic_write_json(target, {"default": {"sessionKey": "s1"}})
+            self.assertEqual(load_checkins(target), {"default": {"sessionKey": "s1"}})
+        self.assertEqual(calls, 2)
+
+    def test_release_checkin_skips_lock_when_file_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkins = Path(tmp) / "checkins.json"
+            self.assertFalse(release_checkin("race", checkins, session="s1", holder=None))
+            self.assertFalse(checkins.with_name("checkins.json.lock").exists())
 
 
 if __name__ == "__main__":
