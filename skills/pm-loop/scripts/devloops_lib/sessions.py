@@ -261,7 +261,10 @@ def _exclusive(lock_path: Path):
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.close(fd)
             break
-        except FileExistsError:
+        except (FileExistsError, PermissionError):
+            # Windows: O_CREAT|O_EXCL on a file another process still holds
+            # open raises PermissionError (Errno 13), not FileExistsError.
+            # Treat it as "busy" and retry, like a same-host collision.
             if time.monotonic() >= deadline:
                 raise CheckinError(f"check-in lock busy: {lock_path}")
             time.sleep(0.01)
