@@ -215,5 +215,31 @@ class OpenPrLimitTest(unittest.TestCase):
         self.assertEqual(result["openPRLimit"], {"unapproved": 5, "limit": 5, "reached": True})
 
 
+class BlockedOnClosureTest(unittest.TestCase):
+    def test_merged_child_via_parent_surfaces_needs_closure_and_unblocks_wait_status(self):
+        issues = [
+            _issue(10, "Child feature"),
+            _issue(11, "Depends on #10"),
+        ]
+        merged_prs = [
+            _pr(100, "feat/parent-1", base="main", body="Fixes #1"),
+            _pr(101, "feat/child-10", base="feat/parent-1", body="Fixes #10"),
+        ]
+        result = filter_and_rank_issues(issues, [], "me", config={}, merged_prs=merged_prs)
+
+        # #10 is reported in needsClosure and excluded with an explicit closure reason.
+        self.assertEqual([n["issue"] for n in result["needsClosure"]], [10])
+        excluded_by_num = {e["number"]: e for e in result["excluded"]}
+        self.assertIn(10, excluded_by_num)
+        self.assertIn("close #10", excluded_by_num[10]["reason"])
+
+        # #11 depends on #10: reported as blocked-on-closure rather than plain wait.
+        by_num = {c["number"]: c for c in result["candidates"]}
+        dep = by_num[11]["dependency"]
+        self.assertEqual(dep["status"], "blocked-on-closure")
+        self.assertEqual(dep["open"], [10])
+        self.assertEqual([b["issue"] for b in dep["blockedOnClosure"]], [10])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -106,11 +106,34 @@ class RecheckTest(unittest.TestCase):
         self.assertEqual((item["head"], item["base"], item["gatekeeperRound"]), ("h1", "main", "2"))
 
     def test_issue_that_changed_during_the_tick_is_not_valid(self):
-        fresh = _candidates(_candidate(1, updated="t1"), _candidate(2, status="wait"))
+        fresh = _candidates(
+            _candidate(1, updated="t1"),
+            _candidate(2, status="wait"),
+            _candidate(4, status="blocked-on-closure"),
+        )
         self.assertTrue(plan_tick.issue_item_is_current(fresh, 1, "t1"))
         self.assertFalse(plan_tick.issue_item_is_current(fresh, 1, "t0"))
         self.assertFalse(plan_tick.issue_item_is_current(fresh, 2, "t1"))
         self.assertFalse(plan_tick.issue_item_is_current(fresh, 3, "t1"))
+        self.assertFalse(plan_tick.issue_item_is_current(fresh, 4, "t1"))
+
+    def test_retarget_pr_is_prioritized_and_carries_retarget_base(self):
+        retarget_pr = {**_pr(number=8, action="retarget", base="feat/parent-1"), "retargetBase": "main"}
+        conflict_pr = _pr(number=9, action="resolve-conflict", base="main")
+        plan = plan_tick.build_plan([conflict_pr, retarget_pr], _candidates(), {}, 1)
+        self.assertEqual([(i["number"], i["action"]) for i in plan["items"]], [(8, "retarget"), (9, "resolve-conflict")])
+        self.assertEqual(plan["items"][0]["retargetBase"], "main")
+
+    def test_blocked_on_closure_and_needs_closure_are_surfaced_in_plan(self):
+        closure_info = {"issue": 10, "childPr": 101, "parentPr": 100, "reason": "close #10"}
+        blocked_cand = _candidate(11, status="blocked-on-closure")
+        blocked_cand["dependency"]["blockedOnClosure"] = [closure_info]
+        cands = {**_candidates(blocked_cand), "needsClosure": [closure_info]}
+        plan = plan_tick.build_plan([], cands, {}, 1)
+        self.assertEqual(plan["items"], [])
+        self.assertEqual(plan["waiting"], [])
+        self.assertEqual(plan["needsClosure"], [closure_info])
+        self.assertEqual(plan["blockedOnClosure"], [{"number": 11, "blockedOnClosure": [closure_info]}])
 
 
 class MainTest(unittest.TestCase):

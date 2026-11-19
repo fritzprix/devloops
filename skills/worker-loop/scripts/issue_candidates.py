@@ -22,6 +22,7 @@ if str(_script_dir) not in sys.path:
 from devloops_lib.claims import pr_is_approved
 from devloops_lib.config import load_config, open_pr_limit as configured_open_pr_limit
 from devloops_lib.gh import GhError, gh
+from devloops_lib.pr_status import find_merged_via_parent_issues
 from devloops_lib.config import run_main
 
 EXCLUDED_LABELS = {"wontfix", "duplicate", "invalid", "question"}
@@ -68,21 +69,35 @@ def resolve_dependency(
     open_prs: list[dict],
     prs_working_on: dict[int, list[dict]],
     base_branch: str,
+    pending_closure: dict[int, dict] | None = None,
 ) -> dict:
     """Decide how an issue can start, given its dependencies. Recomputed on every run.
 
     Status: none (no dependencies), ready (all closed), stack (one open dependency
-    with a PR to branch from), or wait (an open dependency with no such PR, or more
-    than one open dependency, because a branch has only one base). A PR that is
-    itself stacked is not offered: stacking on it would reach depth 2.
+    with a PR to branch from), blocked-on-closure (an open dependency already merged
+    into the default branch via a parent PR and only awaits issue closure), or wait
+    (an open dependency with no such PR, or more than one open dependency, because a
+    branch has only one base). A PR that is itself stacked is not offered: stacking on
+    it would reach depth 2.
     """
     prs_by_number = {pr["number"]: pr for pr in open_prs}
     unfinished = [d for d in depends_on if d in open_issue_numbers or d in prs_by_number]
-    result = {"status": "none" if not depends_on else "ready", "dependsOn": depends_on, "open": unfinished, "stackOn": None}
+    result: dict = {
+        "status": "none" if not depends_on else "ready",
+        "dependsOn": depends_on,
+        "open": unfinished,
+        "stackOn": None,
+    }
     if not unfinished:
         return result
+    closure_map = pending_closure or {}
+    closure_blockers = [closure_map[d] for d in unfinished if d in closure_map]
+    if closure_blockers:
+        result["blockedOnClosure"] = closure_blockers
     result["status"] = "wait"
     if len(unfinished) > 1:
+        if closure_blockers:
+            result["status"] = "blocked-on-closure"
         return result
     dep = unfinished[0]
     prs = [prs_by_number[dep]] if dep in prs_by_number else prs_working_on.get(dep, [])
@@ -91,6 +106,8 @@ def resolve_dependency(
         pr = max(options, key=lambda p: (pr_is_approved(p), p["number"]))
         result["status"] = "stack"
         result["stackOn"] = {"pr": pr["number"], "head": pr.get("headRefName", ""), "approved": pr_is_approved(pr)}
+    elif closure_blockers:
+        result["status"] = "blocked-on-closure"
     return result
 
 
@@ -108,6 +125,7 @@ def filter_and_rank_issues(
     open_prs: list[dict],
     me: str,
     config: dict | None = None,
+    merged_prs: list[dict] | None = None,
 ) -> dict:
     cfg = config or load_config()
     producer_label = cfg.get("labels", {}).get("producer", "auto:producer")
@@ -117,6 +135,8 @@ def filter_and_rank_issues(
     open_pr_numbers = {p["number"] for p in open_prs}
     base_branch = cfg.get("project", {}).get("base_branch", "main")
     prs_working_on = _prs_working_on(open_prs)
+    needs_closure = find_merged_via_parent_issues(issues, merged_prs or [], base_branch)
+    pending_closure = {item["issue"]: item for item in needs_closure}
 
     closing_pr: dict[int, list[int]] = {}
     mentioned_by_pr: dict[int, list[int]] = {}
@@ -150,6 +170,8 @@ def filter_and_rank_issues(
             reason = f"assigned to {', '.join(assignees)}"
         elif number in closing_pr:
             reason = f"closed by open PR #{', #'.join(map(str, closing_pr[number]))}"
+        elif number in pending_closure:
+            reason = pending_closure[number]["reason"]
 
         entry = {
             "number": number,
@@ -164,7 +186,12 @@ def filter_and_rank_issues(
             "mentionedByOpenPRs": mentioned_by_pr.get(number, []),
             "externalRefs": sorted(set(EXTERNAL_REF_PATTERN.findall(body))),
             "dependency": resolve_dependency(
-                parse_depends_on(body, number), open_issue_numbers, open_prs, prs_working_on, base_branch
+                parse_depends_on(body, number),
+                open_issue_numbers,
+                open_prs,
+                prs_working_on,
+                base_branch,
+                pending_closure=pending_closure,
             ),
             "blockedHint": bool(BLOCKED_PATTERN.search(body)),
             "umbrellaHint": bool(UMBRELLA_PATTERN.search(issue["title"])),
@@ -176,7 +203,7 @@ def filter_and_rank_issues(
         candidates.append(entry)
 
     def dependency_rank(dependency: dict) -> int:
-        if dependency["status"] == "wait":
+        if dependency["status"] in ("wait", "blocked-on-closure"):
             return 2
         stack_on = dependency["stackOn"]
         return 1 if stack_on and not stack_on["approved"] else 0
@@ -199,6 +226,7 @@ def filter_and_rank_issues(
         "openPRLimit": open_pr_limit(open_prs, me, configured_open_pr_limit(cfg)),
         "candidates": candidates,
         "excluded": excluded,
+        "needsClosure": needs_closure,
     }
 
 
@@ -212,7 +240,11 @@ def fetch_candidates(limit: int = 100) -> dict:
         gh("pr", "list", "--state", "open", "--limit", "100", "--json",
            "number,title,body,headRefName,baseRefName,reviewDecision,labels,author")
     )
-    return filter_and_rank_issues(issues, open_prs, me)
+    merged_prs = json.loads(
+        gh("pr", "list", "--state", "merged", "--limit", "100", "--json",
+           "number,title,body,headRefName,baseRefName,url")
+    )
+    return filter_and_rank_issues(issues, open_prs, me, merged_prs=merged_prs)
 
 
 def main() -> None:

@@ -94,9 +94,10 @@ gh pr list --author "@me" --state open --json number,title,headRefName,baseRefNa
 gh pr view <number> --json headRefOid,mergeable,reviewDecision,statusCheckRollup,comments
 ```
 
-Draft PRs are ignored until marked ready for review. Each PR has `nextAction`: `resolve-conflict` > `restack` > `address-gatekeeper` > `triage-comments` > `fix-ci` > `wait-ci` > `none`. The plan lists the PRs with an actionable status (the first five), and `nextAction` decides what to do for each one. Before acting on a PR, claim it: `python3 "$SKILL_DIR/scripts/claim.py" pr N --token "$TOKEN"`. If it exits `2` (`BUSY`), a live tick of another slot owns the PR, so skip to the next item. The claim lasts exactly as long as this tick holds its lock, so it is never lost during a long tick and frees as soon as the tick ends. When the plan has no PR items left and `maxItems` is not reached, proceed to Step 2.
+Draft PRs are ignored until marked ready for review. Each PR has `nextAction`: `retarget` > `resolve-conflict` > `restack` > `address-gatekeeper` > `triage-comments` > `fix-ci` > `wait-ci` > `none`. The plan lists the PRs with an actionable status (the first six), and `nextAction` decides what to do for each one. Before acting on a PR, claim it: `python3 "$SKILL_DIR/scripts/claim.py" pr N --token "$TOKEN"`. If it exits `2` (`BUSY`), a live tick of another slot owns the PR, so skip to the next item. The claim lasts exactly as long as this tick holds its lock, so it is never lost during a long tick and frees as soon as the tick ends. When the plan has no PR items left and `maxItems` is not reached, proceed to Step 2.
 
 All work happens in `$WT` on the PR's head branch:
+- **retarget**: parent PR merged into `retargetBase` (the default branch). Retarget the PR base with `guard.py run --pr N -- gh pr edit N --base <retargetBase>`, rebase in `$WT` onto `origin/<retargetBase>` (resolving only mechanical conflicts), verify, and push `--force-with-lease` through `guard.py run --pr N`. Restack any children above it.
 - **resolve-conflict**: in `$WT`, `guard.py run --pr N -- git -C "$WT" rebase origin/<base>`, resolve only mechanical conflicts, push with `--force-with-lease` through `guard.py run --pr N`. Never merge the base into a feature branch. If intent is ambiguous on non-mechanical hunks, record `needsUser` and stop per [references/escalation-policy.md](references/escalation-policy.md). Restack children if stacked (see [references/stacked-prs.md](references/stacked-prs.md)).
 - **restack**: `duplicateCommits` non-empty. Rebase PR onto new base dropping cherry-picked copies (`git rebase origin/<base>`), push `--force-with-lease`, restack children.
 - **address-gatekeeper**: read latest verdict comment using `gatekeeper.url` (do not fetch all comments with `--comments`). Answer every `G` item as fixed (commit) or declined (reason grounded in code/rules). Push, then post `worker-loop: response` comment with matching `round` and new head SHA.
@@ -131,6 +132,7 @@ Candidates come pre-ranked. The hint fields (`umbrellaHint`, `blockedHint`, `ref
   - `none` or `ready`: start from the base branch.
   - `stack`: branch from `dependency.stackOn.head`, set the PR base to that branch, and write `Depends on #N` in the body. Approved PRs are offered first, but an unapproved PR is also a valid base.
   - `wait`: read each issue in `dependency.open`. An issue can stay open after the code you need has merged, so if that code is on the base branch, start the issue. Otherwise pick the next candidate. Do not record this in `skipped`: the status is recomputed every tick.
+  - `blocked-on-closure`: a dependency PR merged into a parent branch whose parent then merged into the default branch, so GitHub did not auto-close it. Record a `needsUser` entry naming the exact issue to close (from `plan.needsClosure`), never a silent `skipped`.
 
   `refsOpenPRs` also means using a stacked PR, in the same way. `externalRefs` means waiting on upstream only if body explicitly says so.
 - **Approved if filed by producer**: skip issues carrying `labels.producer` (default `auto:producer`) unless they also carry `labels.approved` (default `approved`).
@@ -158,7 +160,7 @@ If implementation fails twice or scope explodes: push what is worth keeping, rel
 
 ### 3. Report & Lock Release
 
-End every tick with 1–2 sentences, outcome first: what was done (with PR/issue links) or "Idle: ...".
+End every tick with 1–2 sentences, outcome first: what was done (with PR/issue links), "Blocked: #A needs closing" when `needsClosure` / `blockedOnClosure` is non-empty and no work ran, or "Idle: ...".
 Report `needsUser` items once when newly created.
 
 **Idle check**: Before ending idle, inspect each `skipped` issue against `issue_candidates.py` output:

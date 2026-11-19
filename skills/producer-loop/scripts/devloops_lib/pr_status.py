@@ -52,6 +52,8 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
 
 FAILED = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}
 PENDING = {"PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "EXPECTED", "REQUESTED"}
+CLOSING_PATTERN = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b", re.I)
+HEAD_ISSUE_PATTERN = re.compile(r"-(\d+)$")
 
 
 # gh helper is imported from devloops_lib.gh
@@ -106,8 +108,95 @@ def gatekeeper_state(comments: list[dict], me: str, head_sha: str) -> dict | Non
     return verdict
 
 
+def parent_pr_merged(
+    base: str,
+    default_base: str,
+    merged_prs: list[dict] | None,
+) -> dict | None:
+    """Return the merged parent PR if `base` is a stacked branch whose PR merged."""
+    if not base or base == default_base or not merged_prs:
+        return None
+    for pr in merged_prs:
+        if pr.get("headRefName") == base:
+            return {
+                "number": pr["number"],
+                "base": pr.get("baseRefName", ""),
+                "url": pr.get("url", ""),
+            }
+    return None
+
+
+def _linked_issue_numbers(pr: dict) -> set[int]:
+    text = f"{pr.get('title') or ''} {pr.get('body') or ''}"
+    nums = {int(n) for n in CLOSING_PATTERN.findall(text)}
+    match = HEAD_ISSUE_PATTERN.search(pr.get("headRefName") or "")
+    if match:
+        nums.add(int(match.group(1)))
+    return nums
+
+
+def _ancestor_merged_into_default(
+    pr: dict,
+    merged_by_head: dict[str, dict],
+    default_base: str,
+) -> dict | None:
+    """If `pr` merged into a non-default branch that later merged into `default_base`, return the landing PR."""
+    base = pr.get("baseRefName") or ""
+    if not base or base == default_base:
+        return None
+    visited: set[str] = {pr.get("headRefName") or ""}
+    current_base = base
+    while current_base and current_base not in visited:
+        visited.add(current_base)
+        parent = merged_by_head.get(current_base)
+        if parent is None:
+            return None
+        parent_base = parent.get("baseRefName") or ""
+        if parent_base == default_base:
+            return parent
+        current_base = parent_base
+    return None
+
+
+def find_merged_via_parent_issues(
+    open_issues: list[dict],
+    merged_prs: list[dict],
+    default_base: str = "main",
+) -> list[dict]:
+    """Find open issues whose PR merged into a parent branch that then merged into `default_base`."""
+    if not open_issues or not merged_prs:
+        return []
+    open_numbers = {i["number"] for i in open_issues}
+    merged_by_head = {
+        pr["headRefName"]: pr for pr in merged_prs if pr.get("headRefName")
+    }
+    found: dict[int, dict] = {}
+    for child in merged_prs:
+        parent = _ancestor_merged_into_default(child, merged_by_head, default_base)
+        if parent is None:
+            continue
+        for issue_num in sorted(_linked_issue_numbers(child)):
+            if issue_num not in open_numbers or issue_num in found:
+                continue
+            child_base = child.get("baseRefName") or ""
+            found[issue_num] = {
+                "issue": issue_num,
+                "childPr": child["number"],
+                "childUrl": child.get("url", ""),
+                "childBase": child_base,
+                "parentPr": parent["number"],
+                "parentUrl": parent.get("url", ""),
+                "reason": (
+                    f"merged in PR #{child['number']} into {child_base}, "
+                    f"landed on {default_base} via PR #{parent['number']}; close #{issue_num}"
+                ),
+            }
+    return [found[n] for n in sorted(found)]
+
+
 def select_next_action(
     *,
+    retarget: bool = False,
     conflicting: bool,
     duplicates: list[str],
     gatekeeper: dict | None,
@@ -115,6 +204,8 @@ def select_next_action(
     failing: list[str],
     pending: list[str],
 ) -> str:
+    if retarget:
+        return "retarget"
     if conflicting:
         return "resolve-conflict"
     if duplicates:
@@ -130,7 +221,15 @@ def select_next_action(
     return "none"
 
 
-def summarize(number: int, owner: str, name: str, me: str) -> dict:
+def summarize(
+    number: int,
+    owner: str,
+    name: str,
+    me: str,
+    *,
+    default_base: str | None = None,
+    merged_prs: list[dict] | None = None,
+) -> dict:
     pr = json.loads(
         gh(
             "pr", "view", str(number), "--json",
@@ -192,8 +291,12 @@ def summarize(number: int, owner: str, name: str, me: str) -> dict:
             })
 
     duplicates = duplicate_commits(pr["baseRefName"], pr["headRefName"])
+    resolved_default = default_base or load_config().get("project", {}).get("base_branch", "main")
+    merged_parent = parent_pr_merged(pr["baseRefName"], resolved_default, merged_prs)
+    retarget_base = resolved_default if merged_parent else None
 
     next_action = select_next_action(
+        retarget=bool(merged_parent),
         conflicting=pr.get("mergeable") == "CONFLICTING",
         duplicates=duplicates,
         gatekeeper=gatekeeper,
@@ -219,8 +322,17 @@ def summarize(number: int, owner: str, name: str, me: str) -> dict:
         "newComments": new_comments,
         "gatekeeper": gatekeeper,
         "duplicateCommits": duplicates,
+        "mergedParent": merged_parent,
+        "retargetBase": retarget_base,
         "nextAction": next_action,
     }
+
+
+def _fetch_merged_prs() -> list[dict]:
+    return json.loads(
+        gh("pr", "list", "--state", "merged", "--limit", "100", "--json",
+           "number,title,body,headRefName,baseRefName,url")
+    )
 
 
 def summarize_prs(number: int | None = None) -> list[dict]:
@@ -228,12 +340,23 @@ def summarize_prs(number: int | None = None) -> list[dict]:
     repo = json.loads(gh("repo", "view", "--json", "owner,name"))
     owner, name = repo["owner"]["login"], repo["name"]
     me = gh("api", "user", "--jq", ".login").strip()
+    default_base = load_config().get("project", {}).get("base_branch", "main")
+    merged_prs: list[dict] | None = None
     if number:
         numbers = [number]
+        merged_prs = _fetch_merged_prs()
     else:
-        listed = json.loads(gh("pr", "list", "--author", "@me", "--state", "open", "--json", "number,isDraft"))
-        numbers = [p["number"] for p in listed if not p.get("isDraft")]
-    return [summarize(n, owner, name, me) for n in numbers]
+        listed = json.loads(
+            gh("pr", "list", "--author", "@me", "--state", "open", "--json", "number,isDraft,baseRefName")
+        )
+        open_ready = [p for p in listed if not p.get("isDraft")]
+        numbers = [p["number"] for p in open_ready]
+        if any((p.get("baseRefName") or default_base) != default_base for p in open_ready):
+            merged_prs = _fetch_merged_prs()
+    return [
+        summarize(n, owner, name, me, default_base=default_base, merged_prs=merged_prs)
+        for n in numbers
+    ]
 
 
 def main() -> None:
