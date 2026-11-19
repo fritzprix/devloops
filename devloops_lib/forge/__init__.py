@@ -18,6 +18,13 @@ from devloops_lib.forge.detect import (
     probe_forge,
     register_forge_adapter,
 )
+from devloops_lib.forge.gitea import (
+    MIN_FORGEJO_VERSION,
+    MIN_GITEA_VERSION,
+    ForgejoForge,
+    GiteaForge,
+    check_min_version,
+)
 from devloops_lib.forge.github import GitHubForge
 from devloops_lib.forge.models import (
     CI_FAILURE,
@@ -38,9 +45,14 @@ __all__ = [
     "Forge",
     "ForgeError",
     "ForgeDetectionError",
+    "ForgejoForge",
+    "GiteaForge",
     "GitHubForge",
+    "MIN_FORGEJO_VERSION",
+    "MIN_GITEA_VERSION",
     "ParsedRemote",
     "ProbeResult",
+    "check_min_version",
     "detect_forge",
     "get_forge",
     "parse_remote_url",

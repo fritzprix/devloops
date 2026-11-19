@@ -42,11 +42,21 @@ _REQUIRED_RUBRIC_HINTS = (
 )
 
 
+_WORKFLOW_DIRS = (
+    (".github", "workflows"),
+    (".forgejo", "workflows"),
+    (".gitea", "workflows"),
+)
+
+
 def _workflow_files(root: Path) -> list[Path]:
-    workflows = root / ".github" / "workflows"
-    if not workflows.is_dir():
-        return []
-    return sorted(workflows.glob("*.yml")) + sorted(workflows.glob("*.yaml"))
+    found: list[Path] = []
+    for parts in _WORKFLOW_DIRS:
+        workflows = root.joinpath(*parts)
+        if workflows.is_dir():
+            found.extend(sorted(workflows.glob("*.yml")))
+            found.extend(sorted(workflows.glob("*.yaml")))
+    return found
 
 
 def has_pr_ci_workflow(root: Path) -> bool:
