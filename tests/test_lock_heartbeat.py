@@ -16,7 +16,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from devloops_lib import tick_gate
-from devloops_lib.lock_heartbeat import start_detached, stop_heartbeat
+from devloops_lib.lock_heartbeat import (
+    clear_sidecar,
+    read_sidecar,
+    start_detached,
+    stop_heartbeat,
+    write_sidecar,
+)
 
 SCRIPTS = REPO_ROOT / "skills" / "worker-loop" / "scripts"
 
@@ -83,6 +89,71 @@ class LockHeartbeatTest(unittest.TestCase):
             old["time"] = time.time() - (self.ttl + 2)
             self.lock.write_text(__import__("json").dumps(old), encoding="utf-8")
         self.assertFalse(tick_gate.check_lock(self.lock))
+
+    def test_start_detached_uses_neutral_cwd_and_resolved_lock_path(self):
+        captured: dict = {}
+
+        class FakeProc:
+            pid = 424242
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return FakeProc()
+
+        with patch("devloops_lib.lock_heartbeat.stop_heartbeat"), \
+                patch("devloops_lib.lock_heartbeat.subprocess.Popen", side_effect=fake_popen):
+            start_detached(self.lock, "tok-123")
+
+        self.assertEqual(captured["kwargs"]["cwd"], tempfile.gettempdir())
+        self.assertNotEqual(Path(captured["kwargs"]["cwd"]).resolve(), self.loop_dir.resolve())
+        lock_arg = captured["cmd"][captured["cmd"].index("--lock-file") + 1]
+        self.assertEqual(Path(lock_arg), self.lock.resolve())
+        clear_sidecar(self.lock)
+
+    def test_sidecar_io_retries_on_windows_permission_error(self):
+        real_replace = os.replace
+        replace_calls = 0
+
+        def flaky_replace(src, dst):
+            nonlocal replace_calls
+            replace_calls += 1
+            if replace_calls == 1:
+                raise PermissionError(13, "sharing violation")
+            return real_replace(src, dst)
+
+        with patch("devloops_lib.lock_heartbeat.os.replace", side_effect=flaky_replace):
+            write_sidecar(self.lock, 12345, "tok-abc")
+        self.assertEqual(replace_calls, 2)
+
+        real_read_text = Path.read_text
+        read_calls = 0
+
+        def flaky_read_text(path_self, *args, **kwargs):
+            nonlocal read_calls
+            read_calls += 1
+            if read_calls == 1:
+                raise PermissionError(13, "sharing violation")
+            return real_read_text(path_self, *args, **kwargs)
+
+        with patch.object(Path, "read_text", flaky_read_text):
+            self.assertEqual(read_sidecar(self.lock), (12345, "tok-abc"))
+        self.assertEqual(read_calls, 2)
+
+        real_unlink = Path.unlink
+        unlink_calls = 0
+
+        def flaky_unlink(path_self, *args, **kwargs):
+            nonlocal unlink_calls
+            unlink_calls += 1
+            if unlink_calls == 1:
+                raise PermissionError(13, "sharing violation")
+            return real_unlink(path_self, *args, **kwargs)
+
+        with patch.object(Path, "unlink", flaky_unlink):
+            clear_sidecar(self.lock)
+        self.assertEqual(unlink_calls, 2)
+        self.assertIsNone(read_sidecar(self.lock))
 
 
 class LockTtlConfigTest(unittest.TestCase):

@@ -672,6 +672,39 @@ class LockPublicationTest(unittest.TestCase):
         self.assertEqual(winners, 1, msg=f"outputs={outputs}")
         self.assertTrue(tick_gate.check_lock(self.lock_file))
 
+    def test_save_state_retries_replace_on_permission_error(self):
+        real_replace = Path.replace
+        calls = 0
+
+        def flaky_replace(path_self, target):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise PermissionError(13, "sharing violation")
+            return real_replace(path_self, target)
+
+        state_path = self.lock_file.parent / "state.json"
+        with patch.object(Path, "replace", flaky_replace):
+            tick_gate.save_state(state_path, {"lastFingerprint": "abc"})
+        self.assertEqual(calls, 2)
+        self.assertEqual(tick_gate.load_state(state_path), {"lastFingerprint": "abc"})
+
+    def test_removal_guard_retries_open_on_permission_error(self):
+        real_open = os.open
+        calls = 0
+
+        def flaky_open(path, flags, mode=0o777):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise PermissionError(13, "sharing violation")
+            return real_open(path, flags, mode)
+
+        with patch("devloops_lib.tick_gate.os.open", side_effect=flaky_open):
+            with tick_gate._removal_guard(self.lock_file, wait_seconds=0.5) as held:
+                self.assertTrue(held)
+        self.assertEqual(calls, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
