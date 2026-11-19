@@ -4,7 +4,7 @@
 Skill installers such as `npx skills add` copy one skill directory and nothing
 outside it, so each skill ships its own copy of the shared code:
 
-  devloops_lib/*.py                -> skills/<skill>/scripts/devloops_lib/
+  devloops_lib/**.py               -> skills/<skill>/scripts/devloops_lib/
   templates/devloops.config.yaml   -> skills/<skill>/assets/devloops.config.yaml
 
 The root `devloops_lib/` and `templates/` are the only sources to edit. Run this
@@ -29,8 +29,12 @@ def skill_dirs() -> list[Path]:
 
 
 def expected_files(skill_dir: Path) -> dict[Path, Path]:
-    """Map each vendored destination path to its source path."""
-    files = {skill_dir / "scripts" / "devloops_lib" / src.name: src for src in sorted(LIB_SRC.glob("*.py"))}
+    """Map each vendored destination path to its source path (recursively)."""
+    lib_dest_root = skill_dir / "scripts" / "devloops_lib"
+    files = {
+        lib_dest_root / src.relative_to(LIB_SRC): src
+        for src in sorted(LIB_SRC.rglob("*.py"))
+    }
     files[skill_dir / "assets" / "devloops.config.yaml"] = TEMPLATE_SRC
     return files
 
@@ -41,7 +45,7 @@ def stale_files(skill_dir: Path) -> list[Path]:
     stale = [dest for dest, src in expected.items() if not dest.is_file() or dest.read_bytes() != src.read_bytes()]
     lib_dest = skill_dir / "scripts" / "devloops_lib"
     if lib_dest.is_dir():
-        stale.extend(p for p in sorted(lib_dest.glob("*.py")) if p not in expected)
+        stale.extend(p for p in sorted(lib_dest.rglob("*.py")) if p not in expected)
     return stale
 
 
