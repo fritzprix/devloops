@@ -72,13 +72,16 @@ def min_version_for(forge_type: str) -> Tuple[int, int, int]:
 
 
 def check_min_version(forge_type: str, version: str) -> None:
-    """Fail closed if a reported server version is below the supported floor."""
+    """Fail closed if a server version is missing, unparseable, or below the supported floor."""
+    minimum = min_version_for(forge_type)
+    min_str = ".".join(map(str, minimum))
     parsed = parse_semver(version)
     if parsed is None:
-        return
-    minimum = min_version_for(forge_type)
+        raise ForgeDetectionError(
+            f"{forge_type.capitalize()} server version '{version or '<empty>'}' could not be parsed; "
+            f"minimum supported version is {min_str}."
+        )
     if parsed < minimum:
-        min_str = ".".join(map(str, minimum))
         raise ForgeDetectionError(
             f"{forge_type.capitalize()} server version '{version}' is older than the minimum "
             f"supported version {min_str}. Upgrade the server before running devloops."
@@ -110,8 +113,10 @@ class GiteaForge:
         page_size: int = DEFAULT_PAGE_SIZE,
         opener: Optional[Callable[[urllib.request.Request, float], Tuple[int, Dict[str, str], str]]] = None,
     ) -> None:
+        self._version_checked = False
         if version:
             check_min_version(self.forge_type, version)
+            self._version_checked = True
         self.base_url = base_url.rstrip("/")
         self.api_url = f"{self.base_url}/api/v1" if self.base_url else ""
         self.owner = owner
@@ -136,6 +141,20 @@ class GiteaForge:
             return ""
         return os.environ.get(self.token_env, "").strip()
 
+    def _ensure_min_version(self) -> None:
+        if self._version_checked:
+            return
+        try:
+            _, data = self._http_call("GET", "/version", _skip_version_check=True)
+        except ForgeError as exc:
+            raise ForgeDetectionError(
+                f"Could not verify {self.forge_type} server version via /api/v1/version: {exc}"
+            ) from exc
+        reported = str((data or {}).get("version") or "").strip() if isinstance(data, dict) else ""
+        check_min_version(self.forge_type, reported)
+        self.version = reported
+        self._version_checked = True
+
     def _http_call(
         self,
         method: str,
@@ -144,7 +163,10 @@ class GiteaForge:
         params: Optional[Dict[str, Any]] = None,
         body: Optional[Any] = None,
         allow_404: bool = False,
+        _skip_version_check: bool = False,
     ) -> Tuple[int, Any]:
+        if not _skip_version_check and not self._version_checked:
+            self._ensure_min_version()
         token = self._read_token()
         url = f"{self.api_url}{path}"
         if params:
@@ -166,6 +188,7 @@ class GiteaForge:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
 
+        idempotent = method.upper() in ("GET", "HEAD", "DELETE", "PUT")
         last_err: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
             req = urllib.request.Request(url, data=data, headers=headers, method=method)
@@ -182,12 +205,12 @@ class GiteaForge:
                         raw = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
             except Exception as exc:
                 last_err = exc
-                if attempt < self.max_retries:
+                if idempotent and attempt < self.max_retries:
                     time.sleep(self.retry_backoff * (2 ** attempt))
                     continue
                 raise ForgeError(_scrub(f"{self.forge_type} {method} {path} failed: {exc}", token)) from exc
 
-            if status in _RETRYABLE_STATUSES and attempt < self.max_retries:
+            if status in _RETRYABLE_STATUSES and idempotent and attempt < self.max_retries:
                 time.sleep(self.retry_backoff * (2 ** attempt))
                 continue
 
@@ -225,8 +248,6 @@ class GiteaForge:
             if not isinstance(items, list) or not items:
                 break
             collected.extend(items)
-            if len(items) < per_page:
-                break
             page += 1
         return collected[:limit]
 
@@ -529,12 +550,13 @@ class GiteaForge:
     def update_branch(self, number: int) -> None:
         self._http_call("POST", f"{self._repo_prefix}/pulls/{number}/update")
 
-    def ci_logs_failed(self, pr: PullRequest) -> Dict[str, Any]:
+    def ci_logs_failed(self, pr: Any) -> Dict[str, Any]:
         """Return explicit unsupported result with target_url when logs API is unavailable."""
         target_url = ""
-        if pr.head_sha:
+        head_sha = getattr(pr, "head_sha", "") if not isinstance(pr, (str, int)) else ""
+        if head_sha:
             _, data = self._http_call(
-                "GET", f"{self._repo_prefix}/commits/{pr.head_sha}/status", allow_404=True
+                "GET", f"{self._repo_prefix}/commits/{head_sha}/status", allow_404=True
             )
             for st in (data or {}).get("statuses") or []:
                 if str(st.get("status") or st.get("state") or "").lower() in ("failure", "error"):
@@ -548,12 +570,13 @@ class GiteaForge:
             "reason": f"{self.forge_type} REST API does not expose failed job logs uniformly; reproduce locally or inspect target_url.",
         }
 
-    def ci_rerun_failed(self, pr: PullRequest) -> Dict[str, Any]:
+    def ci_rerun_failed(self, pr: Any) -> Dict[str, Any]:
         """Return explicit unsupported result (no silent success)."""
+        url = getattr(pr, "url", "") if not isinstance(pr, (str, int)) else ""
         return {
             "supported": False,
             "status": "unsupported",
-            "target_url": pr.url,
+            "target_url": url,
             "reason": f"{self.forge_type} REST API does not support rerunning failed CI jobs.",
         }
 

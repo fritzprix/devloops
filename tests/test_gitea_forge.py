@@ -37,9 +37,10 @@ from tests.forge_contract import NAME, OWNER, SEED, USER, ForgeContract
 class GiteaFixtureStub:
     """In-memory Gitea/Forgejo /api/v1 HTTP fixture server answering SEED."""
 
-    def __init__(self, *, auth_ok: bool = True, fail_first_n: int = 0) -> None:
+    def __init__(self, *, auth_ok: bool = True, fail_first_n: int = 0, server_version: str = "1.22.0") -> None:
         self.auth_ok = auth_ok
         self.fail_first_n = fail_first_n
+        self.server_version = server_version
         self.requests: List[Tuple[str, str, Optional[Any]]] = []
         self._next_issue = 100
         self._next_label_id = 10
@@ -161,6 +162,9 @@ class GiteaFixtureStub:
         if self.fail_first_n > 0:
             self.fail_first_n -= 1
             return 503, {}, json.dumps({"message": "temporarily unavailable"})
+
+        if method == "GET" and path == "/api/v1/version":
+            return 200, {}, json.dumps({"version": self.server_version})
 
         if not self.auth_ok:
             return 401, {}, json.dumps({"message": "unauthorized"})
@@ -343,7 +347,7 @@ class TestForgejoForgeContract(TestGiteaForgeContract):
             owner=OWNER,
             name=NAME,
             retry_backoff=0.0,
-            opener=GiteaFixtureStub(auth_ok=False),
+            opener=GiteaFixtureStub(auth_ok=False, server_version="9.0.1"),
         )
 
     def test_gate_snapshot(self):
@@ -357,9 +361,34 @@ class GiteaForgeBehaviorTest(unittest.TestCase):
             GiteaForge(base_url="https://g.example", owner="o", name="r", version="1.20.9")
         with self.assertRaises(ForgeDetectionError):
             ForgejoForge(base_url="https://f.example", owner="o", name="r", version="6.9.9")
+        with self.assertRaises(ForgeDetectionError):
+            check_min_version("gitea", "")
+        with self.assertRaises(ForgeDetectionError):
+            check_min_version("forgejo", "nightly-dev")
         # Supported versions succeed
         check_min_version("gitea", "1.21.0")
         check_min_version("forgejo", "7.0.0")
+
+    def test_explicit_type_without_version_probes_once_and_fails_closed_on_old_or_unreadable(self):
+        # Old server rejected on first use
+        old_stub = GiteaFixtureStub(server_version="1.20.5")
+        old_forge = GiteaForge(base_url="https://g.example", owner=OWNER, name=NAME, opener=old_stub)
+        with self.assertRaises(ForgeDetectionError):
+            old_forge.whoami()
+
+        # Unparseable version rejected on first use
+        bad_stub = GiteaFixtureStub(server_version="unknown")
+        bad_forge = ForgejoForge(base_url="https://f.example", owner=OWNER, name=NAME, opener=bad_stub)
+        with self.assertRaises(ForgeDetectionError):
+            bad_forge.whoami()
+
+        # Valid server version is checked once and cached for subsequent calls
+        ok_stub = GiteaFixtureStub(server_version="9.0.1")
+        ok_forge = ForgejoForge(base_url="https://f.example", owner=OWNER, name=NAME, opener=ok_stub)
+        self.assertEqual(ok_forge.whoami(), USER)
+        self.assertEqual(ok_forge.whoami(), USER)
+        version_calls = [r for r in ok_stub.requests if r[1] == "/api/v1/version"]
+        self.assertEqual(len(version_calls), 1)
 
     def test_token_never_leaked_in_repr_or_errors(self):
         secret = "tok-very-secret-987654"
@@ -374,6 +403,7 @@ class GiteaForgeBehaviorTest(unittest.TestCase):
                 owner=OWNER,
                 name=NAME,
                 token_env="FORGEJO_API_TOKEN",
+                version="9.0.1",
                 max_retries=0,
                 opener=echoing_error_opener,
             )
@@ -396,7 +426,7 @@ class GiteaForgeBehaviorTest(unittest.TestCase):
         self.assertEqual(forge.whoami(), USER)
 
     def test_unsupported_ci_logs_and_rerun_return_explicit_unsupported(self):
-        stub = GiteaFixtureStub()
+        stub = GiteaFixtureStub(server_version="9.0.1")
         forge = ForgejoForge(
             base_url="https://f.example",
             owner=OWNER,
@@ -409,6 +439,9 @@ class GiteaForgeBehaviorTest(unittest.TestCase):
         self.assertFalse(logs["supported"])
         self.assertEqual(logs["status"], "unsupported")
         self.assertEqual(logs["target_url"], "https://ci.example.com/run/10")
+        # Also accepts a string target (as passed by `devloops forge ci logs <target>`).
+        self.assertEqual(forge.ci_logs_failed("42")["status"], "unsupported")
+        self.assertEqual(forge.ci_rerun_failed("42")["status"], "unsupported")
 
         rerun = forge.ci_rerun_failed(pr10)
         self.assertFalse(rerun["supported"])
