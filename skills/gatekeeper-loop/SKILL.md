@@ -78,7 +78,7 @@ The JSON output has `readiness` (repo CI + rubric gaps and `autonomousWork` for 
 | Missing / thin rubric | Open a PR adding `REVIEW_RUBRIC.md` (and link `ISSUE_RULES.md` when present), with checkable criteria and judgment procedure. |
 | Ambiguous rubric (`co_create`) | Post a concrete draft rubric as an issue or PR comment (checkable criteria, procedure, fail conditions); label `gatekeeper:needs-human` with reason `ambiguous review criteria`. Hold approve on affected PRs until the owner confirms. |
 
-When CI was missing, reviewed worker PRs in `await-bootstrap` stay clean-marked; after CI lands, run `gh pr update-branch` (or ask worker) so checks run on the current head, then approve when green.
+When CI was missing, reviewed worker PRs in `await-bootstrap` stay clean-marked; after CI lands, run `devloops forge pr update-branch N` (or ask worker if `unsupported`) so checks run on the current head, then approve when green.
 
 The `prs` list is sorted: priority 0 first (worker response, new head, rebase, owner comment, base change, CI failure after approve), then never-reviewed PRs, oldest first. Process **every** `status: review` PR in that order, at most **5 per tick**; leftovers carry over and keep their priority.
 
@@ -90,7 +90,7 @@ The `prs` list is sorted: priority 0 first (worker response, new head, rebase, o
 
 Other statuses:
 
-- `await-ci` — a `verdict=clean` marker exists for this head; waiting only for CI completion. Remove any stale `gatekeeper:changes-requested` label (e.g. `gh pr edit N --remove-label gatekeeper:changes-requested`). If CI turned green, post `approve` and remove any stale `gatekeeper:changes-requested` label (e.g. `gh pr edit N --add-label gatekeeper:approved --remove-label gatekeeper:changes-requested,gatekeeper:escalated`); if failed, diagnose failure and post `changes-requested`.
+- `await-ci` — a `verdict=clean` marker exists for this head; waiting only for CI completion. Remove any stale `gatekeeper:changes-requested` label (`devloops forge pr label set-verdict N clean`). If CI turned green, post `approve` and swap labels (`devloops forge pr label set-verdict N approved`); if failed, diagnose failure and post `changes-requested`.
 - `await-bootstrap` — code review is done for this head but repo CI or rubric bootstrap is still in flight (`readiness.gaps`). Finish autonomous work first; do not approve until CI can run on the head and criteria are explicit.
 - `needs-human` — **ambiguous review criteria** only (loop-skill edits use `human-only`; path names are never a reason). Post a draft rubric/checklist for the owner; do not use this status for missing CI (bootstrap CI instead).
 - `wait-worker` — worker's turn (changes requested at current head without response, or merge conflicts).
@@ -103,9 +103,9 @@ Do not check out branches in `$MAIN` or in the worker worktree. Read through git
 
 ```bash
 git fetch origin <head> --quiet
-gh pr view N --json body,title,baseRefName      # claims + linked issue
-gh issue view <linked>                           # acceptance criteria
-gh pr diff N                                     # round 1: full diff
+devloops forge pr view N                         # claims + linked issue
+devloops forge issue view <linked>               # acceptance criteria
+devloops forge pr diff N                         # round 1: full diff (if unsupported, use git diff origin/<base>..origin/<head>)
 git diff <reviewedHead>..origin/<head>           # round ≥ 2: incremental diff
 git show origin/<head>:<path>                    # surrounding code
 ```
@@ -140,11 +140,11 @@ On round ≥ 2, read the worker response first and settle every previous `G` ite
 Decide:
 
 - **changes-requested** — at least one blocker/major finding (code defect, unhandled error/path, linked issue acceptance criteria not met, or diagnosed CI failure). **Post immediately regardless of whether CI is pending, failing, or passing.**
-- **approve** — no open required findings **and** `ciPending`/`ciFailing` are empty **and** the PR is mergeable. Swap labels to `gatekeeper:approved` and remove any stale `gatekeeper:changes-requested` label (e.g. `gh pr edit N --add-label gatekeeper:approved --remove-label gatekeeper:changes-requested,gatekeeper:escalated`).
+- **approve** — no open required findings **and** `ciPending`/`ciFailing` are empty **and** the PR is mergeable. Swap labels to `gatekeeper:approved` (`devloops forge pr label set-verdict N approved`).
   - **Required `Checked` section**: must include a non-empty `### Checked` section in the comment mapping every linked issue acceptance criterion **and** every previous-round finding (on round ≥ 2, citing at least one finding verified as fixed in the diff) and owner concern to concrete code evidence (`file:line`). An approve verdict without this section is invalid and must not be posted.
   - **Per-OS CI evidence**: when the diff adds or changes tests or code touching paths, shell, processes or other OS behavior, `### Checked` must name the result of each OS job (ubuntu / windows / macos) for the reviewed head. A skipped or cancelled job is not green. Do not approve on one OS's green.
   - **Stacked PRs**: if the PR targets a non-primary branch, CI does not run; approve directly with the explicit note _"CI requires verification after retargeting"_.
-- **clean, await CI** — code review completed with zero open required findings, but CI checks are still running (`ciPending` not empty on primary-targeted PR). Post a `verdict=clean head=<sha>` marker comment, remove any stale `gatekeeper:changes-requested` label (e.g. `gh pr edit N --remove-label gatekeeper:changes-requested`; does not count as a round), optionally mirror it in state, and move on to the next PR. On a later tick the script reports `await-ci`; once CI completes it reports `review` again: do not re-review the diff, just post `approve` if green (and remove any stale `gatekeeper:changes-requested` label) or diagnose the failure.
+- **clean, await CI** — code review completed with zero open required findings, but CI checks are still running (`ciPending` not empty on primary-targeted PR). Post a `verdict=clean head=<sha>` marker comment, remove any stale `gatekeeper:changes-requested` label (`devloops forge pr label set-verdict N clean`; does not count as a round), optionally mirror it in state, and move on to the next PR. On a later tick the script reports `await-ci`; once CI completes it reports `review` again: do not re-review the diff, just post `approve` if green (and swap verdict labels) or diagnose the failure.
 - **escalate** — round limit (5) reached; a second dispute on the same `G` item; or an unresolved product/security/data owner decision the worker correctly parked in `needsUser` / PR discussion (see [../worker-loop/references/escalation-policy.md](../worker-loop/references/escalation-policy.md)).
 
 Immediately before posting, re-check the PR, because a review takes time and the PR can move during it:
@@ -155,15 +155,15 @@ python3 "$SKILL_DIR/scripts/review_queue.py" --check-head N --head <headSha> --b
 
 If it exits `1` (`CHANGED`), the head, base, or state moved. Do not post the verdict or change labels: the PR returns to the queue on the next tick. If it exits `3`, do not post, and report the error.
 
-Post the verdict with `gh pr comment N --body-file <tmp>` using the exact marker format (`head=` is the full `headSha` you reviewed, `base=` the PR's current base branch), then swap labels:
+Post the verdict with `devloops forge pr comment N --body-file <tmp>` using the exact marker format (`head=` is the full `headSha` you reviewed, `base=` the PR's current base branch), then swap labels (leaving non-`gatekeeper:` labels untouched):
 
 ```bash
 # changes-requested:
-gh pr edit N --add-label gatekeeper:changes-requested --remove-label gatekeeper:approved,gatekeeper:escalated
+devloops forge pr label set-verdict N changes-requested
 # clean, await CI:
-gh pr edit N --remove-label gatekeeper:changes-requested
+devloops forge pr label set-verdict N clean
 # approve:
-gh pr edit N --add-label gatekeeper:approved --remove-label gatekeeper:changes-requested,gatekeeper:escalated
+devloops forge pr label set-verdict N approved
 ```
 
 ### 4. Issue Validation (Post PR Review)
@@ -198,8 +198,8 @@ After completing PR reviews, validate up to `gatekeeper.max_issue_validations_pe
 
 ## Hard rules
 
-- **Never wait for or poll CI in a tick**: do not use `gh pr checks --watch`, `sleep`, or polling loops waiting for CI.
-- **Record clean-awaiting-CI on GitHub and move on**: post the `verdict=clean` marker, remove any stale `gatekeeper:changes-requested` label (e.g. `gh pr edit N --remove-label gatekeeper:changes-requested`), then continue with the next PR. Never idle or leave a tick empty when other PRs have reviewable work.
+- **Never wait for or poll CI in a tick**: do not poll `devloops forge pr checks`, `sleep`, or run polling loops waiting for CI.
+- **Record clean-awaiting-CI on the forge and move on**: post the `verdict=clean` marker, remove any stale `gatekeeper:changes-requested` label (`devloops forge pr label set-verdict N clean`), then continue with the next PR. Never idle or leave a tick empty when other PRs have reviewable work.
 - **Do not re-review diff in await-ci**: for an `await-ci` PR, verify only whether the head changed or CI completed. If green, approve.
 - **A push after an approve requires re-review.** An approve only covers the head, base and CI state it was issued for.
 - **Approve requires Checked section**: every approve verdict must contain a non-empty `### Checked` section citing `file:line` for all acceptance criteria.
