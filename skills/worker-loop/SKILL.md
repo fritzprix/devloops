@@ -57,11 +57,11 @@ Every command below that takes `--token` needs the token from step 0.1. Under th
 
 **LOST (exit 4) from any command means this tick no longer owns its lock or the item.** Stop the tick at once: do not push, comment, reset, or rebase, and do not unlock. Another tick of this slot has taken over.
 
-**Ownership guard**: every push, every `gh pr create/comment/edit`, and every destructive git command in `$WT` (`reset --hard`, `clean`, `rebase`, `branch -D`, force push) runs through `guard.py`, which renews the lock and checks the claim first, and runs nothing if ownership is lost:
+**Ownership guard**: every push, every `devloops forge pr create/comment/label` write, and every destructive git command in `$WT` (`reset --hard`, `clean`, `rebase`, `branch -D`, force push) runs through `guard.py`, which renews the lock and checks the claim first, and runs nothing if ownership is lost:
 
 ```bash
 python3 "$SKILL_DIR/scripts/guard.py" run --token "$TOKEN" --pr N -- git -C "$WT" push --force-with-lease
-python3 "$SKILL_DIR/scripts/guard.py" run --token "$TOKEN" --issue N --repo "$WT" -- gh pr create ...
+python3 "$SKILL_DIR/scripts/guard.py" run --token "$TOKEN" --issue N --repo "$WT" -- devloops forge pr create ...
 ```
 
 **Long steps**: the tick wrapper and the slash-command `--lock` path both keep the lock alive in the background (`worker.lock_ttl_seconds` in config, default 30m; `DEVLOOPS_LOCK_TTL_SECONDS` overrides). `claim.py` / `guard.py` also renew. Manual `--renew` is only for unusual scripts that bypass those entry points.
@@ -88,10 +88,10 @@ python3 "$SKILL_DIR/scripts/pr_status.py"          # all open PRs by @me
 python3 "$SKILL_DIR/scripts/pr_status.py" --pr N    # one PR
 ```
 
-*(Fallback if `python3` is unavailable or broken in the runtime)*:
+*(Fallback if `pr_status.py` is unavailable)*:
 ```bash
-gh pr list --author "@me" --state open --json number,title,headRefName,baseRefName,mergeable,reviewDecision,statusCheckRollup,isDraft
-gh pr view <number> --json headRefOid,mergeable,reviewDecision,statusCheckRollup,comments
+devloops forge pr list --author "@me" --state open
+devloops forge pr view <number>
 ```
 
 Draft PRs are ignored until marked ready for review. Each PR has `nextAction`: `retarget` > `resolve-conflict` > `restack` > `address-gatekeeper` > `triage-comments` > `fix-ci` > `wait-ci` > `none`. The plan lists the PRs with an actionable status (the first six), and `nextAction` decides what to do for each one. Before acting on a PR, claim it: `python3 "$SKILL_DIR/scripts/claim.py" pr N --token "$TOKEN"`. If it exits `2` (`BUSY`), a live tick of another slot owns the PR, so skip to the next item. The claim lasts exactly as long as this tick holds its lock, so it is never lost during a long tick and frees as soon as the tick ends. When the plan has no PR items left and `maxItems` is not reached, proceed to Step 2.
@@ -103,9 +103,9 @@ All work happens in `$WT` on the PR's head branch:
 - **address-gatekeeper**: read latest verdict comment using `gatekeeper.url` (do not fetch all comments with `--comments`). Answer every `G` item as fixed (commit) or declined (reason grounded in code/rules). Push, then post `worker-loop: response` comment with matching `round` and new head SHA.
   - **Comment marker requirement**: Every comment posted by the worker MUST begin with a `worker-loop:` marker (e.g. `<!-- worker-loop: response ... -->` or `<!-- worker-loop: note ... -->`) so it never triggers self-triage. The worker never writes `gatekeeper-loop` markers or edits `gatekeeper:*` labels.
 - **triage-comments**: evaluate unresolved threads / new comments against code. Fix valid items; reply with reasoning to rejected ones. **Resolve a review thread only after its fix is pushed.**
-- **fix-ci**: inspect failure via `gh run view <id> --log-failed | grep -E "(error|FAILED|panicked|Failures:)" -A 5 | tail -n 200`, reproduce in `$WT`, and fix the cause. There is no attempt cap: keep fixing while each push addresses a reproduced cause.
+- **fix-ci**: inspect failure via `devloops forge ci logs <id> --failed` (if it exits `5` / `unsupported`, reproduce locally in `$WT` or inspect the reported `target_url`), reproduce in `$WT`, and fix the cause. There is no attempt cap: keep fixing while each push addresses a reproduced cause.
   - An intermittent or order-dependent failure (race, timing, shared state) is a defect: find and fix its cause. Never rerun a job just to get green.
-  - Rerun (`gh run rerun <id> --failed`) only for an infrastructure failure shown in the log (runner provisioning, a third-party download outage), and say so in the history entry.
+  - Rerun (`devloops forge ci rerun <id> --failed`) only for an infrastructure failure shown in the log (runner provisioning, a third-party download outage), and say so in the history entry. If the forge reports `unsupported`, escalate per [references/escalation-policy.md](references/escalation-policy.md).
   - Follow [references/escalation-policy.md](references/escalation-policy.md): use declared `environment.capabilities`; `needsUser` only for ambiguity, a **named** missing capability/secret/permission, or irreversible external action—not vague “external” blockers.
 - Before every push, run the full local verification for the change (see [references/verification.md](references/verification.md)), commit with a semantic message, and push through `guard.py run --pr N`.
 
@@ -121,12 +121,12 @@ Run for the plan's issue items. Also read the plan's `waiting` issues (see **Unb
 python3 "$SKILL_DIR/scripts/issue_candidates.py"
 ```
 
-*(Fallback if `python3` is unavailable or broken in the runtime)*:
+*(Fallback if `issue_candidates.py` is unavailable)*:
 ```bash
-gh issue list --state open --limit 30 --json number,title,labels,body,assignees
+devloops forge issue list --state open --limit 30
 ```
 
-Candidates come pre-ranked. The hint fields (`umbrellaHint`, `blockedHint`, `refsOpenPRs`, `externalRefs`) are reading signals, never skip reasons: read full body with `gh issue view N` before skipping. Pick the first candidate issue that is:
+Candidates come pre-ranked. The hint fields (`umbrellaHint`, `blockedHint`, `refsOpenPRs`, `externalRefs`) are reading signals, never skip reasons: read full body with `devloops forge issue view N` before skipping. Pick the first candidate issue that is:
 - **Self-contained**: not an umbrella/epic.
 - **Unblocked**: use `dependency.status`, which comes from the issue's `Depends on #N` lines:
   - `none` or `ready`: start from the base branch.
@@ -151,10 +151,10 @@ Then:
    - Exit `1` (`OVER LIMIT`): the claim was released again; do not start the issue.
    - Exit `2` (`BUSY`): a live claim of another slot; pick the next candidate.
    - Exit `3`: stop the tick and report the error. Exit `4`: LOST, stop.
-3. `gh issue edit N --add-assignee @me`. In `$WT`: `git switch -c <branch> origin/$BASE` (or `origin/<previous branch>`). Set `current` in state, with the branch.
+3. `devloops forge issue assign-me N`. In `$WT`: `git switch -c <branch> origin/$BASE` (or `origin/<previous branch>`). Set `current` in state, with the branch.
 4. Implement per project conventions (KISS/YAGNI, match surrounding code). Push the branch early and after each meaningful commit through `guard.py run --issue N --repo "$WT" -- git -C "$WT" push -u origin <branch>`; the guard also refreshes the claim, so a live worker keeps it.
 5. Run the full local verification (see [references/verification.md](references/verification.md)), commit, and push through the guard.
-6. Open the PR through the guard: `guard.py run --issue N --repo "$WT" -- gh pr create` with base `$BASE` (or the stack parent), semantic title, body with `Fixes #N`, summary, and test plan. Then release the claim, because the PR now stands for the work: `python3 "$SKILL_DIR/scripts/claim.py" release-issue N --repo "$WT" --token "$TOKEN"`. Clear `current`.
+6. Open the PR through the guard: `guard.py run --issue N --repo "$WT" -- devloops forge pr create` with base `$BASE` (or the stack parent), semantic title, body with `Fixes #N`, summary, and test plan. Then release the claim, because the PR now stands for the work: `python3 "$SKILL_DIR/scripts/claim.py" release-issue N --repo "$WT" --token "$TOKEN"`. Clear `current`.
 
 If implementation fails twice or scope explodes: push what is worth keeping, release the issue claim, reset `$WT` with `guard.py reset-worktree`, record `skipped` with learnings, and comment on the issue only if useful to humans.
 
