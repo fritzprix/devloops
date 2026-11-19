@@ -113,24 +113,33 @@ def check_forge(config: dict[str, Any], *, remote_url: str | None = None) -> boo
             forge = get_forge(config, remote_url=remote_url)
             status = forge.auth_check()
             if status.ok:
-                who = f" as {status.login}" if status.login else ""
+                who = f" ({status.output})" if status.output else ""
                 print(f"  [OK] Forge auth ({forge_type}): authenticated{who}")
             else:
-                print(f"  [FAIL] Forge auth ({forge_type}): {status.detail}")
+                print(f"  [FAIL] Forge auth ({forge_type}): {status.output}")
                 ok = False
         except Exception as exc:
             print(f"  [FAIL] Forge auth ({forge_type}): {exc}")
             ok = False
     else:
-        token_env = str((config.get("forge") or {}).get("token_env") or "").strip()
-        if token_env:
-            if os.environ.get(token_env):
-                print(f"  [OK] Forge auth ({forge_type}): env var {token_env} is set")
+        try:
+            forge = get_forge(config, remote_url=remote_url)
+            status = forge.auth_check()
+            if status.ok:
+                print(f"  [OK] Forge auth ({forge_type}): authenticated")
             else:
-                print(f"  [FAIL] Forge auth ({forge_type}): env var {token_env} is not set")
+                print(f"  [FAIL] Forge auth ({forge_type}): {status.output}")
                 ok = False
-        else:
-            print(f"  [WARN] Forge auth ({forge_type}): forge.token_env is not configured")
+        except ForgeDetectionError:
+            token_env = str((config.get("forge") or {}).get("token_env") or "").strip()
+            if token_env:
+                if os.environ.get(token_env):
+                    print(f"  [OK] Forge auth ({forge_type}): env var {token_env} is set")
+                else:
+                    print(f"  [FAIL] Forge auth ({forge_type}): env var {token_env} is not set")
+                    ok = False
+            else:
+                print(f"  [WARN] Forge auth ({forge_type}): forge.token_env is not configured")
     return ok
 
 
