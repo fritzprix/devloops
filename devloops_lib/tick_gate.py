@@ -756,6 +756,38 @@ def find_actionable_backlog(gate_data: dict, me: str, approved_label: str = "app
     return sorted(actionable)
 
 
+def preflight_forge(
+    config: dict | None = None,
+    state: dict | None = None,
+    *,
+    remote_url: str | None = None,
+    probe_fn=None,
+) -> tuple[dict | None, bool]:
+    """Detect and persist the repository's forge at tick preflight (issue #45).
+
+    Returns ``(record, changed)``. Fails closed with ``ForgeDetectionError`` on
+    unknown, unsupported, or conflicting forges before any forge API call runs.
+    When running outside a git repo with default ``forge.type=auto`` and no
+    ``forge.url``, returns ``(None, False)`` so non-git test fixtures stay clean.
+    """
+    from devloops_lib.forge.detect import detect_forge, read_git_remote_url
+
+    cfg = config if config is not None else load_config()
+    forge_cfg = cfg.get("forge") or {}
+    cfg_type = str(forge_cfg.get("type") or "auto").strip().lower() or "auto"
+    cfg_url = str(forge_cfg.get("url") or "").strip()
+    cfg_remote = str(forge_cfg.get("remote") or "origin").strip() or "origin"
+
+    resolved_remote = remote_url if remote_url is not None else read_git_remote_url(cfg_remote)
+    if cfg_type == "auto" and not cfg_url and not resolved_remote:
+        return None, False
+
+    before = dict(state["forge"]) if (state is not None and isinstance(state.get("forge"), dict)) else None
+    record = detect_forge(cfg, state=state, remote_url=resolved_remote, probe_fn=probe_fn)
+    changed = before != record
+    return record, changed
+
+
 def preflight_decision(config: dict | None = None) -> tuple[str, list[int]]:
     """Return (fingerprint, actionable approved backlog) from one GraphQL fetch.
 
@@ -919,6 +951,9 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(EXIT_RUN)
 
         state = load_state(state_path)
+        _, forge_changed = preflight_forge(state=state)
+        if forge_changed:
+            save_state(state_path, state)
 
         # If currently implementing an issue or branch, always run
         if state.get("current"):

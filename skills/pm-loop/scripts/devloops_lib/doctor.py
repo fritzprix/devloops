@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import shlex
 import shutil
 import subprocess
@@ -29,16 +30,18 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 # Support running directly or as module
 try:
     from devloops_lib.config import board_decision_issues, find_config_file, find_project_root, load_config, resolve_board
+    from devloops_lib.forge.detect import ForgeDetectionError, detect_forge, get_forge
 except ImportError:
     _root = Path(__file__).resolve().parent.parent
     if str(_root) not in sys.path:
         sys.path.insert(0, str(_root))
     from devloops_lib.config import board_decision_issues, find_config_file, find_project_root, load_config, resolve_board
+    from devloops_lib.forge.detect import ForgeDetectionError, detect_forge, get_forge
 
 NETWORK_TIMEOUT_SECONDS = 5
 CONFIG_NAME = "devloops.config.yaml"
@@ -61,30 +64,83 @@ def check(name: str, cmd: list[str]) -> bool:
         return False
 
 
-def check_network() -> bool:
+def check_network(api_url: str = "https://api.github.com", label: str = "GitHub API") -> bool:
     try:
         req = urllib.request.Request(
-            "https://api.github.com",
-            headers={"User-Agent": "devloops-doctor"}
+            api_url,
+            headers={"User-Agent": "devloops-doctor"},
         )
         with urllib.request.urlopen(req, timeout=NETWORK_TIMEOUT_SECONDS) as resp:
             if resp.status == 200:
-                print("  [OK] Network: GitHub API reachable")
+                print(f"  [OK] Network: {label} reachable ({api_url})")
                 return True
-            if resp.status in (403, 429):
-                print(f"  [WARN] Network: GitHub API rate limited (HTTP {resp.status})")
+            if resp.status in (401, 403, 429):
+                print(f"  [WARN] Network: {label} responded HTTP {resp.status} ({api_url})")
                 return True
-            print(f"  [FAIL] Network: HTTP status {resp.status}")
+            print(f"  [FAIL] Network: {label} HTTP status {resp.status} ({api_url})")
             return False
     except urllib.error.HTTPError as e:
-        if e.code in (403, 429):
-            print(f"  [WARN] Network: GitHub API rate limited (HTTP {e.code})")
+        if e.code in (401, 403, 429):
+            print(f"  [WARN] Network: {label} responded HTTP {e.code} ({api_url})")
             return True
-        print(f"  [FAIL] Network: HTTP error {e.code}")
+        print(f"  [FAIL] Network: {label} HTTP error {e.code} ({api_url})")
         return False
     except Exception as e:
-        print(f"  [FAIL] Network unreachable: {e}")
+        print(f"  [FAIL] Network unreachable ({api_url}): {e}")
         return False
+
+
+def check_forge(config: dict[str, Any], *, remote_url: str | None = None) -> bool:
+    """Detect the forge, verify API reachability of that host, and check auth."""
+    try:
+        detected = detect_forge(config, remote_url=remote_url)
+    except ForgeDetectionError as exc:
+        print(f"  [FAIL] Forge: {exc}")
+        return False
+
+    forge_type = detected["type"]
+    base_url = detected.get("base_url") or ""
+    api_url = detected.get("api_url") or base_url
+    source = detected.get("source") or "auto"
+    print(f"  [OK] Forge: {forge_type} ({base_url}, source={source})")
+
+    ok = True
+    if api_url:
+        ok &= check_network(api_url, label=f"{forge_type} API")
+
+    if forge_type == "github":
+        try:
+            forge = get_forge(config, remote_url=remote_url)
+            status = forge.auth_check()
+            if status.ok:
+                who = f" ({status.output})" if status.output else ""
+                print(f"  [OK] Forge auth ({forge_type}): authenticated{who}")
+            else:
+                print(f"  [FAIL] Forge auth ({forge_type}): {status.output}")
+                ok = False
+        except Exception as exc:
+            print(f"  [FAIL] Forge auth ({forge_type}): {exc}")
+            ok = False
+    else:
+        try:
+            forge = get_forge(config, remote_url=remote_url)
+            status = forge.auth_check()
+            if status.ok:
+                print(f"  [OK] Forge auth ({forge_type}): authenticated")
+            else:
+                print(f"  [FAIL] Forge auth ({forge_type}): {status.output}")
+                ok = False
+        except ForgeDetectionError:
+            token_env = str((config.get("forge") or {}).get("token_env") or "").strip()
+            if token_env:
+                if os.environ.get(token_env):
+                    print(f"  [OK] Forge auth ({forge_type}): env var {token_env} is set")
+                else:
+                    print(f"  [FAIL] Forge auth ({forge_type}): env var {token_env} is not set")
+                    ok = False
+            else:
+                print(f"  [WARN] Forge auth ({forge_type}): forge.token_env is not configured")
+    return ok
 
 
 def check_push_permission() -> bool:
@@ -181,18 +237,19 @@ def main(argv: Sequence[str] = (), skill_dir: Path | None = None) -> int:
         print(f"  [FAIL] Python >= 3.8 required, found {sys.version.split()[0]}")
         all_ok = False
 
-    # 2. Network connectivity
-    all_ok &= check_network()
-
-    # 3. Git
+    # 2. Git
     all_ok &= check("git", ["git", "--version"])
 
-    # 4. GitHub CLI authentication
-    all_ok &= check("gh auth", ["gh", "auth", "status"])
-
-    # 5. Configured project commands (if any)
+    # 3. Forge detection, API reachability, and auth (replaces hard-coded GitHub checks)
+    cfg: dict[str, Any] = {}
     try:
         cfg = load_config()
+    except Exception:
+        cfg = {}
+    all_ok &= check_forge(cfg)
+
+    # 4. Configured project commands & board decision (if any)
+    try:
         cmds = cfg.get("commands", {})
         for cmd_name, cmd_str in cmds.items():
             if cmd_str and isinstance(cmd_str, str) and cmd_str.strip():

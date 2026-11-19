@@ -1,8 +1,14 @@
 # devloops project config. Copy to the project root and edit.
 project:
-  repo: owner/name            # GitHub repo
+  repo: owner/name            # Repository (owner/name)
   default_branch: main
   base_branch: main           # branch that PRs target
+
+forge:
+  type: auto                  # auto | github | forgejo | gitea
+  url: ""                     # base URL for self-hosted, e.g. https://git.example.com
+  remote: origin              # git remote to inspect
+  token_env: ""               # env var holding the API token (non-GitHub); never stored in config
 
 commands:
   test: ""                    # e.g. npm test

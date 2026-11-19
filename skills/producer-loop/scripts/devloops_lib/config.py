@@ -28,6 +28,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "default_branch": "main",
         "base_branch": "main",
     },
+    "forge": {
+        "type": "auto",
+        "url": "",
+        "remote": "origin",
+        "token_env": "",
+    },
     "commands": {
         "test": "",
         "lint": "",
