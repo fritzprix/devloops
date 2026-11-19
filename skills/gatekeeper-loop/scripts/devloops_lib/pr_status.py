@@ -113,11 +113,14 @@ def parent_pr_merged(
     default_base: str,
     merged_prs: list[dict] | None,
 ) -> dict | None:
-    """Return the merged parent PR if `base` is a stacked branch whose PR merged."""
+    """Return the merged parent PR if `base` is a stacked branch whose PR merged into `default_base`.
+
+    Stacks are capped at depth 1, so only parents merged into `default_base` trigger retargeting.
+    """
     if not base or base == default_base or not merged_prs:
         return None
     for pr in merged_prs:
-        if pr.get("headRefName") == base:
+        if pr.get("headRefName") == base and (pr.get("baseRefName") or default_base) == default_base:
             return {
                 "number": pr["number"],
                 "base": pr.get("baseRefName", ""),
@@ -129,9 +132,10 @@ def parent_pr_merged(
 def _linked_issue_numbers(pr: dict) -> set[int]:
     text = f"{pr.get('title') or ''} {pr.get('body') or ''}"
     nums = {int(n) for n in CLOSING_PATTERN.findall(text)}
-    match = HEAD_ISSUE_PATTERN.search(pr.get("headRefName") or "")
-    if match:
-        nums.add(int(match.group(1)))
+    if not nums:
+        match = HEAD_ISSUE_PATTERN.search(pr.get("headRefName") or "")
+        if match:
+            nums.add(int(match.group(1)))
     return nums
 
 
