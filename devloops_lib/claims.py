@@ -241,8 +241,12 @@ def _push_claim(repo: Path, number: int, parent: str | None, base: str, agent: s
         lines.append(f"{BRANCH_TRAILER}: {branch}")
     lines.append(f"Devloops-Claim-Id: {uuid.uuid4().hex}")
     start = parent or base
+    try:
+        email = str((load_config(start_dir=repo).get("forge") or {}).get("committer_email") or "").strip()
+    except Exception:
+        email = ""
     commit = _git_out(
-        repo, "-c", "user.name=devloops", "-c", "user.email=devloops@users.noreply.github.com",
+        repo, "-c", "user.name=devloops", "-c", f"user.email={email or 'devloops@users.noreply.github.com'}",
         "commit-tree", f"{start}^{{tree}}", "-p", start, "-m", "\n".join(lines),
     )
     push = _git(repo, "push", "--no-verify", "origin", f"{commit}:{ref}")
