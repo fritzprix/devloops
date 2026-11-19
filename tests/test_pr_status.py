@@ -79,7 +79,7 @@ class DuplicateCommitsTest(unittest.TestCase):
 
 class SelectNextActionTest(unittest.TestCase):
     base = dict(
-        conflicting=False, duplicates=[], gatekeeper=None,
+        retarget=False, conflicting=False, duplicates=[], gatekeeper=None,
         has_comments=False, failing=[], pending=[],
     )
 
@@ -88,10 +88,11 @@ class SelectNextActionTest(unittest.TestCase):
 
     def test_priority_order(self):
         everything = dict(
-            conflicting=True, duplicates=["abc"], gatekeeper={"awaitingWorker": True},
+            retarget=True, conflicting=True, duplicates=["abc"], gatekeeper={"awaitingWorker": True},
             has_comments=True, failing=["ci"], pending=["ci"],
         )
         expected = [
+            ("retarget", "retarget"),
             ("conflicting", "resolve-conflict"),
             ("duplicates", "restack"),
             ("gatekeeper", "address-gatekeeper"),
@@ -103,6 +104,55 @@ class SelectNextActionTest(unittest.TestCase):
             self.assertEqual(self.action(**everything), action)
             everything[key] = self.base[key]
         self.assertEqual(self.action(**everything), "none")
+
+
+class StackedPrLifecycleTest(unittest.TestCase):
+    def test_parent_pr_merged_triggers_retarget(self):
+        merged = [
+            {"number": 10, "headRefName": "feat/parent-1", "baseRefName": "main", "url": "https://example.com/pr/10"},
+        ]
+        info = pr_status.parent_pr_merged("feat/parent-1", "main", merged)
+        self.assertEqual(info, {"number": 10, "base": "main", "url": "https://example.com/pr/10"})
+        # Non-stacked PR targeting default base never retargets.
+        self.assertIsNone(pr_status.parent_pr_merged("main", "main", merged))
+        # Stacked PR whose parent is still open does not retarget yet.
+        self.assertIsNone(pr_status.parent_pr_merged("feat/still-open-2", "main", merged))
+
+    def test_find_merged_via_parent_issues(self):
+        open_issues = [{"number": 20}, {"number": 30}]
+        merged = [
+            {
+                "number": 100,
+                "title": "feat: parent",
+                "body": "Fixes #10",
+                "headRefName": "feat/parent-10",
+                "baseRefName": "main",
+                "url": "https://example.com/pr/100",
+            },
+            {
+                "number": 101,
+                "title": "feat: child",
+                "body": "Fixes #20",
+                "headRefName": "feat/child-20",
+                "baseRefName": "feat/parent-10",
+                "url": "https://example.com/pr/101",
+            },
+            # Merged into an unmerged parent branch: not on main yet.
+            {
+                "number": 102,
+                "title": "feat: orphan child",
+                "body": "Fixes #30",
+                "headRefName": "feat/child-30",
+                "baseRefName": "feat/unmerged-parent",
+                "url": "https://example.com/pr/102",
+            },
+        ]
+        found = pr_status.find_merged_via_parent_issues(open_issues, merged, default_base="main")
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["issue"], 20)
+        self.assertEqual(found[0]["childPr"], 101)
+        self.assertEqual(found[0]["parentPr"], 100)
+        self.assertIn("close #20", found[0]["reason"])
 
 
 class MarkerAndGatekeeperStateTest(unittest.TestCase):

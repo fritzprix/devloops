@@ -34,7 +34,7 @@ from devloops_lib.tick_gate import EXIT_ERROR, EXIT_NOOP, EXIT_RUN, load_state
 from devloops_lib.config import run_main
 
 # The pr_status priority order. wait-ci and none need no work now.
-PR_ACTIONS = ["resolve-conflict", "restack", "address-gatekeeper", "triage-comments", "fix-ci"]
+PR_ACTIONS = ["retarget", "resolve-conflict", "restack", "address-gatekeeper", "triage-comments", "fix-ci"]
 
 
 def max_items_per_tick(config: dict) -> int:
@@ -63,10 +63,13 @@ def pr_stamp(pr: dict) -> str:
 
 def _pr_item(pr: dict) -> dict:
     gatekeeper = pr.get("gatekeeper") or {}
-    return {
+    item = {
         "kind": "pr", "number": pr["number"], "action": pr["nextAction"], "head": pr.get("headSha"),
         "base": pr.get("base"), "gatekeeperRound": gatekeeper.get("round"), "stamp": pr_stamp(pr),
     }
+    if pr.get("retargetBase"):
+        item["retargetBase"] = pr["retargetBase"]
+    return item
 
 
 def build_plan(prs: list[dict], candidates: dict, skipped: dict, max_items: int) -> dict:
@@ -77,10 +80,14 @@ def build_plan(prs: list[dict], candidates: dict, skipped: dict, max_items: int)
     )
     open_issues = [c for c in candidates["candidates"] if not _skip_is_current(skipped, c)]
     waiting = [c["number"] for c in open_issues if c["dependency"]["status"] == "wait"]
+    blocked_on_closure = [
+        {"number": c["number"], "blockedOnClosure": c["dependency"].get("blockedOnClosure", [])}
+        for c in open_issues if c["dependency"]["status"] == "blocked-on-closure"
+    ]
     issue_items = [
         {"kind": "issue", "number": c["number"], "title": c["title"],
          "updatedAt": c.get("updatedAt"), "dependency": c["dependency"]}
-        for c in open_issues if c["dependency"]["status"] != "wait"
+        for c in open_issues if c["dependency"]["status"] not in ("wait", "blocked-on-closure")
     ]
     limit = candidates["openPRLimit"]
     return {
@@ -88,6 +95,8 @@ def build_plan(prs: list[dict], candidates: dict, skipped: dict, max_items: int)
         "openPRLimit": limit,
         "items": pr_items + ([] if limit["reached"] else issue_items),
         "waiting": waiting,
+        "needsClosure": candidates.get("needsClosure") or [],
+        "blockedOnClosure": blocked_on_closure,
     }
 
 
@@ -106,7 +115,10 @@ def describe_pr(fresh: list[dict]) -> str:
 def issue_item_is_current(candidates: dict, number: int, updated_at: str) -> bool:
     for candidate in candidates["candidates"]:
         if candidate["number"] == number:
-            return candidate.get("updatedAt") == updated_at and candidate["dependency"]["status"] != "wait"
+            return (
+                candidate.get("updatedAt") == updated_at
+                and candidate["dependency"]["status"] not in ("wait", "blocked-on-closure")
+            )
     return False
 
 
