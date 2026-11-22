@@ -37,3 +37,8 @@ include = [
     "/README.md",
     "/pyproject.toml",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "forge_live: integration tests requiring a live Forgejo/Gitea server (DEVLOOPS_FORGE_LIVE_URL)",
+]
