@@ -12,7 +12,7 @@ Live forge integration tests (`@pytest.mark.forge_live`) are skipped automatical
 
 Pinned versions match the minimum supported versions in `devloops_lib/forge/gitea.py` (Forgejo `>= 7.0.0`, Gitea `>= 1.21.0`):
 
-- Forgejo: `codeberg.org/forgejo/forgejo:7.0.13`
+- Forgejo: `codeberg.org/forgejo/forgejo:7.0.4`
 - Gitea: `gitea/gitea:1.21.11`
 
 ```bash
@@ -23,7 +23,7 @@ docker run -d --name forge-live -p 3000:3000 \
   -e GITEA__server__ROOT_URL=http://127.0.0.1:3000/ \
   -e GITEA__server__DOMAIN=127.0.0.1 \
   -e GITEA__server__HTTP_PORT=3000 \
-  codeberg.org/forgejo/forgejo:7.0.13
+  codeberg.org/forgejo/forgejo:7.0.4
 
 # Wait until http://127.0.0.1:3000/api/v1/version responds, then provision a user & token:
 docker exec -u git forge-live forgejo admin user create \

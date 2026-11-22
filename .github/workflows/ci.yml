@@ -64,7 +64,7 @@ jobs:
       matrix:
         include:
           - forge: forgejo
-            image: codeberg.org/forgejo/forgejo:7.0.13
+            image: codeberg.org/forgejo/forgejo:7.0.4
             cli: forgejo
           - forge: gitea
             image: gitea/gitea:1.21.11

@@ -27,7 +27,7 @@ if str(REPO_ROOT) not in sys.path:
 from devloops_lib import doctor  # noqa: E402
 from devloops_lib.forge import CI_FAILURE, CI_PENDING, CI_SUCCESS, ForgeError  # noqa: E402
 from devloops_lib.forge.detect import detect_forge, probe_forge  # noqa: E402
-from devloops_lib.forge.gitea import GiteaForge  # noqa: E402
+from devloops_lib.forge.gitea import ForgejoForge, GiteaForge  # noqa: E402
 
 LIVE_URL = os.environ.get("DEVLOOPS_FORGE_LIVE_URL", "").strip().rstrip("/")
 LIVE_TOKEN = os.environ.get("DEVLOOPS_FORGE_LIVE_TOKEN", "").strip()
@@ -135,12 +135,12 @@ def seeded_forge() -> Dict[str, Any]:
         {"state": "success", "context": "unit", "description": "all unit tests passed"},
     )
 
-    forge = GiteaForge(
+    forge_cls = ForgejoForge if LIVE_TYPE == "forgejo" else GiteaForge
+    forge = forge_cls(
         base_url=LIVE_URL,
         owner=owner,
-        repo=repo_name,
+        name=repo_name,
         token_env="DEVLOOPS_FORGE_LIVE_TOKEN",
-        forge_type=LIVE_TYPE,
     )
     return {
         "forge": forge,
@@ -258,12 +258,12 @@ def test_live_gate_snapshot_and_bad_token(seeded_forge: Dict[str, Any], monkeypa
     assert snap.open_issues
 
     monkeypatch.setenv("DEVLOOPS_BAD_LIVE_TOKEN", "invalid-token-value")
-    bad_forge = GiteaForge(
+    forge_cls = ForgejoForge if LIVE_TYPE == "forgejo" else GiteaForge
+    bad_forge = forge_cls(
         base_url=LIVE_URL,
         owner=seeded_forge["owner"],
-        repo=seeded_forge["repo"],
+        name=seeded_forge["repo"],
         token_env="DEVLOOPS_BAD_LIVE_TOKEN",
-        forge_type=LIVE_TYPE,
     )
     bad_status = bad_forge.auth_check()
     assert bad_status.ok is False
