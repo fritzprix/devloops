@@ -54,3 +54,72 @@ jobs:
 
       - name: Relocated-install smoke test of the built wheel
         run: python scripts/ci_smoke.py --dist dist
+
+  forge-integration:
+    name: Forge integration (${{ matrix.forge }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - forge: forgejo
+            image: codeberg.org/forgejo/forgejo:7.0.4
+            cli: forgejo
+          - forge: gitea
+            image: gitea/gitea:1.21.11
+            cli: gitea
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up uv and Python 3.13
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+          activate-environment: true
+
+      - name: Install test runner
+        run: uv pip install pytest
+
+      - name: Start pinned ${{ matrix.forge }} container
+        run: |
+          docker run -d --name forge-live -p 3000:3000 \
+            -e USER_UID=1000 -e USER_GID=1000 \
+            -e GITEA__database__DB_TYPE=sqlite3 \
+            -e GITEA__security__INSTALL_LOCK=true \
+            -e GITEA__server__ROOT_URL=http://127.0.0.1:3000/ \
+            -e GITEA__server__DOMAIN=127.0.0.1 \
+            -e GITEA__server__HTTP_PORT=3000 \
+            -e GITEA__service__DISABLE_REGISTRATION=true \
+            "${{ matrix.image }}"
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3000/api/v1/version >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:3000/api/v1/version
+
+      - name: Provision per-run admin user and API token
+        run: |
+          PASS=$(openssl rand -hex 16)
+          echo "::add-mask::$PASS"
+          docker exec -u git forge-live ${{ matrix.cli }} admin user create \
+            --admin --username tester --password "$PASS" \
+            --email ci@example.local --must-change-password=false
+          TOKEN=$(docker exec -u git forge-live ${{ matrix.cli }} admin user generate-access-token \
+            --username tester --token-name ci-run --scopes all --raw | tail -n 1 | tr -d '\r\n')
+          echo "::add-mask::$TOKEN"
+          echo "DEVLOOPS_FORGE_LIVE_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Run live forge integration tests
+        env:
+          DEVLOOPS_FORGE_LIVE_URL: http://127.0.0.1:3000
+          DEVLOOPS_FORGE_LIVE_TYPE: ${{ matrix.forge }}
+        run: python -m pytest -q -m forge_live tests/test_forge_live.py
+
+      - name: Stop container
+        if: always()
+        run: docker rm -f forge-live || true
