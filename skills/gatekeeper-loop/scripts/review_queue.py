@@ -59,6 +59,8 @@ PROTECTED_SKILL_PREFIXES = (
     "skills/worker-loop/",
     ".agents/skills/gatekeeper-loop/",
     ".agents/skills/worker-loop/",
+    "skills/qa-loop/",
+    ".agents/skills/qa-loop/",
 )
 OWNER_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 # First-pass hint only: a name match lists the path for the gatekeeper to open and

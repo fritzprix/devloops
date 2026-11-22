@@ -93,7 +93,7 @@ def install_command(target_dir: Path) -> int:
         return 1
 
     # Verify required skill directories exist
-    required_skills = ["worker-loop", "gatekeeper-loop", "producer-loop", "pm-loop"]
+    required_skills = ["worker-loop", "gatekeeper-loop", "producer-loop", "pm-loop", "qa-loop"]
     for s in required_skills:
         if not (skills_src / s).is_dir():
             sys.stderr.write(f"Error: Required skill directory '{s}' not found in {skills_src}.\n")
@@ -352,6 +352,8 @@ def main(argv: list[str] | None = None) -> int:
             "gatekeeper-loop",
             "pm",
             "pm-loop",
+            "qa",
+            "qa-loop",
         ],
         help="Loop name to tick",
     )

@@ -1,0 +1,96 @@
+# devloops project config. Copy to the project root and edit.
+project:
+  repo: owner/name            # GitHub repo
+  default_branch: main
+  base_branch: main           # branch that PRs target
+
+commands:
+  test: ""                    # e.g. npm test
+  lint: ""
+  build: ""
+
+# Declared agent/harness capabilities; worker checks before needsUser (see escalation-policy.md)
+environment:
+  capabilities:
+    - browser
+    - screen_capture
+    - cli
+    - network
+    - public_web
+    - diagrams              # Mermaid, PlantUML, ASCII sketches
+
+protected_paths: []           # producer: findings only; worker may edit when in scope; gatekeeper: stricter review (gatekeeper:needs-human)
+
+cleanup:
+  protected_branches: [main, master, develop, release] # branches cleanup task must never propose deleting
+
+state_dir: .devloops          # state.json and tick.lock per loop
+
+labels:
+  producer: auto:producer
+  validated: validated
+  rejected: rejected
+  approved: approved
+
+producer:
+  default_period: 24h
+  max_new_issues_per_run: 3
+  tasks: [security, e2e, uiux, regression, usage-logs, doc-drift, cleanup]
+  task_skills:                # optional mapping of producer tasks to project skills/commands
+    security: ""              # e.g. code-audit-expert
+    e2e: ""
+    uiux: ""
+    regression: ""
+    usage-logs: ""
+    doc-drift: ""
+    cleanup: ""
+  task_periods:               # per-task period overrides (e.g. cleanup: 7d)
+    cleanup: 7d
+  task_max_new_issues:        # per-task cap on new issues per run
+    cleanup: 1
+
+gatekeeper:
+  max_issue_validations_per_tick: 1   # producer issues to validate per tick
+  rubric_paths: []                    # extra REVIEW_RUBRIC.md paths (see gatekeeper-loop SKILL)
+  issue_rules_paths: []               # ISSUE_RULES.md paths for acceptance criteria
+
+qa:
+  max_prs_per_tick: 5                 # open PRs judged for testability per tick
+  max_new_issues_per_tick: 3          # post-merge failure issues per tick; never raise it inside a tick
+  issue_labels: [bug]                 # labels on post-merge failure issues
+  tools:                              # the only tools qa may count on; name: what it proves and how to run it
+    # unit: "pnpm test -- <path>  (unit tests)"
+    # e2e_control: "HTTP control API of a debug build; drives approvals and prompts"
+    # mock_llm: "OpenAI-compatible mock server with scripted replies; makes model output deterministic"
+    # headless: "run the app headless with an isolated data dir"
+    # screenshots: "Xvfb + ffmpeg frame grab for UI-only evidence"
+  blocked_tools:                      # name: reason or tracking issue; qa treats these as unavailable
+    # e2e_control: "returns 403 on loopback, see #123"
+  board_fields:                       # board fields to set on each new issue (field: option)
+    # Status: Backlog
+  post_merge:                         # empty values fall back to commands.build / commands.test
+    build: ""
+    test: ""
+    e2e: ""                           # optional end-to-end command run against the local build
+
+worker:
+  max_items_per_tick: 1       # PRs and issues to finish per tick
+  open_pr_limit: 5            # throttle: worker idles without needsUser while this many unapproved PRs (+ live issue claims without PR) are open
+  issue_claim_ttl_minutes: 120  # an issue claim not refreshed for this long is stale and can be taken over
+  lock_ttl_seconds: 1800        # tick lock TTL; DEVLOOPS_LOCK_TTL_SECONDS env overrides
+
+pm:
+  default_interval: 10m       # PM cron interval when /pm-loop arms scheduling
+  default_slots: 1            # initial hint only; slot cap is persisted in pm-loop state after you answer once
+  default_delegation: cursor  # cursor | claude | harness — not silently switched when unavailable
+  peer_loops: [worker-loop, gatekeeper-loop, producer-loop]
+  definition_of_done: {}      # optional signals list or {signals: [...]}; else projectProfile default
+
+board:
+  provider: ""          # forge | ak5 | jira | none (empty = not decided; forge = the board bundled with the detected forge)
+  url: ""               # board or project URL (external boards, or a forge Projects board)
+  ref: ""               # optional board/project id inside the provider
+  confirmed: false      # true only after the user confirmed during setup
+
+# scheduler: shell            # documentation only: shell | cron | harness-specific adapter
+# When pm-loop is armed, only the PM scheduler runs; it cascades ticks to peer loops.

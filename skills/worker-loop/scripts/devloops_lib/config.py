@@ -77,6 +77,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "rubric_paths": [],
         "issue_rules_paths": [],
     },
+    "qa": {
+        "max_prs_per_tick": 5,
+        "max_new_issues_per_tick": 3,
+        "issue_labels": ["bug"],
+        "tools": {},
+        "blocked_tools": {},
+        "board_fields": {},
+        "post_merge": {
+            "build": "",
+            "test": "",
+            "e2e": "",
+        },
+    },
     "worker": {
         "max_items_per_tick": 1,
         "open_pr_limit": 5,
