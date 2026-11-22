@@ -162,8 +162,6 @@ class ForgeCliTest(unittest.TestCase):
         for path in sorted(files):
             if not path.is_file():
                 continue
-            if not (path.parent / "scripts" / "forge.py").exists():
-                continue
             for idx, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
                 # A bare invocation: `devloops forge` not preceded by the shim call.
                 if re.search(r"(?<![\w/$.-])devloops forge\b", line) and "scripts/forge.py" not in line:

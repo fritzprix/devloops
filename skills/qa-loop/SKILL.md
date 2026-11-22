@@ -80,7 +80,7 @@ python3 "$SKILL_DIR/scripts/qa_queue.py" prs
 
 Process `status: review` PRs in the given order, at most `qa.max_prs_per_tick`. For each PR:
 
-1. Read the PR body, the linked issue and its acceptance criteria, and the diff (`devloops forge pr diff N --raw`). Read code through git objects only. Do not check out branches in the main checkout.
+1. Read the PR body, the linked issue and its acceptance criteria, and the diff (`python3 "$SKILL_DIR/scripts/forge.py" pr diff N --raw`). Read code through git objects only. Do not check out branches in the main checkout.
 2. For each acceptance criterion and each changed behavior, find a test path with the tools in `qa.tools`, by the rules in [references/testability.md](references/testability.md). Do not count tools in `qa.blocked_tools`.
 3. Where a check is cheap (a unit or integration test the PR adds), run it in the qa worktree to make sure it really tests the behavior. A test that passes without the change does not count.
 4. Decide the verdict:
