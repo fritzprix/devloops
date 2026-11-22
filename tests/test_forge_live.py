@@ -183,7 +183,7 @@ def test_live_contract_auth_and_repo(seeded_forge: Dict[str, Any]) -> None:
     assert status.ok is True
     assert seeded_forge["login"] in status.output
 
-    repo = forge.get_repo()
+    repo = forge.repo_ref()
     assert repo.owner == seeded_forge["owner"]
     assert repo.name == seeded_forge["repo"]
 
@@ -218,7 +218,7 @@ def test_live_contract_pr_comments_and_ci(seeded_forge: Dict[str, Any]) -> None:
     comments = forge.list_pr_comments(pr_num)
     assert any("live test comment" in c.body for c in comments)
 
-    ci = forge.get_ci_status(pr_num, pr.head_sha)
+    ci = forge.ci_status(pr)
     assert ci.state == CI_SUCCESS
     assert not ci.failing
     assert not ci.pending
@@ -229,7 +229,7 @@ def test_live_contract_pr_comments_and_ci(seeded_forge: Dict[str, Any]) -> None:
         f"/repos/{seeded_forge['owner']}/{seeded_forge['repo']}/statuses/{pr.head_sha}",
         {"state": "failure", "context": "lint", "description": "lint failed"},
     )
-    ci_fail = forge.get_ci_status(pr_num, pr.head_sha)
+    ci_fail = forge.ci_status(pr)
     assert ci_fail.state == CI_FAILURE
     assert "lint" in ci_fail.failing
 
