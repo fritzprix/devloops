@@ -111,4 +111,4 @@ Every `G` item must be answered as **fixed** or **declined**. Suggestions may be
 
 Unmarked comments from the repo owner (or `@me`) posted after the last marker are read as required items and trigger a review.
 
-Keep exactly one of the first three labels on a PR; swap them with each verdict. Create missing labels once with `gh label create <name> --color <hex> --description <text>`.
+Keep exactly one of the first three labels on a PR; swap them with each verdict (`python3 "$SKILL_DIR/scripts/forge.py" pr label set-verdict N <verdict>`). Create missing labels once with `python3 "$SKILL_DIR/scripts/forge.py" label ensure <name> --color <hex> --description <text>`.

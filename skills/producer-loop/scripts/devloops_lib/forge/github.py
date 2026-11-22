@@ -343,6 +343,33 @@ class GitHubForge:
     def post_pr_comment(self, number: int, body: str) -> None:
         self._call("pr", "comment", str(number), "--body", body)
 
+    def post_issue_comment(self, number: int, body: str) -> None:
+        self._call("issue", "comment", str(number), "--body", body)
+
+    def pr_diff(self, number: int) -> str:
+        return self._call("pr", "diff", str(number))
+
+    def create_pr(self, *, base: str, title: str, body: str = "", head: Optional[str] = None) -> str:
+        args = ["pr", "create", "--base", base, "--title", title, "--body", body]
+        if head:
+            args.extend(["--head", head])
+        return self._call(*args).strip()
+
+    def update_branch(self, number: int) -> None:
+        self._call("pr", "update-branch", str(number))
+
+    def ensure_label(self, name: str, *, color: str = "ededed", description: str = "") -> None:
+        args = ["label", "create", name, "--color", color.lstrip("#"), "--force"]
+        if description:
+            args.extend(["--description", description])
+        self._call(*args)
+
+    def ci_logs_failed(self, target: str) -> str:
+        return self._call("run", "view", str(target), "--log-failed")
+
+    def ci_rerun_failed(self, target: str) -> None:
+        self._call("run", "rerun", str(target), "--failed")
+
     # -- gate / refs --------------------------------------------------------
 
     def gate_snapshot(self, pr_limit: int = 100, issue_limit: int = 100) -> GateSnapshot:

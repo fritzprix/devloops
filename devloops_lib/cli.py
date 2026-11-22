@@ -359,12 +359,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     add_tick_options(tick_parser)
 
+    from devloops_lib.forge.cli import build_forge_parser, run_forge_args
+    forge_parser = subparsers.add_parser("forge", help="Forge-neutral PR, issue, CI, and label CLI")
+    build_forge_parser(forge_parser)
+
     args = parser.parse_args(argv)
 
     if args.subcommand == "install":
         return install_command(args.target)
     if args.subcommand == "tick":
         return run_tick(args.loop, args)
+    if args.subcommand == "forge":
+        if not getattr(args, "forge_group", None):
+            forge_parser.print_help()
+            return 0
+        return run_forge_args(args)
 
     parser.print_help()
     return 0

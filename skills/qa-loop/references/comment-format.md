@@ -77,13 +77,13 @@ The worker answers a qa `changes-requested` verdict in one comment:
 Keep exactly one `qa:*` label on a PR. Swap it with each verdict:
 
 ```bash
-gh pr comment N --body-file <tmp>
-gh pr edit N --add-label qa:accepted --remove-label qa:changes-requested,qa:needs-human
-gh pr edit N --add-label qa:changes-requested --remove-label qa:accepted,qa:needs-human
-gh pr edit N --add-label qa:needs-human --remove-label qa:accepted,qa:changes-requested
+python3 "$SKILL_DIR/scripts/forge.py" pr comment N --body-file <tmp>
+python3 "$SKILL_DIR/scripts/forge.py" pr label add N qa:accepted && python3 "$SKILL_DIR/scripts/forge.py" pr label remove N qa:changes-requested qa:needs-human
+python3 "$SKILL_DIR/scripts/forge.py" pr label add N qa:changes-requested && python3 "$SKILL_DIR/scripts/forge.py" pr label remove N qa:accepted qa:needs-human
+python3 "$SKILL_DIR/scripts/forge.py" pr label add N qa:needs-human && python3 "$SKILL_DIR/scripts/forge.py" pr label remove N qa:accepted qa:changes-requested
 ```
 
-Create missing labels once with `gh label create <name> --color <hex> --description <text>`.
+Create missing labels once with `python3 "$SKILL_DIR/scripts/forge.py" label ensure <name> --color <hex> --description <text>`.
 
 The `qa:*` labels and the `gatekeeper:*` labels are separate axes. qa never changes `gatekeeper:*` labels, and the gatekeeper never changes `qa:*` labels.
 
