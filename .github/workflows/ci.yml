@@ -104,11 +104,13 @@ jobs:
 
       - name: Provision per-run admin user and API token
         run: |
+          PASS=$(openssl rand -hex 16)
+          echo "::add-mask::$PASS"
           docker exec -u git forge-live ${{ matrix.cli }} admin user create \
-            --admin --username devloops-ci --password "ci-pass-$(date +%s)" \
+            --admin --username tester --password "$PASS" \
             --email ci@example.local --must-change-password=false
           TOKEN=$(docker exec -u git forge-live ${{ matrix.cli }} admin user generate-access-token \
-            --username devloops-ci --token-name ci-run --scopes all --raw | tail -n 1 | tr -d '\r\n')
+            --username tester --token-name ci-run --scopes all --raw | tail -n 1 | tr -d '\r\n')
           echo "::add-mask::$TOKEN"
           echo "DEVLOOPS_FORGE_LIVE_TOKEN=$TOKEN" >> "$GITHUB_ENV"
 

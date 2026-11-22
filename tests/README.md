@@ -27,13 +27,13 @@ docker run -d --name forge-live -p 3000:3000 \
 
 # Wait until http://127.0.0.1:3000/api/v1/version responds, then provision a user & token:
 docker exec -u git forge-live forgejo admin user create \
-  --admin --username devloops-ci --password "devloops-ci-pass" \
+  --admin --username tester --password "$(openssl rand -hex 16)" \
   --email ci@example.local --must-change-password=false
 
 export DEVLOOPS_FORGE_LIVE_URL=http://127.0.0.1:3000
 export DEVLOOPS_FORGE_LIVE_TYPE=forgejo
 export DEVLOOPS_FORGE_LIVE_TOKEN=$(docker exec -u git forge-live forgejo admin user generate-access-token \
-  --username devloops-ci --token-name local-run --scopes all --raw | tail -n 1)
+  --username tester --token-name local-run --scopes all --raw | tail -n 1)
 
 python3 -m pytest -q -m forge_live tests/test_forge_live.py
 docker rm -f forge-live
