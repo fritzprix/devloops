@@ -106,7 +106,8 @@ def check_forge(config: dict[str, Any], *, remote_url: str | None = None) -> boo
 
     ok = True
     if api_url:
-        ok &= check_network(api_url, label=f"{forge_type} API")
+        probe_url = f"{api_url.rstrip('/')}/version" if forge_type in ("gitea", "forgejo") else api_url
+        ok &= check_network(probe_url, label=f"{forge_type} API")
 
     if forge_type == "github":
         try:

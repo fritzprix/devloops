@@ -181,7 +181,7 @@ def test_live_contract_auth_and_repo(seeded_forge: Dict[str, Any]) -> None:
     assert forge.whoami() == seeded_forge["login"]
     status = forge.auth_check()
     assert status.ok is True
-    assert status.user == seeded_forge["login"]
+    assert seeded_forge["login"] in status.output
 
     repo = forge.get_repo()
     assert repo.owner == seeded_forge["owner"]
@@ -215,12 +215,13 @@ def test_live_contract_pr_comments_and_ci(seeded_forge: Dict[str, Any]) -> None:
     assert pr.head_sha == seeded_forge["head_sha"]
 
     forge.post_pr_comment(pr_num, "<!-- worker-loop: note -->\nlive test comment")
-    comments = forge.get_pr_comments(pr_num)
+    comments = forge.list_pr_comments(pr_num)
     assert any("live test comment" in c.body for c in comments)
 
     ci = forge.get_ci_status(pr_num, pr.head_sha)
     assert ci.state == CI_SUCCESS
-    assert "unit" in ci.passing
+    assert not ci.failing
+    assert not ci.pending
 
     # Post a failing status and verify failure takes precedence.
     _api(
@@ -254,8 +255,8 @@ def test_live_labels_preserve_unrelated_labels(seeded_forge: Dict[str, Any]) -> 
 def test_live_gate_snapshot_and_bad_token(seeded_forge: Dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     forge: GiteaForge = seeded_forge["forge"]
     snap = forge.gate_snapshot()
-    assert snap.open_prs
-    assert snap.open_issues
+    assert snap.prs
+    assert snap.issues
 
     monkeypatch.setenv("DEVLOOPS_BAD_LIVE_TOKEN", "invalid-token-value")
     forge_cls = ForgejoForge if LIVE_TYPE == "forgejo" else GiteaForge
