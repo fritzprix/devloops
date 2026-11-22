@@ -462,13 +462,30 @@ class Issue14NeedsHumanTests(unittest.TestCase):
         self.assertEqual(verdicts, [])
         self.assertEqual(len(needs), 2)  # tick sees commentPresent and posts nothing new
 
-    def test_human_only_guidance(self) -> None:
-        guidance = needs_human_guidance(status="human-only", own_skill=True,
-                                        labels=["gatekeeper:needs-human"], needs_comment_present=True)
+    def test_own_skill_pr_keeps_needs_human_reason_but_normal_status(self) -> None:
+        # Issue #62: loop-skill PRs get needsHuman guidance regardless of status,
+        # but the status itself is never overridden (no `human-only`).
+        for status in ("review", "wait-worker", "await-ci", "approved"):
+            guidance = needs_human_guidance(status=status, own_skill=True,
+                                            labels=["gatekeeper:needs-human"], needs_comment_present=True)
+            self.assertEqual(guidance["reason"], "changes loop skill files", status)
+            self.assertTrue(guidance["labelPresent"], status)
+            self.assertTrue(guidance["commentPresent"], status)
+            self.assertFalse(guidance["staleLabel"], status)
+
+    def test_own_skill_without_label_asks_to_add(self) -> None:
+        guidance = needs_human_guidance(status="review", own_skill=True,
+                                        labels=[], needs_comment_present=False)
         self.assertEqual(guidance["reason"], "changes loop skill files")
-        self.assertTrue(guidance["labelPresent"])
-        self.assertTrue(guidance["commentPresent"])
-        self.assertFalse(guidance["staleLabel"])
+        self.assertFalse(guidance["labelPresent"])
+        self.assertFalse(guidance["commentPresent"])
+
+    def test_human_only_status_is_gone(self) -> None:
+        # The `human-only` status must not exist in the module anymore.
+        import inspect
+        source = inspect.getsource(_module)
+        self.assertNotIn("human-only", source)
+        self.assertNotIn("human_only", source)
 
     def test_ambiguous_rubric_guidance(self) -> None:
         guidance = needs_human_guidance(status="needs-human", own_skill=False,
