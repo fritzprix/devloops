@@ -242,6 +242,7 @@ class DoctorForgeTest(unittest.TestCase):
         buf = io.StringIO()
         mock_resp = MagicMock()
         mock_resp.status = 200
+        mock_resp.read.side_effect = [b'{"version": "7.0.0"}', b'{"login": "bot"}']
         mock_resp.__enter__.return_value = mock_resp
 
         with patch.dict(os.environ, {"MY_FORGEJO_TOKEN": secret}, clear=False), \
@@ -257,8 +258,9 @@ class DoctorForgeTest(unittest.TestCase):
         self.assertNotIn("api.github.com", output)
         self.assertNotIn(secret, output)
         self.assertNotIn(secret, json.dumps(state))
-        req_arg = mock_open.call_args.args[0]
-        self.assertEqual(req_arg.full_url, "https://git.example.com/api/v1")
+        called_urls = [c.args[0].full_url for c in mock_open.call_args_list]
+        self.assertTrue(called_urls)
+        self.assertTrue(all(u.startswith("https://git.example.com/api/v1") for u in called_urls))
         # gh auth must not be called for non-GitHub forges.
         mock_sub.assert_not_called()
 
