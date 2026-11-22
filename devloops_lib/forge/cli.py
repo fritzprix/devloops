@@ -161,6 +161,7 @@ def build_forge_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
 
     p_pd = pr_sub.add_parser("diff", help="Print unified diff of a pull request")
     p_pd.add_argument("number", type=int)
+    p_pd.add_argument("--raw", action="store_true", help="Print raw diff text instead of JSON")
 
     p_pc = pr_sub.add_parser("create", help="Create a pull request")
     p_pc.add_argument("--base", required=True)
@@ -197,11 +198,11 @@ def build_forge_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
     ci_sub = ci_p.add_subparsers(dest="forge_action")
 
     p_cil = ci_sub.add_parser("logs", help="Fetch CI failure logs")
-    p_cil.add_argument("target", help="Run ID or PR number")
+    p_cil.add_argument("target", help="Run ID")
     p_cil.add_argument("--failed", action="store_true")
 
     p_cir = ci_sub.add_parser("rerun", help="Rerun failed CI jobs")
-    p_cir.add_argument("target", help="Run ID or PR number")
+    p_cir.add_argument("target", help="Run ID")
     p_cir.add_argument("--failed", action="store_true")
 
     # label subcommands
@@ -235,7 +236,10 @@ def run_forge_args(args: argparse.Namespace, forge: Optional[Forge] = None) -> i
                 url = active.create_issue(args.title, _read_body(args.body, args.body_file), args.label or ())
                 return _emit({"url": url})
             if action == "comment":
-                active.post_pr_comment(args.number, _read_body(args.body, args.body_file))
+                if hasattr(active, "post_issue_comment"):
+                    active.post_issue_comment(args.number, _read_body(args.body, args.body_file))
+                else:
+                    active.post_pr_comment(args.number, _read_body(args.body, args.body_file))
                 return _emit({"number": args.number, "ok": True})
             if action == "assign-me":
                 me = active.whoami()
@@ -261,6 +265,11 @@ def run_forge_args(args: argparse.Namespace, forge: Optional[Forge] = None) -> i
                 if fn is None:
                     return _unsupported("pr diff", "adapter does not implement pr_diff")
                 diff_text = fn(args.number)
+                if getattr(args, "raw", False):
+                    sys.stdout.write(diff_text)
+                    if diff_text and not diff_text.endswith("\n"):
+                        sys.stdout.write("\n")
+                    return EXIT_OK
                 return _emit({"number": args.number, "diff": diff_text})
             if action == "create":
                 fn = getattr(active, "create_pr", None)

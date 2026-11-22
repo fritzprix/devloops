@@ -128,8 +128,47 @@ class ForgeCliTest(unittest.TestCase):
         self.assertEqual(code, EXIT_OK)
         self.assertEqual(forge.list_pr_comments(10)[-1].body, "<!-- worker-loop: note -->\nhi")
 
-        code, _, _ = self._run(forge, "issue", "comment", "10", "--body", "issue comment")
+        code, _, _ = self._run(forge, "issue", "comment", "1", "--body", "issue comment")
         self.assertEqual(code, EXIT_OK)
+
+    def test_issue_comment_targets_issue_not_pr(self):
+        forge = ExtendedFakeForge()
+
+        code, _, _ = self._run(forge, "issue", "comment", "1", "--body", "<!-- worker-loop: note -->\non the issue")
+        self.assertEqual(code, EXIT_OK)
+        comments = forge._issue(1).get("comments", [])
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0]["body"], "<!-- worker-loop: note -->\non the issue")
+        # The PR comment list must be untouched by an issue comment.
+        self.assertEqual(len(forge.list_pr_comments(10)), 1)  # seeded PR comment only
+
+    def test_pr_diff_raw_flag(self):
+        forge = ExtendedFakeForge()
+
+        code, out, _ = self._run(forge, "pr", "diff", "10", "--raw")
+        self.assertEqual(code, EXIT_OK)
+        self.assertIn("diff --git a/f.py b/f.py", out)
+        self.assertNotIn('"diff":', out)
+
+        code, out, _ = self._run(forge, "pr", "diff", "10")
+        self.assertEqual(code, EXIT_OK)
+        self.assertIn("diff", json.loads(out))
+
+    def test_no_bare_devloops_forge_in_skill_guides(self):
+        """Guides must call the vendored shim, never a bare `devloops forge` command."""
+        offenders: list[str] = []
+        files = list((REPO_ROOT / "skills").glob("*/SKILL.md"))
+        files.extend((REPO_ROOT / "skills").glob("*/references/*"))
+        for path in sorted(files):
+            if not path.is_file():
+                continue
+            if not (path.parent / "scripts" / "forge.py").exists():
+                continue
+            for idx, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                # A bare invocation: `devloops forge` not preceded by the shim call.
+                if re.search(r"(?<![\w/$.-])devloops forge\b", line) and "scripts/forge.py" not in line:
+                    offenders.append(f"{path.relative_to(REPO_ROOT)}:{idx}: {line.strip()}")
+        self.assertEqual(offenders, [], "Bare `devloops forge` commands found in skill guides:\n" + "\n".join(offenders))
 
     def test_verdict_label_swap_keeps_one_verdict_and_preserves_other_labels(self):
         forge = FakeForge()

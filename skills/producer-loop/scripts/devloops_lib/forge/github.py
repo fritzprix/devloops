@@ -343,6 +343,9 @@ class GitHubForge:
     def post_pr_comment(self, number: int, body: str) -> None:
         self._call("pr", "comment", str(number), "--body", body)
 
+    def post_issue_comment(self, number: int, body: str) -> None:
+        self._call("issue", "comment", str(number), "--body", body)
+
     def pr_diff(self, number: int) -> str:
         return self._call("pr", "diff", str(number))
 

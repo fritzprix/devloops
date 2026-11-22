@@ -336,6 +336,13 @@ class FakeForge:
             "body": body, "url": _url("pull", number) + "#issuecomment-new",
         })
 
+    def post_issue_comment(self, number: int, body: str) -> None:
+        issue = self._issue(number)
+        issue.setdefault("comments", []).append({
+            "author": {"login": SEED["user"]}, "createdAt": "2026-02-02T00:00:00Z",
+            "body": body, "url": _url("issues", number) + "#issuecomment-new",
+        })
+
     def gate_snapshot(self, pr_limit: int = 100, issue_limit: int = 100):
         from devloops_lib.forge.models import GateSnapshot
         data = self.gate["data"]
