@@ -511,5 +511,40 @@ class Issue14NeedsHumanTests(unittest.TestCase):
             ["config/credentials.yaml", "secure/keys.toml", "src/sandbox/mod.rs", "src/shell_policy.rs"])
 
 
+class RetargetBeforeMergeTests(unittest.TestCase):
+    """Verify summarize() flags stacked PRs with retargetBeforeMerge (issue #54)."""
+
+    def _summarize_with_base(self, base: str) -> dict:
+        import json
+        from unittest.mock import patch
+
+        pr_payload = {
+            "number": 42,
+            "title": "feat: stacked child",
+            "url": "https://example.com/pr/42",
+            "headRefName": "feat/child-2",
+            "headRefOid": "abc123",
+            "baseRefName": base,
+            "isDraft": False,
+            "mergeable": "MERGEABLE",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "statusCheckRollup": [],
+            "comments": [],
+            "labels": [],
+            "files": [{"path": "devloops_lib/pr_status.py"}],
+        }
+        readiness = {"ci": {"present": True}, "rubric": {"status": "present"}}
+        with patch.object(_module, "gh", return_value=json.dumps(pr_payload)):
+            return _module.summarize(42, "me", state={}, config={"project": {"base_branch": "main"}}, readiness=readiness)
+
+    def test_non_primary_base_sets_retarget_before_merge_true(self) -> None:
+        summary = self._summarize_with_base("feat/parent-1")
+        self.assertTrue(summary["retargetBeforeMerge"])
+
+    def test_primary_base_sets_retarget_before_merge_false(self) -> None:
+        summary = self._summarize_with_base("main")
+        self.assertFalse(summary["retargetBeforeMerge"])
+
+
 if __name__ == "__main__":
     unittest.main()

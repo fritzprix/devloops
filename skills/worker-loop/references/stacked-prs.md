@@ -7,4 +7,5 @@
   git push --force-with-lease
   ```
   Take `<old base tip>` from the PR's own history before the base moved (e.g. `git merge-base` with the old base SHA from `git reflog` / `pr_status.py`), not from a guess.
+- Once a parent PR merges into the default branch, retarget every open child PR to the default branch (`gh pr edit <child> --base <default_base>`), rebase it onto `origin/<default_base>`, and push `--force-with-lease` so the child merges directly into the default branch and auto-closes its linked issue.
 - Before every push, `git log --oneline origin/<base>..HEAD` must list only this PR's commits. If it shows commits that belong to another PR or to the base, restack first.

@@ -396,6 +396,7 @@ def summarize(
         "needsHuman": needs_human,
         "url": pr["url"],
         "base": base,
+        "retargetBeforeMerge": not is_dev_base(base, config=cfg),
         "draft": pr["isDraft"],
         "createdAt": pr["createdAt"],
         "ciPending": pending,
