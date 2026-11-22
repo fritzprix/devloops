@@ -105,7 +105,7 @@ Every `G` item must be answered as **fixed** or **declined**. Suggestions may be
 | Label                          | Set by     | Meaning                                                                                  |
 | ------------------------------ | ---------- | ---------------------------------------------------------------------------------------- |
 | `gatekeeper:changes-requested` | gatekeeper | Latest verdict requests changes                                                          |
-| `gatekeeper:approved`          | gatekeeper | Approved at the current head; ready for a human merge                                    |
+| `gatekeeper:approved`          | gatekeeper | Approved at the current head; ready for a human merge (with `qa:accepted` too when qa-loop runs) |
 | `gatekeeper:escalated`         | gatekeeper | Round limit or repeated dispute on the same finding; maintainer picks direction          |
 | `gatekeeper:needs-human`       | gatekeeper | Human attention: ambiguous review criteria or loop-skill change—not a worker stop. Never set from a path-name match. Kept alongside the verdict label; removed when its reason no longer applies |
 

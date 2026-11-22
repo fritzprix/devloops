@@ -64,6 +64,10 @@ human ───────────► merge
 - The worker skips producer issues that do not have the `approved` label.
 - The worker and the gatekeeper can share one GitHub account. So verdicts are PR
   comments with a hidden marker, plus a `gatekeeper:*` label.
+- With `qa-loop`, a second reviewer checks that each change can be tested with the
+  tools in `qa.tools`. A PR is merge-ready only when `gatekeeper:approved` and
+  `qa:accepted` are both on the current head (`qa_queue.py signoff N`). After merges,
+  qa builds and tests the base branch locally and files issues for failures.
 - The gatekeeper **expands its own prerequisites** (CI workflows, review rubrics, fixtures)
   when missing, instead of blocking on `needs-human`. Humans collaborate only when judgment
   criteria are ambiguous (draft rubric for confirm/edit). `gatekeeper:needs-human` remains for
@@ -198,6 +202,7 @@ Edit `<project>/devloops.config.yaml`:
 | `producer.default_period` | Default period for each producer task (e.g. `24h`) |
 | `producer.max_new_issues_per_run` | Limit of new issues per run |
 | `producer.tasks` | Enabled tasks: `security`, `e2e`, `uiux`, `regression`, `usage-logs`, `doc-drift`, `cleanup` |
+| `qa.*` | qa-loop: tool inventory (`qa.tools`), unavailable tools (`qa.blocked_tools`), post-merge build/test/e2e commands, and labels and board fields for failure issues. See `skills/qa-loop/SKILL.md`. |
 | `producer.task_skills` | Optional project skill or command for each task |
 | `producer.task_periods` | Period for each task (e.g. `cleanup: 7d`) |
 | `producer.task_max_new_issues` | Limit of new issues for each task |
