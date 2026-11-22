@@ -73,7 +73,12 @@ def _identity_args(repo: Path) -> list[str]:
     probe = subprocess.run(["git", "-C", str(repo), "var", "GIT_COMMITTER_IDENT"], capture_output=True, text=True)
     if probe.returncode == 0:
         return []
-    return ["-c", "user.name=devloops", "-c", "user.email=devloops@users.noreply.github.com"]
+    try:
+        from devloops_lib.config import load_config
+        email = str((load_config(start_dir=repo).get("forge") or {}).get("committer_email") or "").strip()
+    except Exception:
+        email = ""
+    return ["-c", "user.name=devloops", "-c", f"user.email={email or 'devloops@users.noreply.github.com'}"]
 
 
 def preserve_and_reset(repo: Path, preserve_dir: Path, label: str) -> list[str]:

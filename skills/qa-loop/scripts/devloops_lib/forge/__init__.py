@@ -8,6 +8,23 @@ loop logic. Stdlib-only, Python 3.8 floor.
 from __future__ import annotations
 
 from devloops_lib.forge.base import Forge, ForgeError
+from devloops_lib.forge.detect import (
+    ForgeDetectionError,
+    ParsedRemote,
+    ProbeResult,
+    detect_forge,
+    get_forge,
+    parse_remote_url,
+    probe_forge,
+    register_forge_adapter,
+)
+from devloops_lib.forge.gitea import (
+    MIN_FORGEJO_VERSION,
+    MIN_GITEA_VERSION,
+    ForgejoForge,
+    GiteaForge,
+    check_min_version,
+)
 from devloops_lib.forge.github import GitHubForge
 from devloops_lib.forge.models import (
     CI_FAILURE,
@@ -27,7 +44,20 @@ from devloops_lib.forge.models import (
 __all__ = [
     "Forge",
     "ForgeError",
+    "ForgeDetectionError",
+    "ForgejoForge",
+    "GiteaForge",
     "GitHubForge",
+    "MIN_FORGEJO_VERSION",
+    "MIN_GITEA_VERSION",
+    "ParsedRemote",
+    "ProbeResult",
+    "check_min_version",
+    "detect_forge",
+    "get_forge",
+    "parse_remote_url",
+    "probe_forge",
+    "register_forge_adapter",
     "AuthStatus",
     "CiSummary",
     "GateSnapshot",
