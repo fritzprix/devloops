@@ -22,8 +22,11 @@ status values:
                CI/rubric PRs autonomously; worker PRs wait for checks then continue.
   needs-human - judgment criteria are ambiguous: gatekeeper posted a draft rubric
                for the owner to confirm. Not used for missing CI (bootstrap instead).
-  human-only - touches the gatekeeper's own skill; never reviewed or approved by
-               the loop, but surfaced to the human via `gatekeeper:needs-human`.
+
+PRs that change loop skill files get the same statuses as any other PR; they are
+reviewed and can be approved. They additionally carry `gatekeeper:needs-human`
+(reason `changes loop skill files`) to signal that the merge itself stays with a
+human; the label never blocks review or approval.
 
 The list is sorted by priority (worker response / new head / owner comment
 first), then oldest PR first. Every entry carries a one-line `reason`.
@@ -265,9 +268,11 @@ def needs_human_guidance(
     reason no longer applies; labels this loop did not add are never removed.
     Path-name matches (`sensitiveCandidates`) are deliberately not a reason: the
     gatekeeper reads those files and applies stricter review itself.
+    Loop-skill changes are reviewed and approved like any other PR; their reason
+    only signals that the merge itself stays with a human.
     """
     label_present = "gatekeeper:needs-human" in labels
-    if status == "human-only":
+    if own_skill:
         reason = "changes loop skill files"
     elif status == "needs-human":
         reason = "ambiguous review criteria"
@@ -361,9 +366,7 @@ def summarize(
         repo_has_ci=repo_has_ci,
         rubric_ready=rubric_ready,
     )
-    if own_skill:
-        status, reason, priority = "human-only", "changes loop skill files; left to the human", 9
-
+    # Loop-skill PRs keep their normal status; own_skill only drives needsHuman below.
     needs_at_head = next((m for m in reversed(needs) if m.get("head") == head), None)
     needs_human = needs_human_guidance(
         status=status, own_skill=own_skill,

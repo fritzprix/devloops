@@ -72,7 +72,7 @@ Needs human (not a verdict, does not count as a round; post once per reason+head
 <Concrete draft rubric or checklist the owner must confirm or edit — not open-ended questions.>
 ```
 
-Reasons: `ambiguous review criteria`, `changes loop skill files`. A path-name match is never a reason. Missing repo CI is **not** needs-human: the gatekeeper opens a bootstrap CI PR instead.
+Reasons: `ambiguous review criteria`, `changes loop skill files`. A path-name match is never a reason. Missing repo CI is **not** needs-human: the gatekeeper opens a bootstrap CI PR instead. `changes loop skill files` does not block review or approval — loop-skill PRs are reviewed normally and can be approved; the marker and label only signal that the merge itself stays with a human.
 
 Escalate (round limit or second dispute on the same `G` item):
 
@@ -107,7 +107,7 @@ Every `G` item must be answered as **fixed** or **declined**. Suggestions may be
 | `gatekeeper:changes-requested` | gatekeeper | Latest verdict requests changes                                                          |
 | `gatekeeper:approved`          | gatekeeper | Approved at the current head; ready for a human merge (with `qa:accepted` too when qa-loop runs) |
 | `gatekeeper:escalated`         | gatekeeper | Round limit or repeated dispute on the same finding; maintainer picks direction          |
-| `gatekeeper:needs-human`       | gatekeeper | Human attention: ambiguous review criteria or loop-skill change—not a worker stop. Never set from a path-name match. Kept alongside the verdict label; removed when its reason no longer applies |
+| `gatekeeper:needs-human`       | gatekeeper | Human attention: ambiguous review criteria or loop-skill change—not a worker stop, and it never stops review or approval (for loop-skill PRs it means "human merges this"). Never set from a path-name match. Kept alongside the verdict label; removed when its reason no longer applies |
 
 Unmarked comments from the repo owner (or `@me`) posted after the last marker are read as required items and trigger a review.
 
