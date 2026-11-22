@@ -241,13 +241,20 @@ class GiteaForge:
     ) -> List[Dict[str, Any]]:
         collected: List[Dict[str, Any]] = []
         page = 1
+        prev_ids: Optional[Tuple[Any, ...]] = None
         while len(collected) < limit:
             per_page = min(self.page_size, limit - len(collected))
             req_params = {**(params or {}), "page": page, "limit": per_page}
             _, items = self._http_call("GET", path, params=req_params)
             if not isinstance(items, list) or not items:
                 break
+            cur_ids = tuple(item.get("id") if isinstance(item, dict) else None for item in items)
+            if prev_ids is not None and any(cur_ids) and cur_ids == prev_ids:
+                break
             collected.extend(items)
+            if len(items) < per_page:
+                break
+            prev_ids = cur_ids
             page += 1
         return collected[:limit]
 
