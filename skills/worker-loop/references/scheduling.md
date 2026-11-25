@@ -83,9 +83,13 @@ Workers on one repo use claims so that they do not take the same item:
   - PR claims of an earlier tick free as soon as that tick's lock is stale.
 - Limits come from `devloops.config.yaml`: `worker.open_pr_limit` (default 5) and `worker.issue_claim_ttl_minutes` (default 120).
 
-**Two workers on different machines can still take the same PR**, because PR claims are local. Run multiple workers on one machine, or share the state directory.
+### Supported setup
 
-Scope limit: claims cover the worker only. The gatekeeper and producer have no claims, so run one of each.
+Run the loops on one machine. Multiple workers may run on that machine and share one
+state directory, so tick locks and PR claims cover them. The gatekeeper, the producer,
+and the qa-loop have no claims, so run one instance of each. Two workers on different
+machines can still take the same PR, because PR claims are local — that setup is not
+supported.
 
 ### 3. Harness-Specific Adapter
 A harness-specific scheduler adapter (such as an IDE agent callback, persistent worker daemon, or webhook runner) can be integrated by setting `scheduler` in `devloops.config.yaml` and implementing the corresponding callback hook.
