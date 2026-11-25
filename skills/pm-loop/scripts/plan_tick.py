@@ -14,17 +14,20 @@ if str(_script_dir) not in sys.path:
 from devloops_lib.config import find_project_root, get_state_path, load_config, run_main
 from devloops_lib.pm_budget import budget_summary, get_budget, prompts_needed
 from devloops_lib.pm_induction import induction_required
+from devloops_lib.pm_pipeline import fetch_pipeline
 from devloops_lib.issue_close import closable_issues, resolve_definition_of_done
 from devloops_lib.pm_schedule import cascade_plan, exclusivity_report
 from devloops_lib.tick_gate import load_state
+from devloops_lib.gh import GhError
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--pipeline-json",
-        default="{}",
-        help="Optional pipeline counters: approvedIssues, prsNeedingReview, producerDue, boardFull",
+        default=None,
+        help="Override pipeline counters: approvedIssues, prsNeedingWorker, prsNeedingReview, "
+             "prsNeedingQa, producerDue, boardFull (default: computed from GitHub)",
     )
     parser.add_argument(
         "--board-json",
@@ -34,16 +37,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state-file", type=Path, default=None)
     args = parser.parse_args(argv)
 
-    try:
-        pipeline = json.loads(args.pipeline_json)
-    except json.JSONDecodeError as exc:
-        sys.stderr.write(f"invalid --pipeline-json: {exc}\n")
-        return 2
-    if not isinstance(pipeline, dict):
-        sys.stderr.write("--pipeline-json must be a JSON object\n")
-        return 2
+    override: dict = {}
+    if args.pipeline_json is not None:
+        try:
+            override = json.loads(args.pipeline_json)
+        except json.JSONDecodeError as exc:
+            sys.stderr.write(f"invalid --pipeline-json: {exc}\n")
+            return 2
+        if not isinstance(override, dict):
+            sys.stderr.write("--pipeline-json must be a JSON object\n")
+            return 2
 
     cfg = load_config()
+    try:
+        pipeline = fetch_pipeline(config=cfg)
+    except GhError as exc:
+        sys.stderr.write(f"pipeline fetch failed; cascading without counters: {exc}\n")
+        pipeline = {}
+    pipeline.update(override)
     state_path = args.state_file or get_state_path("pm-loop", config=cfg)
     state = load_state(state_path)
     root = find_project_root()
@@ -82,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         "exclusivity": exclusivity_report(state, state_root=state_root, config=cfg),
         "inductionRequired": induction_required(state),
         "projectProfile": state.get("projectProfile"),
+        "pipeline": pipeline,
         "cascade": cascade_plan(slots=int(slots), pipeline=pipeline),
         "definitionOfDone": definition_of_done,
         "closableIssues": closable_issues_list,
@@ -95,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
         "roleSkills": {
             "worker-loop": "worker-loop/SKILL.md",
             "gatekeeper-loop": "gatekeeper-loop/SKILL.md",
+            "qa-loop": "qa-loop/SKILL.md",
             "producer-loop": "producer-loop/SKILL.md",
         },
     }

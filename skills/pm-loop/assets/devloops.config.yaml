@@ -89,7 +89,7 @@ pm:
   default_interval: 10m       # PM cron interval when /pm-loop arms scheduling
   default_slots: 1            # initial hint only; slot cap is persisted in pm-loop state after you answer once
   default_delegation: cursor  # cursor | claude | harness — not silently switched when unavailable
-  peer_loops: [worker-loop, gatekeeper-loop, producer-loop]
+  peer_loops: [worker-loop, gatekeeper-loop, qa-loop, producer-loop]
   definition_of_done: {}      # optional signals list or {signals: [...]}; else projectProfile default
 
 board:

@@ -8,7 +8,7 @@ from typing import Any
 from devloops_lib.config import load_config
 from devloops_lib.tick_gate import load_state, save_state
 
-PEER_LOOPS = ("worker-loop", "gatekeeper-loop", "producer-loop")
+PEER_LOOPS = ("worker-loop", "gatekeeper-loop", "qa-loop", "producer-loop")
 _PM_LOOP = "pm-loop"
 
 
@@ -66,7 +66,7 @@ def exclusivity_report(
         "exclusiveOk": not conflicts,
         "instruction": (
             "Disarm peer-loop shell/cron schedulers while pm-loop is armed; "
-            "the PM cascades ticks to worker, gatekeeper, and producer."
+            "the PM cascades ticks to worker, gatekeeper, qa, and producer."
             if pm_active
             else "Peer loops may use their own schedulers only when pm-loop is not armed."
         ),
@@ -114,10 +114,19 @@ def cascade_plan(
     slots: int,
     pipeline: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
-    """Allocate delegate slots across roles inside the user cap (generic heuristic)."""
+    """Allocate delegate slots across roles inside the user cap (generic heuristic).
+
+    Counters come from devloops_lib.pm_pipeline (issue #71). A worker slot is
+    armed by either an approved issue backlog or open PRs that need worker
+    action, so PR-service keeps the loop alive even with an empty issue board.
+    Parked work (escalate, needs-human, wait-ci) is counted nowhere and never
+    cascades.
+    """
     pipeline = pipeline or {}
     approved_backlog = max(0, int(pipeline.get("approvedIssues", 0)))
+    pr_work = max(0, int(pipeline.get("prsNeedingWorker", 0)))
     review_queue = max(0, int(pipeline.get("prsNeedingReview", 0)))
+    qa_queue = max(0, int(pipeline.get("prsNeedingQa", 0)))
     producer_due = max(0, int(pipeline.get("producerDue", 0)))
 
     plan: list[dict[str, Any]] = []
@@ -126,9 +135,15 @@ def cascade_plan(
     if review_queue and remaining:
         plan.append({"role": "gatekeeper-loop", "slots": 1, "reason": "review bottleneck"})
         remaining -= 1
-    if approved_backlog and remaining:
-        plan.append({"role": "worker-loop", "slots": min(remaining, approved_backlog), "reason": "approved backlog"})
-        remaining -= min(remaining, approved_backlog)
+    worker_backlog = approved_backlog + pr_work
+    if worker_backlog and remaining:
+        reason = "approved backlog" if not pr_work else ("PR work" if not approved_backlog else "approved backlog + PR work")
+        worker_slots = min(remaining, worker_backlog)
+        plan.append({"role": "worker-loop", "slots": worker_slots, "reason": reason})
+        remaining -= worker_slots
+    if qa_queue and remaining:
+        plan.append({"role": "qa-loop", "slots": 1, "reason": "qa review queue"})
+        remaining -= 1
     if producer_due and remaining and not pipeline.get("boardFull"):
         plan.append({"role": "producer-loop", "slots": 1, "reason": "producer task due"})
         remaining -= 1

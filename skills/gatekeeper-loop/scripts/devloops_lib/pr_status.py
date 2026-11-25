@@ -225,6 +225,12 @@ def find_merged_via_parent_issues(
     return [found[n] for n in sorted(found)]
 
 
+# The pr_status priority order. wait-ci and none need no work now.
+# Canonical list shared by the worker plan (skills/worker-loop/scripts/plan_tick.py)
+# and the PM pipeline counter prsNeedingWorker (devloops_lib.pm_pipeline, issue #71).
+WORKER_PR_ACTIONS = ["retarget", "resolve-conflict", "restack", "address-gatekeeper", "address-qa", "triage-comments", "fix-ci"]
+
+
 def select_next_action(
     *,
     retarget: bool = False,

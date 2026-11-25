@@ -91,6 +91,41 @@ class PmScheduleTest(unittest.TestCase):
     def test_peer_tick_blocked_under_pm_cascade(self):
         self.assertFalse(pm_schedule.peer_tick_allowed({"schedule": {"pm": {"pmCascadeActive": True}}}))
 
+    def test_qa_loop_is_a_peer(self):
+        self.assertIn("qa-loop", pm_schedule.PEER_LOOPS)
+
+    def test_exclusivity_flags_arm_qa_schedule(self):
+        pm_scheduler = {"scheduler": {"kind": "shell", "intervalSeconds": 600}}
+        pm_schedule.write_exclusivity_flags(self.root, True)
+        for loop in pm_schedule.PEER_LOOPS:
+            state = load_state(self.root / loop / "state.json")
+            self.assertTrue(state["schedule"]["pm"]["pmCascadeActive"], loop)
+            self.assertFalse(pm_schedule.peer_tick_allowed(state), loop)
+        report = pm_schedule.exclusivity_report(pm_scheduler, state_root=self.root)
+        self.assertIn("qa-loop", report["peerLoops"])
+
+    def test_cascade_worker_slot_from_pr_work_alone(self):
+        plan = pm_schedule.cascade_plan(slots=1, pipeline={"prsNeedingWorker": 2})
+        self.assertEqual([p["role"] for p in plan], ["worker-loop"])
+
+    def test_cascade_no_slots_when_all_parked(self):
+        plan = pm_schedule.cascade_plan(slots=3, pipeline={})
+        self.assertEqual(plan, [])
+        plan = pm_schedule.cascade_plan(slots=3, pipeline={"approvedIssues": 0, "prsNeedingWorker": 0,
+                                                           "prsNeedingReview": 0, "prsNeedingQa": 0})
+        self.assertEqual(plan, [])
+
+    def test_cascade_no_worker_slot_for_blocked_backlog(self):
+        plan = pm_schedule.cascade_plan(slots=2, pipeline={"approvedIssues": 0, "prsNeedingQa": 1})
+        self.assertEqual([p["role"] for p in plan], ["qa-loop"])
+
+    def test_cascade_qa_slot_after_gatekeeper_and_worker(self):
+        plan = pm_schedule.cascade_plan(slots=4, pipeline={
+            "prsNeedingReview": 1, "approvedIssues": 1, "prsNeedingQa": 2, "producerDue": 1,
+        })
+        self.assertEqual([p["role"] for p in plan],
+                         ["gatekeeper-loop", "worker-loop", "qa-loop", "producer-loop"])
+
 
 class PmInductionTest(unittest.TestCase):
     def test_policy_priority_skill_over_folklore(self):
