@@ -330,6 +330,11 @@ def stop_heartbeat(lock_file: Path, *, wait_seconds: float = 10.0) -> None:
     if pid == os.getpid():
         return
     terminate_process_tree(pid, wait_seconds=wait_seconds)
+    # A child that was still booting can write its own sidecar between the
+    # clear above and the kill; clear again after the process is gone (a
+    # force-killed child never runs its finally-clear) so stopping a
+    # heartbeat never leaves a stale sidecar behind.
+    clear_sidecar(lock_file)
 
 
 def start_detached(lock_file: Path, token: str, *, parent_pid: int | None = None) -> None:
