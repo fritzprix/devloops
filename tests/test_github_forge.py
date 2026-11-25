@@ -53,6 +53,12 @@ class TestGitHubForgeTransport:
         for cmd in self.stub.args_log:
             assert "--repo" in cmd and "other/things" in cmd
 
+    def test_auth_check_never_passes_repo_flag(self):
+        forge = GitHubForge(run=self.stub.run, repo="other/things")
+        status = forge.auth_check()
+        assert status.ok
+        assert self.stub.args_log == [["auth", "status"]]
+
     def test_threads_second_page_uses_end_cursor(self):
         self.forge.unresolved_review_threads(self.forge.get_pr(10))
         assert len(self.stub.graphql_calls) == 2
