@@ -94,6 +94,8 @@ Process `status: review` PRs in the given order, at most `qa.max_prs_per_tick`. 
 
 Also for each PR: remove labels listed in `staleLabels` and add `missingLabel` when the script shows them.
 
+A `changes-requested` PR sits at `status: wait-worker` until the worker answers every `Q` item and posts `worker-loop: qa-response` with the matching `round` and the new head (see the worker-loop skill, *address-qa*); the PR then returns to `review` and qa re-reviews the new head at `round + 1`.
+
 #### What qa demands
 
 For an untestable change, qa asks for one of these, in this order of preference:

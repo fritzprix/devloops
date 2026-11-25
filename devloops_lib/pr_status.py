@@ -109,6 +109,32 @@ def gatekeeper_state(comments: list[dict], me: str, head_sha: str) -> dict | Non
     return verdict
 
 
+def qa_state(comments: list[dict], me: str, head_sha: str) -> dict | None:
+    """Latest qa verdict (own verdict markers only) and whether it awaits the worker.
+
+    Only kind=verdict markers that carry a verdict replace the latest verdict, so
+    a kind=needs-owner marker posted afterwards cannot hide a changes-requested
+    from the worker. Only kind=qa-response worker markers count as answers to a
+    qa round; the plain `response` kind answers the gatekeeper only (issue #69).
+    """
+    verdict, responded_rounds = None, set()
+    for m in contract.parse_markers(comments, me):
+        if m["loop"] == "qa-loop" and m.get("kind") == "verdict":
+            if m.get("verdict"):
+                verdict = {k: v for k, v in m.items() if k != "loop"}
+        elif m["loop"] == "worker-loop" and m.get("kind") == "qa-response":
+            if verdict and m["createdAt"] > verdict["createdAt"]:
+                responded_rounds.add(m.get("round"))
+    if verdict is None:
+        return None
+    verdict["awaitingWorker"] = (
+        verdict.get("verdict") == "changes-requested"
+        and verdict.get("head") == head_sha
+        and verdict.get("round") not in responded_rounds
+    )
+    return verdict
+
+
 def parent_pr_merged(
     base: str,
     default_base: str,
@@ -205,6 +231,7 @@ def select_next_action(
     conflicting: bool,
     duplicates: list[str],
     gatekeeper: dict | None,
+    qa: dict | None,
     has_comments: bool,
     failing: list[str],
     pending: list[str],
@@ -217,6 +244,8 @@ def select_next_action(
         return "restack"
     if gatekeeper and gatekeeper["awaitingWorker"]:
         return "address-gatekeeper"
+    if qa and qa["awaitingWorker"]:
+        return "address-qa"
     if has_comments:
         return "triage-comments"
     if failing:
@@ -243,6 +272,7 @@ def summarize(
         )
     )
     gatekeeper = gatekeeper_state(pr.get("comments") or [], me, pr["headRefOid"])
+    qa = qa_state(pr.get("comments") or [], me, pr["headRefOid"])
     checks = pr.get("statusCheckRollup") or []
     failing = [c.get("name") or c.get("context") for c in checks if check_state(c) in FAILED]
     pending = [c.get("name") or c.get("context") for c in checks if check_state(c) in PENDING]
@@ -305,6 +335,7 @@ def summarize(
         conflicting=pr.get("mergeable") == "CONFLICTING",
         duplicates=duplicates,
         gatekeeper=gatekeeper,
+        qa=qa,
         has_comments=bool(threads or new_comments),
         failing=failing,
         pending=pending,
@@ -326,6 +357,7 @@ def summarize(
         "unresolvedThreads": threads,
         "newComments": new_comments,
         "gatekeeper": gatekeeper,
+        "qa": qa,
         "duplicateCommits": duplicates,
         "mergedParent": merged_parent,
         "retargetBase": retarget_base,

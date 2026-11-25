@@ -79,7 +79,7 @@ class DuplicateCommitsTest(unittest.TestCase):
 
 class SelectNextActionTest(unittest.TestCase):
     base = dict(
-        retarget=False, conflicting=False, duplicates=[], gatekeeper=None,
+        retarget=False, conflicting=False, duplicates=[], gatekeeper=None, qa=None,
         has_comments=False, failing=[], pending=[],
     )
 
@@ -89,6 +89,7 @@ class SelectNextActionTest(unittest.TestCase):
     def test_priority_order(self):
         everything = dict(
             retarget=True, conflicting=True, duplicates=["abc"], gatekeeper={"awaitingWorker": True},
+            qa={"awaitingWorker": True},
             has_comments=True, failing=["ci"], pending=["ci"],
         )
         expected = [
@@ -96,6 +97,7 @@ class SelectNextActionTest(unittest.TestCase):
             ("conflicting", "resolve-conflict"),
             ("duplicates", "restack"),
             ("gatekeeper", "address-gatekeeper"),
+            ("qa", "address-qa"),
             ("has_comments", "triage-comments"),
             ("failing", "fix-ci"),
             ("pending", "wait-ci"),
@@ -232,6 +234,74 @@ class MarkerAndGatekeeperStateTest(unittest.TestCase):
         ]
         state = pr_status.gatekeeper_state(comments, "me", "sha1")
         self.assertFalse(state["awaitingWorker"])
+
+
+class QaStateTest(unittest.TestCase):
+    """Issue #69: the worker answers a qa changes-requested like a gatekeeper one."""
+
+    @staticmethod
+    def comment(body: str, created: str) -> dict:
+        return {"author": {"login": "me"}, "createdAt": created, "body": body,
+                "url": f"http://example.com/{created}"}
+
+    def qa_verdict(self, created: str = "2026-10-31T08:00:00Z", round_: str = "1", head: str = "sha1") -> dict:
+        return self.comment(
+            f"<!-- qa-loop: kind=verdict round={round_} verdict=changes-requested head={head} -->",
+            created,
+        )
+
+    def action(self, qa):
+        return pr_status.select_next_action(
+            retarget=False, conflicting=False, duplicates=[], gatekeeper=None,
+            qa=qa, has_comments=False, failing=[], pending=[],
+        )
+
+    def test_changes_requested_at_head_yields_address_qa(self):
+        state = pr_status.qa_state([self.qa_verdict()], "me", "sha1")
+        self.assertEqual(state["verdict"], "changes-requested")
+        self.assertTrue(state["awaitingWorker"])
+        self.assertEqual(self.action(state), "address-qa")
+
+    def test_qa_response_settles_the_round(self):
+        comments = [
+            self.qa_verdict(),
+            self.comment("<!-- worker-loop: qa-response round=1 head=sha2 -->", "2026-10-31T09:00:00Z"),
+        ]
+        state = pr_status.qa_state(comments, "me", "sha1")
+        self.assertFalse(state["awaitingWorker"])
+        self.assertEqual(self.action(state), "none")
+
+    def test_gatekeeper_response_does_not_settle_qa_round(self):
+        comments = [
+            self.qa_verdict(),
+            self.comment("<!-- worker-loop: response round=1 head=sha2 -->", "2026-10-31T09:00:00Z"),
+        ]
+        self.assertTrue(pr_status.qa_state(comments, "me", "sha1")["awaitingWorker"])
+
+    def test_verdict_for_older_head_does_not_wait(self):
+        self.assertFalse(pr_status.qa_state([self.qa_verdict(head="old-sha")], "me", "sha1")["awaitingWorker"])
+
+    def test_needs_owner_marker_after_verdict_keeps_it_visible(self):
+        comments = [
+            self.qa_verdict(),
+            self.comment("<!-- qa-loop: kind=needs-owner reason=tool-blocked head=sha1 -->", "2026-10-31T09:00:00Z"),
+        ]
+        self.assertTrue(pr_status.qa_state(comments, "me", "sha1")["awaitingWorker"])
+
+    def test_gatekeeper_answered_first_when_both_await(self):
+        comments = [
+            self.qa_verdict(),
+            self.comment("<!-- gatekeeper-loop: round=1 verdict=changes-requested head=sha1 -->", "2026-10-31T08:30:00Z"),
+        ]
+        qa = pr_status.qa_state(comments, "me", "sha1")
+        gatekeeper = pr_status.gatekeeper_state(comments, "me", "sha1")
+        self.assertTrue(qa["awaitingWorker"])
+        self.assertTrue(gatekeeper["awaitingWorker"])
+        action = pr_status.select_next_action(
+            retarget=False, conflicting=False, duplicates=[], gatekeeper=gatekeeper,
+            qa=qa, has_comments=False, failing=[], pending=[],
+        )
+        self.assertEqual(action, "address-gatekeeper")
 
 
 if __name__ == "__main__":

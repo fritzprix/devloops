@@ -34,7 +34,7 @@ from devloops_lib.tick_gate import EXIT_ERROR, EXIT_NOOP, EXIT_RUN, load_state
 from devloops_lib.config import run_main
 
 # The pr_status priority order. wait-ci and none need no work now.
-PR_ACTIONS = ["retarget", "resolve-conflict", "restack", "address-gatekeeper", "triage-comments", "fix-ci"]
+PR_ACTIONS = ["retarget", "resolve-conflict", "restack", "address-gatekeeper", "address-qa", "triage-comments", "fix-ci"]
 
 
 def max_items_per_tick(config: dict) -> int:
