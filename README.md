@@ -120,6 +120,14 @@ Exit codes: `0` RUN, `1` NOOP, `2` BUSY, `3` ERROR (auth, network, or GraphQL fa
 The producer has its own gate, `producer_gate.py`. It picks the most overdue task
 (`--next`) from the task periods in the config.
 
+## Supported setup
+
+Run the loops on one machine. Multiple workers may run on that machine and share one
+state directory, so tick locks and PR claims cover them. The gatekeeper, the producer,
+and the qa-loop have no claims, so run one instance of each. Two workers on different
+machines can still take the same PR, because PR claims are local — that setup is not
+supported.
+
 ## Requirements
 
 - Python 3.8 or later (no third-party packages; tested with 3.13)
