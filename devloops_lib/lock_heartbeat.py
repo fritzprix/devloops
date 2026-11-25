@@ -45,78 +45,100 @@ _WINDOWS_TRANSIENT_EXES = frozenset({"cmd.exe", "powershell.exe", "pwsh.exe", "c
 def _windows_process_map() -> "dict[int, tuple[int, str]] | None":
     """Map pid -> (parent_pid, exe basename lower) via a Toolhelp32 snapshot.
 
-    Returns None when the snapshot cannot be taken or read.
+    Returns None when the snapshot cannot be taken or read, or when its data
+    looks unreliable (the calling process is missing from it). Never raises:
+    a snapshot problem must degrade to "no parent watch", never crash the
+    caller (tick_gate --lock) or hand out garbage pids.
     """
-    import ctypes
-    from ctypes import wintypes
-
-    class PROCESSENTRY32W(ctypes.Structure):
-        _fields_ = [
-            ("dwSize", wintypes.DWORD),
-            ("cntUsage", wintypes.DWORD),
-            ("th32ProcessID", wintypes.DWORD),
-            ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
-            ("th32ModuleID", wintypes.DWORD),
-            ("cntThreads", wintypes.DWORD),
-            ("th32ParentProcessID", wintypes.DWORD),
-            ("pcPriClassBase", ctypes.c_long),
-            ("dwFlags", wintypes.DWORD),
-            ("szExeFile", ctypes.c_wchar * 260),
-        ]
-
-    TH32CS_SNAPPROCESS = 0x00000002
-    kernel32 = ctypes.windll.kernel32
-    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
-    kernel32.Process32FirstW.restype = wintypes.BOOL
-    kernel32.Process32NextW.restype = wintypes.BOOL
-    kernel32.CloseHandle.restype = wintypes.BOOL
-    snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-    if not snapshot or ctypes.cast(snapshot, ctypes.c_void_p).value == ctypes.c_void_p(-1).value:
-        return None
-    entry = PROCESSENTRY32W()
-    entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
-    procs: dict = {}
     try:
-        if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+        import ctypes
+        from ctypes import wintypes
+
+        class PROCESSENTRY32W(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", ctypes.c_wchar * 260),
+            ]
+
+        TH32CS_SNAPPROCESS = 0x00000002
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        kernel32.Process32FirstW.restype = wintypes.BOOL
+        kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        kernel32.Process32NextW.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        invalid = ctypes.cast(ctypes.c_void_p(-1), ctypes.c_void_p).value
+        if not snapshot or ctypes.cast(snapshot, ctypes.c_void_p).value == invalid:
             return None
-        while True:
-            procs[int(entry.th32ProcessID)] = (
-                int(entry.th32ParentProcessID),
-                entry.szExeFile.rsplit("\\", 1)[-1].lower(),
-            )
-            if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
-                break
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        procs: dict = {}
+        try:
+            if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+                return None
+            while True:
+                procs[int(entry.th32ProcessID)] = (
+                    int(entry.th32ParentProcessID),
+                    entry.szExeFile.rsplit("\\", 1)[-1].lower(),
+                )
+                if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                    break
+        finally:
+            kernel32.CloseHandle(snapshot)
+        # Sanity: a snapshot that does not even see this process has layout or
+        # permission problems; its pids are not trustworthy.
+        if os.getpid() not in procs:
+            return None
         return procs
-    finally:
-        kernel32.CloseHandle(snapshot)
+    except Exception:
+        return None
 
 
 def _resolve_parent_pid_windows() -> int | None:
     """Walk up from os.getppid() with a Toolhelp32 snapshot.
 
     Skips transient shells (cmd/powershell/pwsh/conhost) and returns the first
-    other ancestor. Returns None (no parent watch) when the snapshot is
-    unavailable or an ancestor is not visible in it.
+    other ancestor that is still alive. Returns None (no parent watch) when the
+    snapshot is unavailable, an ancestor is not visible in it, or the candidate
+    is not alive — a wrong pid would make the heartbeat exit early and stop
+    renewing a live tick's lock, which is worse than no watch.
     """
-    pid = os.getppid()
-    if pid <= 0:
-        return None
-    procs = _windows_process_map()
-    if procs is None:
-        return None
-    for _ in range(40):
-        # 0 = Idle, 4 = System: never watch them.
-        if pid <= 0 or pid in (0, 4):
+    try:
+        pid = os.getppid()
+        if pid <= 0:
             return None
-        info = procs.get(pid)
-        if info is None:
+        procs = _windows_process_map()
+        if procs is None:
             return None
-        ppid, exe = info
-        if exe in _WINDOWS_TRANSIENT_EXES:
-            pid = ppid
-            continue
-        return pid
-    return None
+        for _ in range(40):
+            # 0 = Idle, 4 = System: never watch them.
+            if pid <= 0 or pid in (0, 4):
+                return None
+            info = procs.get(pid)
+            if info is None:
+                return None
+            ppid, exe = info
+            if exe in _WINDOWS_TRANSIENT_EXES:
+                pid = ppid
+                continue
+            if not _tick_gate()._pid_alive(pid):
+                return None
+            return pid
+        return None
+    except Exception:
+        return None
 
 
 def resolve_parent_pid(explicit: int | None = None) -> int | None:
