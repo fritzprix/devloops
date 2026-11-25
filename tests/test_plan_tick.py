@@ -48,10 +48,11 @@ class BuildPlanTest(unittest.TestCase):
             {"number": 7, "nextAction": "triage-comments"},
             {"number": 8, "nextAction": "restack"},
             {"number": 9, "nextAction": "address-gatekeeper"},
+            {"number": 10, "nextAction": "address-qa"},
         ]
         plan = plan_tick.build_plan(prs, _candidates(_candidate(1), _candidate(2)), {}, 3)
         self.assertEqual(self._keys(plan), [
-            ("pr", 6), ("pr", 8), ("pr", 9), ("pr", 7), ("pr", 3), ("issue", 1), ("issue", 2),
+            ("pr", 6), ("pr", 8), ("pr", 9), ("pr", 10), ("pr", 7), ("pr", 3), ("issue", 1), ("issue", 2),
         ])
         self.assertEqual(plan["items"][0]["action"], "resolve-conflict")
         self.assertEqual(plan["maxItems"], 3)
