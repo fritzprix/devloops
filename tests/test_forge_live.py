@@ -12,6 +12,7 @@ import base64
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -220,7 +221,15 @@ class TestLiveForgeContract(ForgeContract):
         assert pr.labels == ("approved",)
 
     def test_mergeable_unknown_is_none(self) -> None:
+        # Gitea/Forgejo compute mergeable asynchronously and transiently report
+        # False for a clean PR while the check runs before settling on True
+        # (reproduced locally: 7/15 seed cycles observed False -> True). Poll
+        # until the value leaves False; a clean PR stuck at False is a real bug.
         pr = self.forge.get_pr(self.meta["pr_ok"])
+        deadline = time.monotonic() + 15.0
+        while pr.mergeable is False and time.monotonic() < deadline:
+            time.sleep(0.5)
+            pr = self.forge.get_pr(self.meta["pr_ok"])
         assert pr.mergeable in (True, None)
 
     def test_ci_status_failure_and_pending(self) -> None:
