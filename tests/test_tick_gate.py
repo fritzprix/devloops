@@ -377,6 +377,64 @@ class TickGateTest(unittest.TestCase):
 
 
 
+    def test_find_slot_lock_by_token(self):
+        loop_dir = self.tmp_dir / "worker-loop"
+        slot_dir = loop_dir / "agents" / "default"
+        slot_dir.mkdir(parents=True)
+        slot_lock = slot_dir / "tick.lock"
+        tick_gate.acquire_lock_token(slot_lock)
+        token = tick_gate.read_lock_payload(slot_lock)["token"]
+        self.assertEqual(tick_gate._find_slot_lock_by_token(loop_dir / "state.json", token), slot_lock)
+        self.assertIsNone(tick_gate._find_slot_lock_by_token(loop_dir / "state.json", "other-token"))
+        self.assertIsNone(tick_gate._find_slot_lock_by_token(self.tmp_dir / "none" / "state.json", token))
+        tick_gate.release_lock(slot_lock)
+
+    def test_unlock_after_auto_slot_lock_without_agent_id(self):
+        # Issue #79: --lock auto-assigns a slot; separate --renew/--unlock calls in
+        # fresh processes must resolve the slot-scoped lock by token, not report
+        # LOST from the unscoped path.
+        loop_dir = self.tmp_dir / "worker-loop"
+        slot_dir = loop_dir / "agents" / "default"
+        slot_dir.mkdir(parents=True)
+        (slot_dir / "state.json").write_text(
+            json.dumps({"current": {"issue": 79, "branch": "x", "pr": None, "phase": "implementing"}}),
+            encoding="utf-8",
+        )
+        env = {k: v for k, v in os.environ.items()
+               if k not in (tick_gate.AGENT_ID_ENV, tick_gate.TOKEN_ENV, tick_gate.LOCK_TTL_ENV)}
+        env.update({
+            "LOOP_STATE_DIR": str(self.tmp_dir),
+            "PYTHONPATH": str(REPO_ROOT),
+            tick_gate.LOCK_TTL_ENV: "3",
+        })
+        gate = str(REPO_ROOT / "skills" / "worker-loop" / "scripts" / "tick_gate.py")
+        slot_lock = slot_dir / "tick.lock"
+        self.addCleanup(lambda: subprocess.run(
+            [sys.executable, gate, "--force-unlock"], cwd=str(self.tmp_dir),
+            env={**env, tick_gate.AGENT_ID_ENV: "default"}, capture_output=True, timeout=60,
+        ))
+
+        first = subprocess.run([sys.executable, gate, "--lock"], cwd=str(self.tmp_dir),
+                               env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(first.returncode, tick_gate.EXIT_RUN, first.stdout + first.stderr)
+        self.assertIn("AGENT default", first.stdout)
+        token_lines = [ln.split()[1] for ln in first.stdout.splitlines() if ln.startswith("TOKEN ")]
+        self.assertEqual(len(token_lines), 1, first.stdout)
+        token = token_lines[0]
+        self.assertTrue(slot_lock.is_file())
+        self.assertFalse((loop_dir / "tick.lock").exists())
+
+        renew = subprocess.run([sys.executable, gate, "--renew", "--token", token], cwd=str(self.tmp_dir),
+                               env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(renew.returncode, tick_gate.EXIT_RUN, renew.stdout + renew.stderr)
+        self.assertIn("RENEWED", renew.stdout)
+
+        unlock = subprocess.run([sys.executable, gate, "--unlock", "--token", token], cwd=str(self.tmp_dir),
+                                env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(unlock.returncode, tick_gate.EXIT_RUN, unlock.stdout + unlock.stderr)
+        self.assertIn("UNLOCKED", unlock.stdout)
+        self.assertFalse(slot_lock.exists())
+
     def test_concurrent_lock_attempts(self):
         import concurrent.futures
 
