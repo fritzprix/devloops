@@ -376,26 +376,38 @@ class LiveTickClaimProcessTest(ProcessTestCase):
 
     def test_claim_of_a_live_long_tick_is_never_taken(self):
         self.mark_in_progress("a")
+        claimed = self.root / "claimed"
+        go = self.root / "go"
         agent = self.write("agent.py", (
-            "import subprocess, sys, time\n"
+            "import pathlib, subprocess, sys, time\n"
             f"rc = subprocess.call([sys.executable, {str(SCRIPTS / 'claim.py')!r}, 'pr', '7'])\n"
-            f"open({str(self.root / 'claimed')!r}, 'w').close()\n"
-            "time.sleep(4)\n"
+            f"pathlib.Path({str(claimed)!r}).touch()\n"
+            f"go = pathlib.Path({str(go)!r})\n"
+            "while not go.exists():\n"
+            "    time.sleep(0.05)\n"
             "sys.exit(rc)\n"
         ))
         wrapper = self.wrapper(f'"{sys.executable}" "{agent}"', agent="a")
-        self.wait_for(self.root / "claimed", wrapper)
         lock_b = self.slot_path("b", get_lock_path, "worker-loop")
         token_b = tick_gate.acquire_lock_token(lock_b)
         attempts = 0
-        while wrapper.poll() is None:
-            result = self.script("claim.py", "pr", "7", "--agent-id", "b", "--token", token_b)
-            if result.returncode == EXIT_RUN:
-                self.assertIsNotNone(wrapper.poll(), "slot b took the PR from a live tick")
-                break
-            self.assertEqual(result.returncode, EXIT_BUSY, result.stdout + result.stderr)
-            attempts += 1
-            time.sleep(0.2)
+        try:
+            self.wait_for(claimed, wrapper)
+            # Keep slot a explicitly alive past multiple TTLs so slot b cannot race
+            # against wrapper teardown (release_tick_claims runs before wrapper exits).
+            deadline = time.monotonic() + (self.ttl * 3 + 0.5)
+            while time.monotonic() < deadline or attempts <= 3:
+                self.assertIsNone(wrapper.poll(), "wrapper exited before go signal")
+                result = self.script("claim.py", "pr", "7", "--agent-id", "b", "--token", token_b)
+                self.assertEqual(
+                    result.returncode,
+                    EXIT_BUSY,
+                    f"slot b took the PR from a live tick: {result.stdout}{result.stderr}",
+                )
+                attempts += 1
+                time.sleep(0.2)
+        finally:
+            go.touch()
         out, err = wrapper.communicate(timeout=WAIT_SECONDS)
         self.assertEqual(wrapper.returncode, 0, out + err)
         self.assertGreater(attempts, 3)
