@@ -16,6 +16,13 @@ import time
 import uuid
 from pathlib import Path
 
+if __package__ in (None, ""):
+    # Run as a file (`python3 .../scripts/devloops_lib/lock_heartbeat.py`, the detached
+    # heartbeat path): sys.path[0] is devloops_lib/ itself, so `import devloops_lib`
+    # fails in an installed skill layout with PYTHONPATH unset (issue #83).
+    # Add the directory that contains the devloops_lib package.
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from devloops_lib.proc_util import terminate_process_tree
 
 SIDECAR_IO_WAIT_SECONDS = 0.5

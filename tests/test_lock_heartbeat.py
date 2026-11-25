@@ -78,6 +78,37 @@ class LockHeartbeatTest(unittest.TestCase):
             timeout=60,
         )
 
+    def test_heartbeat_survives_past_ttl_without_pythonpath(self):
+        # Installed-skill layout (issue #83): nothing but the skill's own scripts
+        # directory is on sys.path, PYTHONPATH unset. The detached heartbeat runs
+        # devloops_lib/lock_heartbeat.py as a file, which used to die on
+        # ModuleNotFoundError, silently losing the lock after the TTL.
+        env = {k: v for k, v in self.env.items() if k != "PYTHONPATH"}
+        first = subprocess.run(
+            [sys.executable, str(SCRIPTS / "tick_gate.py"), "--lock"],
+            cwd=str(self.loop_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(first.returncode, tick_gate.EXIT_RUN, first.stdout + first.stderr)
+        token = [ln.split()[1] for ln in first.stdout.splitlines() if ln.startswith("TOKEN ")][0]
+        time.sleep(self.ttl + 1)
+        payload = tick_gate.read_lock_payload(self.lock)
+        self.assertIsNotNone(payload)
+        self.assertLessEqual(time.time() - payload["time"], self.ttl)
+        self.assertTrue(tick_gate.lock_is_owned(self.lock, token))
+        stop_heartbeat(self.lock)
+        subprocess.run(
+            [sys.executable, str(SCRIPTS / "tick_gate.py"), "--unlock", "--token", token],
+            cwd=str(self.loop_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
     def test_heartbeat_stops_after_unlock_and_lock_expires(self):
         token = tick_gate.acquire_lock_token(self.lock)
         start_detached(self.lock, token)
