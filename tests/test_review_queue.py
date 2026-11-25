@@ -26,6 +26,7 @@ is_rebased = _module.is_rebased
 owner_comments_after = _module.owner_comments_after
 parse_markers = _module.parse_markers
 needs_human_guidance = _module.needs_human_guidance
+round_restart = _module.round_restart
 sensitive_candidates = _module.sensitive_candidates
 split_markers = _module.split_markers
 
@@ -580,6 +581,68 @@ class RetargetBeforeMergeTests(unittest.TestCase):
     def test_primary_base_sets_retarget_before_merge_false(self) -> None:
         summary = self._summarize_with_base("main")
         self.assertFalse(summary["retargetBeforeMerge"])
+
+
+class EscalationExitTests(unittest.TestCase):
+    """Issue #70: label-parked escalation, approve at the last round, round restart."""
+
+    def test_escalated_label_parks_pr_even_with_new_head_and_owner_comment(self) -> None:
+        status, reason, priority = classify(
+            **base_args(
+                head="head9",
+                last_verdict={"head": "head5", "verdict": "escalate"},
+                total_verdicts=3,
+                owner_comment=True,
+                escalated=True,
+            )
+        )
+        self.assertEqual(status, "escalate")
+        self.assertEqual(priority, 9)
+        self.assertIn("gatekeeper:escalated", reason)
+
+    def test_owner_comment_alone_does_not_end_escalation(self) -> None:
+        # Same PR without the label: the escalate verdict no longer parks it.
+        verdicts = [{"head": "head1", "verdict": "escalate", "createdAt": "2026-01-01T00:00:00Z"}]
+        counted, restart_at = round_restart(verdicts, escalated=False)
+        self.assertEqual(counted, [])
+        self.assertEqual(restart_at, "2026-01-01T00:00:00Z")
+        status = determine_status(**base_args(
+            last_verdict=None, total_verdicts=0, escalated=False, owner_comment=True,
+        ))
+        self.assertEqual(status, "review")
+
+    def test_round_count_restarts_after_label_removal(self) -> None:
+        verdicts = [
+            {"head": "h1", "verdict": "changes-requested", "createdAt": "2026-01-01T00:00:00Z"},
+            {"head": "h1", "verdict": "escalate", "createdAt": "2026-01-02T00:00:00Z"},
+            {"head": "h2", "verdict": "changes-requested", "createdAt": "2026-01-03T00:00:00Z"},
+        ]
+        counted, restart_at = round_restart(verdicts, escalated=False)
+        self.assertEqual(len(counted), 1)
+        self.assertEqual(restart_at, "2026-01-02T00:00:00Z")
+        # While parked, nothing restarts; all verdicts keep counting.
+        self.assertEqual(round_restart(verdicts, escalated=True), (verdicts, None))
+
+    def test_approve_as_last_allowed_verdict_stands(self) -> None:
+        status = determine_status(
+            **base_args(
+                head="head5",
+                last_verdict={"head": "head5", "verdict": "approve"},
+                total_verdicts=5,
+                reviewed_base="main",
+            )
+        )
+        self.assertEqual(status, "approved")
+
+    def test_round_limit_still_escalates_without_approve(self) -> None:
+        status = determine_status(
+            **base_args(
+                head="head6",
+                last_verdict={"head": "head5", "verdict": "changes-requested"},
+                total_verdicts=5,
+            )
+        )
+        self.assertEqual(status, "escalate")
 
 
 if __name__ == "__main__":
