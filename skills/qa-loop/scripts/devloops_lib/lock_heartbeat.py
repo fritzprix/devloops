@@ -16,6 +16,10 @@ import time
 import uuid
 from pathlib import Path
 
+_LIB_PARENT = str(Path(__file__).resolve().parent.parent)
+if _LIB_PARENT not in sys.path:
+    sys.path.insert(0, _LIB_PARENT)
+
 from devloops_lib.proc_util import terminate_process_tree
 
 SIDECAR_IO_WAIT_SECONDS = 0.5
@@ -37,9 +41,11 @@ def resolve_parent_pid(explicit: int | None = None) -> int | None:
 
     - Explicit ``explicit`` (e.g. ``--pid``) wins when positive.
     - ``DEVLOOPS_SESSION_HOLDER_PID`` wins next when set and positive.
-    - Otherwise walk up from ``os.getppid()``, skipping transient ``-c`` shells
-      and ephemeral ``tick_gate``/``lock_heartbeat`` runners on Linux ``/proc``.
-    - Falls back to ``os.getppid()`` when ``> 1``.
+    - On Linux (``/proc``), walk up from ``os.getppid()``, skipping transient
+      shells (``-c``, ``-lc``, ``/c``, etc.) and return the first non-transient
+      ancestor with ``pid > 1``.
+    - Returns ``None`` (no parent watch) on Windows, when ``/proc`` is
+      unavailable, or when no ancestor with ``pid > 1`` can be determined.
     """
     if explicit is not None:
         return explicit if explicit > 0 else None
@@ -50,24 +56,25 @@ def resolve_parent_pid(explicit: int | None = None) -> int | None:
             return val if val > 0 else None
         except ValueError:
             pass
+    if sys.platform == "win32":
+        return None
     ppid = os.getppid()
     if ppid <= 1:
         return None
-    if sys.platform != "win32":
-        from devloops_lib import sessions
+    from devloops_lib import sessions
 
-        pid = ppid
-        for _ in range(40):
-            if pid <= 1:
-                break
-            info = sessions._process_info(pid)
-            if info is None:
-                return pid
-            if sessions._is_transient_shell(info):
-                pid = info.ppid
-                continue
-            return pid
-    return ppid
+    pid = ppid
+    for _ in range(40):
+        if pid <= 1:
+            return None
+        info = sessions._process_info(pid)
+        if info is None:
+            return None
+        if sessions._is_transient_shell(info):
+            pid = info.ppid
+            continue
+        return pid
+    return None
 
 
 def write_sidecar(lock_file: Path, pid: int, token: str, parent_pid: int | None = None) -> Path:
@@ -162,8 +169,7 @@ def stop_heartbeat(lock_file: Path, *, wait_seconds: float = 10.0) -> None:
 def start_detached(lock_file: Path, token: str, *, parent_pid: int | None = None) -> None:
     lock_file = lock_file.resolve()
     stop_heartbeat(lock_file)
-    if parent_pid is None:
-        parent_pid = os.getpid()
+    watch_pid = parent_pid if (parent_pid is not None and parent_pid > 0) else None
     script = Path(__file__).resolve()
     popen_kw: dict = {
         "cwd": tempfile.gettempdir(),
@@ -176,10 +182,10 @@ def start_detached(lock_file: Path, token: str, *, parent_pid: int | None = None
     else:
         popen_kw["start_new_session"] = True
     cmd = [sys.executable, str(script), "--lock-file", str(lock_file), "--token", token]
-    if parent_pid > 0:
-        cmd.extend(["--parent-pid", str(parent_pid)])
+    if watch_pid is not None:
+        cmd.extend(["--parent-pid", str(watch_pid)])
     proc = subprocess.Popen(cmd, **popen_kw)
-    write_sidecar(lock_file, proc.pid, token, parent_pid=parent_pid if parent_pid > 0 else None)
+    write_sidecar(lock_file, proc.pid, token, parent_pid=watch_pid)
 
 
 def _run(lock_file: Path, token: str, *, parent_pid: int | None = None) -> int:

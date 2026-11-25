@@ -248,14 +248,74 @@ class LockHeartbeatTest(unittest.TestCase):
 
         procs = {
             300: sessions.ProcessInfo(comm="bash", cmdline=["bash", "-c", "python3 tick_gate.py --lock"], ppid=200),
+            301: sessions.ProcessInfo(comm="bash", cmdline=["bash", "-lc", "python3 tick_gate.py --lock"], ppid=200),
             200: sessions.ProcessInfo(comm="claude", cmdline=["claude"], ppid=1),
         }
-        with patch("devloops_lib.lock_heartbeat.os.getppid", return_value=300), \
-                patch("devloops_lib.sessions._process_info", side_effect=lambda p: procs.get(p)), \
+        with patch("devloops_lib.sessions._process_info", side_effect=lambda p: procs.get(p)), \
                 patch.dict(os.environ, {}, clear=False):
             os.environ.pop("DEVLOOPS_SESSION_HOLDER_PID", None)
             if sys.platform != "win32":
-                self.assertEqual(resolve_parent_pid(), 200)
+                with patch("devloops_lib.lock_heartbeat.os.getppid", return_value=300):
+                    self.assertEqual(resolve_parent_pid(), 200)
+                with patch("devloops_lib.lock_heartbeat.os.getppid", return_value=301):
+                    self.assertEqual(resolve_parent_pid(), 200)
+
+    def test_resolve_parent_pid_returns_none_without_proc_or_on_windows(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DEVLOOPS_SESSION_HOLDER_PID", None)
+            with patch("devloops_lib.sessions._process_info", return_value=None), \
+                    patch("devloops_lib.lock_heartbeat.os.getppid", return_value=300):
+                self.assertIsNone(resolve_parent_pid())
+            with patch("devloops_lib.lock_heartbeat.sys.platform", "win32"):
+                self.assertIsNone(resolve_parent_pid())
+            with patch("devloops_lib.lock_heartbeat.os.getppid", return_value=1):
+                self.assertIsNone(resolve_parent_pid())
+
+    def test_start_detached_none_parent_pid_disables_parent_watch(self):
+        captured: dict = {}
+
+        class FakeProc:
+            pid = 424243
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return FakeProc()
+
+        with patch("devloops_lib.lock_heartbeat.stop_heartbeat"), \
+                patch("devloops_lib.lock_heartbeat.subprocess.Popen", side_effect=fake_popen):
+            start_detached(self.lock, "tok-none", parent_pid=None)
+
+        self.assertNotIn("--parent-pid", captured["cmd"])
+        self.assertIsNone(read_sidecar_parent_pid(self.lock))
+        clear_sidecar(self.lock)
+
+    def test_heartbeat_starts_without_pythonpath_in_installed_layout(self):
+        env_no_pypath = {k: v for k, v in self.env.items() if k != "PYTHONPATH"}
+        first = subprocess.run(
+            [sys.executable, str(SCRIPTS / "tick_gate.py"), "--lock"],
+            cwd=str(self.loop_dir),
+            env=env_no_pypath,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(first.returncode, tick_gate.EXIT_RUN, first.stdout + first.stderr)
+        token = [ln.split()[1] for ln in first.stdout.splitlines() if ln.startswith("TOKEN ")][0]
+        self.addCleanup(lambda: stop_heartbeat(self.lock))
+        time.sleep(self.ttl + 1)
+        payload = tick_gate.read_lock_payload(self.lock)
+        self.assertIsNotNone(payload)
+        self.assertLessEqual(time.time() - payload["time"], self.ttl)
+        self.assertTrue(tick_gate.lock_is_owned(self.lock, token))
+        unlock = subprocess.run(
+            [sys.executable, str(SCRIPTS / "tick_gate.py"), "--unlock", "--token", token],
+            cwd=str(self.loop_dir),
+            env=env_no_pypath,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(unlock.returncode, tick_gate.EXIT_RUN, unlock.stdout + unlock.stderr)
 
 
 class LockTtlConfigTest(unittest.TestCase):
