@@ -179,7 +179,7 @@ class GitHubForge:
 
     def auth_check(self) -> AuthStatus:
         try:
-            out = self._call("auth", "status")
+            out = self._run(["auth", "status"])
         except GhError as e:
             return AuthStatus(ok=False, output=str(e))
         return AuthStatus(ok=True, output=out)
