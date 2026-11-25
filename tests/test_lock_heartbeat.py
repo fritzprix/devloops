@@ -53,6 +53,22 @@ class LockHeartbeatTest(unittest.TestCase):
         race_state.parent.mkdir(parents=True)
         race_state.write_text('{"current": {"kind": "pr", "number": 1}}', encoding="utf-8")
 
+    def _hb_log_tail(self, lines: int = 60) -> str:
+        """Tail of the shared heartbeat diagnostic log, for failure messages.
+
+        The log is global per machine, so it may contain other tests' lines;
+        startup/spawn banners carry the lock path for filtering.
+        """
+        from devloops_lib.lock_heartbeat import heartbeat_log_path
+
+        try:
+            content = heartbeat_log_path(self.lock).read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError as exc:
+            return f"<no heartbeat log: {exc}>"
+        return "\n".join(content.splitlines()[-lines:]) or "<empty>"
+
     def test_slash_path_lock_survives_past_ttl(self):
         first = subprocess.run(
             [sys.executable, str(SCRIPTS / "tick_gate.py"), "--lock"],
@@ -67,7 +83,8 @@ class LockHeartbeatTest(unittest.TestCase):
         time.sleep(self.ttl + 1)
         payload = tick_gate.read_lock_payload(self.lock)
         self.assertIsNotNone(payload)
-        self.assertLessEqual(time.time() - payload["time"], self.ttl)
+        age = time.time() - payload["time"]
+        self.assertLessEqual(age, self.ttl, f"lock not renewed (age {age:.2f}s > ttl {self.ttl}); heartbeat log tail:\n{self._hb_log_tail()}")
         self.assertTrue(tick_gate.lock_is_owned(self.lock, token))
         stop_heartbeat(self.lock)
         unlock_env = {**self.env, "DEVLOOPS_AGENT_ID": "race"}
@@ -196,7 +213,10 @@ class LockHeartbeatTest(unittest.TestCase):
             if hb_info and hb_parent == parent.pid:
                 break
             time.sleep(0.1)
-        self.assertIsNotNone(hb_info)
+        self.assertIsNotNone(
+            hb_info,
+            f"heartbeat sidecar never appeared within 5s; heartbeat log tail:\n{self._hb_log_tail()}",
+        )
         self.assertEqual(hb_parent, parent.pid)
         hb_pid = hb_info[0]
         self.assertTrue(tick_gate._pid_alive(hb_pid))
@@ -336,7 +356,8 @@ class LockHeartbeatTest(unittest.TestCase):
         time.sleep(self.ttl + 1)
         payload = tick_gate.read_lock_payload(self.lock)
         self.assertIsNotNone(payload)
-        self.assertLessEqual(time.time() - payload["time"], self.ttl)
+        age = time.time() - payload["time"]
+        self.assertLessEqual(age, self.ttl, f"lock not renewed without PYTHONPATH (age {age:.2f}s > ttl {self.ttl}); heartbeat log tail:\n{self._hb_log_tail()}")
         self.assertTrue(tick_gate.lock_is_owned(self.lock, token))
         unlock = subprocess.run(
             [sys.executable, str(SCRIPTS / "tick_gate.py"), "--unlock", "--token", token],

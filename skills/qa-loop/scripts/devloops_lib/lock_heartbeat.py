@@ -36,8 +36,24 @@ def _sidecar(lock_file: Path) -> Path:
     return lock_file.with_name(f"{lock_file.name}.heartbeat")
 
 
+HEARTBEAT_LOG_NAME = "devloops-lock-heartbeat.log"
+
+
+def heartbeat_log_path(lock_file: Path) -> Path:
+    """Fixed diagnostic log file for heartbeat children.
+
+    Lives in the system temp dir, NOT next to the lock: the child keeps this
+    handle open through inherited stdout/stderr redirection, so a log inside
+    the lock directory would block temp-dir cleanup on Windows
+    (WinError 32) while any detached child is still alive. One shared file
+    per machine is fine — every line is timestamped and the startup banner
+    carries the lock path.
+    """
+    return Path(tempfile.gettempdir()) / HEARTBEAT_LOG_NAME
+
+
 def _heartbeat_log_path(lock_file: Path) -> Path:
-    return lock_file.with_name(f"{lock_file.name}.heartbeat.log")
+    return heartbeat_log_path(lock_file)
 
 
 def _log_to_heartbeat_log(lock_file: Path, message: str) -> None:
@@ -354,6 +370,10 @@ def start_detached(lock_file: Path, token: str, *, parent_pid: int | None = None
                 log_file.close()
             except OSError:
                 pass
+    _log_to_heartbeat_log(
+        lock_file,
+        f"heartbeat: spawned child pid={proc.pid} parent_pid={watch_pid} lock={lock_file}",
+    )
     write_sidecar(lock_file, proc.pid, token, parent_pid=watch_pid)
 
 
