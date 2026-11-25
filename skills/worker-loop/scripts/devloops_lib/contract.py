@@ -8,7 +8,7 @@ again anywhere else in the repository.
 from __future__ import annotations
 
 import re
-from typing import Iterable, Optional
+from typing import Any, Iterable, List, Optional
 
 # --- Labels -------------------------------------------------------------------
 
@@ -19,9 +19,10 @@ REJECTED = "rejected"
 VALIDATED = "validated"
 PRODUCER = "auto:producer"
 
-# Parked PR states (epic #64).
+# Parked PR states (epic #64). The `blocked:base` label is gone (issue #65):
+# base blocking is derived from open forge-level blockers instead.
 NEEDS_OWNER = "needs-owner"
-BLOCKED_BASE = "blocked:base"
+OPEN_BLOCKER = "open-blocker"
 
 # Review verdict labels. Part of the comment protocol; never renamed by config.
 GATEKEEPER_APPROVED = "gatekeeper:approved"
@@ -58,29 +59,48 @@ def issue_label(config: dict, key: str) -> str:
 # --- PR state overlap ----------------------------------------------------------
 
 # When several states apply to one PR, the first listed state wins.
-STATE_ORDER = (NEEDS_OWNER, GATEKEEPER_ESCALATED, BLOCKED_BASE, "merge-conflict", "verdict")
+STATE_ORDER = (NEEDS_OWNER, GATEKEEPER_ESCALATED, OPEN_BLOCKER, "merge-conflict", "verdict")
 
 VERDICT_LABELS = GATEKEEPER_VERDICT_LABELS + QA_VERDICT_LABELS
 
 
-def first_state(labels: Iterable[str], mergeable: Optional[str] = None) -> Optional[str]:
+def has_open_blocker(blockers: Optional[Iterable[Any]]) -> bool:
+    """True when any entry of `blockers` (forge `Blocker` objects) is still open."""
+    return any(str(getattr(b, "state", "open")).lower() == "open" for b in blockers or ())
+
+
+def first_state(
+    labels: Iterable[str],
+    mergeable: Optional[str] = None,
+    blockers: Optional[Iterable[Any]] = None,
+) -> Optional[str]:
     """Return the first state in `STATE_ORDER` that applies to a PR, or None.
 
     `labels` are the PR's label names; `mergeable` is the forge's mergeability
-    value (`"CONFLICTING"` marks a merge conflict).
+    value (`"CONFLICTING"` marks a merge conflict); `blockers` are forge
+    `Blocker` objects for the PR — any open blocker yields the derived
+    `open-blocker` state (issue #65; no `blocked:base` label involved).
     """
     present = set(labels or ())
     if NEEDS_OWNER in present:
         return NEEDS_OWNER
     if GATEKEEPER_ESCALATED in present:
         return GATEKEEPER_ESCALATED
-    if BLOCKED_BASE in present:
-        return BLOCKED_BASE
+    if has_open_blocker(blockers):
+        return OPEN_BLOCKER
     if mergeable == "CONFLICTING":
         return "merge-conflict"
     if present & set(VERDICT_LABELS):
         return "verdict"
     return None
+
+
+def open_blockers(forge: Any, number: int) -> List[int]:
+    """Sorted numbers of the still-open blockers of issue/PR `number`.
+
+    `forge` is any object with the `Forge.blocked_by` operation.
+    """
+    return sorted(int(b.number) for b in forge.blocked_by(number) if str(b.state).lower() == "open")
 
 
 # --- Marker grammar --------------------------------------------------------------

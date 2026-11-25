@@ -32,6 +32,7 @@ from devloops_lib.forge.models import (
     CI_PENDING,
     CI_SUCCESS,
     AuthStatus,
+    Blocker,
     CiSummary,
     GateSnapshot,
     Issue,
@@ -261,6 +262,44 @@ class GiteaForge:
     @property
     def _repo_prefix(self) -> str:
         return f"/repos/{self.owner}/{self.name}"
+
+    # -- issue dependencies (issue #65) -----------------------------------
+
+    def blocked_by(self, number: int) -> List[Blocker]:
+        status, data = self._http_call(
+            "GET", f"{self._repo_prefix}/issues/{number}/dependencies", allow_404=True
+        )
+        if status == 404:
+            raise ForgeError(
+                f"{self.forge_type} returned 404 for issue dependencies of #{number}. "
+                "Enable issue dependencies for this repository (repository settings -> "
+                "issues -> issue dependencies) and retry."
+            )
+        if isinstance(data, dict):
+            items = data.get("blocked_by") or []
+        elif isinstance(data, list):
+            items = data
+        else:
+            items = []
+        blockers: List[Blocker] = []
+        for item in items:
+            if not isinstance(item, dict) or item.get("number") is None:
+                continue
+            blockers.append(Blocker(
+                number=int(item["number"]),
+                state=str(item.get("state") or "open").lower(),
+                is_pr=item.get("pull_request") is not None,
+            ))
+        return blockers
+
+    def add_blocker(self, number: int, blocker_number: int) -> None:
+        if any(b.number == blocker_number for b in self.blocked_by(number)):
+            return
+        self._http_call(
+            "POST",
+            f"{self._repo_prefix}/issues/{number}/dependencies",
+            body={"index": int(blocker_number), "owner": self.owner, "repo": self.name},
+        )
 
     # -- identity / repository -------------------------------------------
 

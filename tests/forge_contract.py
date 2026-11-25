@@ -181,6 +181,12 @@ class FakeForge:
         self.gate = copy.deepcopy(SEED["gate"])
         self._auth_ok = auth_ok
         self._next_issue = 100
+        # issue #65: blocked-by dependencies, raw forge-payload shape.
+        # Issue 1 is blocked by open issue 2; PR 10 is blocked by open PR 11.
+        self.dependencies: Dict[int, List[Dict[str, Any]]] = {
+            1: [dict(self.issues[1])],
+            10: [dict(self.prs[1], pull_request={"url": _url("pull", 11)})],
+        }
 
     def _issue(self, number: int) -> Dict[str, Any]:
         for i in self.issues:
@@ -343,6 +349,36 @@ class FakeForge:
             "body": body, "url": _url("issues", number) + "#issuecomment-new",
         })
 
+    # -- issue dependencies (issue #65) ------------------------------------
+
+    def _get_any(self, number: int) -> Dict[str, Any]:
+        try:
+            return self._issue(number)
+        except ForgeError:
+            return self._pr(number)
+
+    def blocked_by(self, number: int):
+        from devloops_lib.forge.models import Blocker
+        return [
+            Blocker(
+                number=d["number"],
+                state=str(d.get("state", "open")).lower(),
+                is_pr="pull_request" in d,
+            )
+            for d in self.dependencies.get(number, [])
+        ]
+
+    def add_blocker(self, number: int, blocker_number: int) -> None:
+        self._get_any(number)  # unknown target raises ForgeError
+        blocker = self._get_any(blocker_number)  # unknown blocker raises ForgeError
+        deps = self.dependencies.setdefault(number, [])
+        if any(d["number"] == blocker_number for d in deps):
+            return
+        item = dict(blocker)
+        if any(p["number"] == blocker_number for p in self.prs):
+            item.setdefault("pull_request", {"url": _url("pull", blocker_number)})
+        deps.append(item)
+
     def gate_snapshot(self, pr_limit: int = 100, issue_limit: int = 100):
         from devloops_lib.forge.models import GateSnapshot
         data = self.gate["data"]
@@ -368,6 +404,11 @@ class GhStub:
         self.args_log: List[List[str]] = []
         self.graphql_calls: List[List[str]] = []
         self._next_issue = 100
+        # issue #65: blocked-by dependencies, raw GitHub REST shape.
+        self.dependencies: Dict[int, List[Dict[str, Any]]] = {
+            1: [copy.deepcopy(self.issues[1])],
+            10: [dict(copy.deepcopy(self.prs[1]), pull_request={"url": _url("pull", 11)})],
+        }
 
     def run(self, args: List[str]) -> str:
         self.args_log.append(list(args))
@@ -398,6 +439,8 @@ class GhStub:
             return self._pr_comment(argv[2], args)
         if head == ("api", "graphql"):
             return self._graphql(args)
+        if len(argv) > 1 and argv[0] == "api" and argv[1].startswith("repos/"):
+            return self._api_repo(argv[1], args)
         raise ForgeError(f"unexpected gh args: {args}")
 
     # -- helpers ----------------------------------------------------------
@@ -499,6 +542,36 @@ class GhStub:
             if a.startswith("cursor="):
                 return a[len("cursor="):]
         return None
+
+    def _issue_id(self, number: int) -> int:
+        return 10000 + number
+
+    def _api_repo(self, path: str, args: List[str]) -> str:
+        parts = path.split("/")
+        if len(parts) >= 5 and parts[0] == "repos" and parts[3] == "issues":
+            number = int(parts[4])
+            if len(parts) == 5:
+                item = dict(self._find_issue(number))
+                item.setdefault("id", self._issue_id(number))
+                return json.dumps(item)
+            if parts[5] == "dependencies":
+                if "-X" in args and "POST" in args:
+                    issue_id = None
+                    for a in args:
+                        if a.startswith("issue_id="):
+                            issue_id = int(a[len("issue_id="):])
+                    deps = self.dependencies.setdefault(number, [])
+                    for item in self.issues + self.prs:
+                        if self._issue_id(item["number"]) == issue_id:
+                            if item["number"] not in [d["number"] for d in deps]:
+                                entry = copy.deepcopy(item)
+                                if any(p["number"] == item["number"] for p in self.prs):
+                                    entry.setdefault("pull_request", {"url": item["url"]})
+                                deps.append(entry)
+                            break
+                    return json.dumps(deps)
+                return json.dumps(self.dependencies.get(number, []))
+        raise ForgeError(f"unexpected gh api path: {path}")
 
 
 class ForgeContract:
@@ -644,3 +717,26 @@ class ForgeContract:
 
     def test_pr_head_ref_mentions_number(self):
         assert "42" in self.forge.pr_head_ref(42)
+
+    # -- issue dependencies (issue #65) -------------------------------------
+
+    def test_blocked_by_issue_number(self):
+        blockers = self.forge.blocked_by(1)
+        assert [(b.number, b.state, b.is_pr) for b in blockers] == [(2, "open", False)]
+
+    def test_blocked_by_pr_number(self):
+        blockers = self.forge.blocked_by(10)
+        assert [(b.number, b.state, b.is_pr) for b in blockers] == [(11, "open", True)]
+
+    def test_blocked_by_empty_when_no_dependencies(self):
+        assert self.forge.blocked_by(2) == []
+
+    def test_add_blocker_links_and_is_idempotent(self):
+        self.forge.add_blocker(2, 1)
+        assert [b.number for b in self.forge.blocked_by(2)] == [1]
+        self.forge.add_blocker(2, 1)
+        assert [b.number for b in self.forge.blocked_by(2)] == [1]
+
+    def test_add_blocker_on_pr_target(self):
+        self.forge.add_blocker(11, 3)  # closed issue 3 blocks PR 11
+        assert [(b.number, b.state, b.is_pr) for b in self.forge.blocked_by(11)] == [(3, "closed", False)]

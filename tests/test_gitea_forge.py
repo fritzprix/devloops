@@ -133,6 +133,15 @@ class GiteaFixtureStub:
                 })
         self.review_comments[(10, 101)] = rc
 
+        # issue #65: issue 1 is blocked by open issue 2; PR 10 is blocked by
+        # open PR 11. dependencies_disabled simulates the repo feature being off.
+        self.dependencies_disabled = False
+        self.dependencies: Dict[int, Dict[str, List[Dict[str, Any]]]] = {
+            1: {"blocked_by": [copy.deepcopy(self.issues[1])], "blocks": []},
+            10: {"blocked_by": [dict(self.prs[1], pull_request={"html_url": self.prs[1]["html_url"]})],
+                 "blocks": []},
+        }
+
     def _ensure_label(self, name: str) -> int:
         if name not in self.labels:
             self.labels[name] = self._next_label_id
@@ -244,6 +253,27 @@ class GiteaFixtureStub:
                     lid = int(rest[2])
                     issue["labels"] = [l for l in issue["labels"] if l["id"] != lid]
                     return 204, {}, ""
+            if len(rest) >= 2 and rest[1] == "dependencies":
+                if self.dependencies_disabled:
+                    return 404, {}, json.dumps({"message": "issue dependencies disabled"})
+                if self._find_issue(num) is None and self._find_pr(num) is None:
+                    return 404, {}, json.dumps({"message": "not found"})
+                deps = self.dependencies.setdefault(num, {"blocked_by": [], "blocks": []})
+                if method == "GET":
+                    return 200, {}, json.dumps(deps)
+                if method == "POST":
+                    idx = int(body["index"])
+                    if not any(d["number"] == idx for d in deps["blocked_by"]):
+                        blocker = self._find_pr(idx)
+                        if blocker is None:
+                            blocker = self._find_issue(idx)
+                        if blocker is None:
+                            return 404, {}, json.dumps({"message": "blocker not found"})
+                        entry = copy.deepcopy(blocker)
+                        if self._find_pr(idx) is not None:
+                            entry.setdefault("pull_request", {"html_url": blocker["html_url"]})
+                        deps["blocked_by"].append(entry)
+                    return 200, {}, json.dumps(deps)
             if len(rest) == 2 and rest[1] == "comments":
                 if method == "GET":
                     page = int((qs.get("page") or ["1"])[0])
@@ -452,6 +482,19 @@ class GiteaForgeBehaviorTest(unittest.TestCase):
         forge = GiteaForge(base_url="https://g.example", owner=OWNER, name=NAME, opener=stub)
         forge.update_branch(10)
         self.assertIn(("POST", f"/api/v1/repos/{OWNER}/{NAME}/pulls/10/update", None), stub.requests)
+
+    def test_dependencies_404_maps_to_setup_error(self):
+        # issue #65: a server without the dependencies feature must fail with a
+        # clear setup error, never masquerade as an empty blocker list.
+        stub = GiteaFixtureStub()
+        stub.dependencies_disabled = True
+        forge = GiteaForge(
+            base_url="https://git.example.com", owner=OWNER, name=NAME,
+            version="1.22.0", retry_backoff=0.0, opener=stub,
+        )
+        with self.assertRaises(ForgeError) as ctx:
+            forge.blocked_by(1)
+        self.assertIn("Enable issue dependencies", str(ctx.exception))
 
     def test_get_forge_factory_returns_forgejo_and_gitea(self):
         f = get_forge(

@@ -11,6 +11,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from devloops_lib import contract  # noqa: E402
+from devloops_lib.forge.models import Blocker  # noqa: E402
 
 
 def comment(body: str, at: str = "2026-01-01T00:00:00Z", author: str = "me") -> dict:
@@ -21,7 +22,7 @@ def comment(body: str, at: str = "2026-01-01T00:00:00Z", author: str = "me") -> 
 STATE_TRIGGERS = {
     "needs-owner": ({"labels": [contract.NEEDS_OWNER]}, {}),
     "gatekeeper:escalated": ({"labels": [contract.GATEKEEPER_ESCALATED]}, {}),
-    "blocked:base": ({"labels": [contract.BLOCKED_BASE]}, {}),
+    "open-blocker": ({"labels": []}, {"blockers": [Blocker(7, "open")]}),
     "merge-conflict": ({"labels": []}, {"mergeable": "CONFLICTING"}),
     "verdict": ({"labels": [contract.GATEKEEPER_APPROVED]}, {}),
 }
@@ -32,9 +33,19 @@ class OverlapTest(unittest.TestCase):
         self.assertIsNone(contract.first_state([]))
         self.assertIsNone(contract.first_state(["bug"], "MERGEABLE"))
 
+    def test_blocked_base_label_is_gone(self):
+        # issue #65: base blocking is derived from open blockers, never a label.
+        self.assertFalse(hasattr(contract, "BLOCKED_BASE"))
+        self.assertNotIn("blocked:base", contract.STATE_ORDER)
+        self.assertIsNone(contract.first_state(["blocked:base"]))
+
     def test_single_states(self):
         for state, (labels, extra) in STATE_TRIGGERS.items():
             self.assertEqual(contract.first_state(**labels, **extra), state, state)
+
+    def test_closed_blockers_do_not_apply(self):
+        self.assertIsNone(contract.first_state([], blockers=[Blocker(7, "closed")]))
+        self.assertIsNone(contract.first_state([], "MERGEABLE", [Blocker(7, "CLOSED")]))
 
     def test_every_pair_resolves_to_the_earlier_state(self):
         for i, a in enumerate(contract.STATE_ORDER):
@@ -43,8 +54,25 @@ class OverlapTest(unittest.TestCase):
                 labels_b, extra_b = STATE_TRIGGERS[b]
                 labels = labels_a["labels"] + labels_b["labels"]
                 extra = {**extra_a, **extra_b}
-                self.assertEqual(contract.first_state(labels, extra.get("mergeable")), a,
-                                 f"{a} must outrank {b}")
+                self.assertEqual(
+                    contract.first_state(labels, extra.get("mergeable"), extra.get("blockers")), a,
+                    f"{a} must outrank {b}")
+
+
+class OpenBlockersTest(unittest.TestCase):
+    class Forge:
+        def __init__(self, blockers):
+            self._blockers = blockers
+
+        def blocked_by(self, number):
+            return list(self._blockers)
+
+    def test_sorted_open_numbers_only(self):
+        forge = self.Forge([Blocker(12, "open"), Blocker(5, "closed"), Blocker(3, "open", True)])
+        self.assertEqual(contract.open_blockers(forge, 20), [3, 12])
+
+    def test_no_blockers(self):
+        self.assertEqual(contract.open_blockers(self.Forge([]), 20), [])
 
 
 class MarkerVocabularyTest(unittest.TestCase):
