@@ -427,9 +427,18 @@ def main(argv: list[str] | None = None) -> None:
     )
     tg = _tick_gate()
     if args.parent_pid is not None and not tg._pid_alive(args.parent_pid):
-        _log(f"heartbeat: parent {args.parent_pid} not alive at startup; exiting")
-        clear_sidecar(args.lock_file)
-        return
+        # A resolved parent that is already gone when the child boots is a
+        # launcher artifact, not a dead session: on Windows the venv
+        # python.exe redirector spawns tick_gate and exits right after it,
+        # and tick_gate resolves that redirector as the watch parent.
+        # Exiting here would kill every heartbeat on Windows; drop the
+        # watch instead — sidecar removal, the TTL and --unlock still stop
+        # the child.
+        _log(
+            f"heartbeat: parent {args.parent_pid} not alive at startup; "
+            "continuing without parent watch"
+        )
+        args.parent_pid = None
     holds = False
     for attempt in range(STARTUP_LOCK_RETRY_COUNT):
         if tg.token_holds_lock(args.lock_file, args.token):

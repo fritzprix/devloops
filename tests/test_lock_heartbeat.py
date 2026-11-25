@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -176,8 +177,13 @@ class LockHeartbeatTest(unittest.TestCase):
 
     def test_heartbeat_exits_and_lock_expires_when_parent_killed(self):
         # Spawn a parent process that runs `tick_gate.py --lock` and stays alive until killed.
+        # The process announces its real pid and pins itself as the session holder:
+        # on Windows the Popen'd process is the venv python.exe launcher that forks
+        # the actual interpreter, so parent.pid alone is not the watch target.
         parent_code = (
-            "import subprocess, sys, time; "
+            "import os, subprocess, sys, time; "
+            "print(f'HOLDER {os.getpid()}', flush=True); "
+            "os.environ['DEVLOOPS_SESSION_HOLDER_PID'] = str(os.getpid()); "
             f"r = subprocess.run([sys.executable, {str(SCRIPTS / 'tick_gate.py')!r}, '--lock'], "
             "capture_output=True, text=True); "
             "print(r.stdout, flush=True); "
@@ -195,13 +201,24 @@ class LockHeartbeatTest(unittest.TestCase):
         self.addCleanup(lambda: stop_heartbeat(self.lock))
 
         token = None
+        holder = None
         deadline = time.monotonic() + 15.0
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and (token is None or holder is None):
             line = parent.stdout.readline()
             if line.startswith("TOKEN "):
                 token = line.split()[1].strip()
-                break
+            elif line.startswith("HOLDER "):
+                holder = int(line.split()[1].strip())
         self.assertIsNotNone(token, "parent did not emit TOKEN")
+        self.assertIsNotNone(holder, "parent did not emit HOLDER")
+
+        def _kill_holder() -> None:
+            try:
+                os.kill(holder, signal.SIGTERM)
+            except OSError:
+                pass
+
+        self.addCleanup(_kill_holder)
 
         # Wait briefly for heartbeat sidecar to appear with parent_pid recorded.
         hb_info = None
@@ -210,18 +227,38 @@ class LockHeartbeatTest(unittest.TestCase):
         while time.monotonic() < deadline:
             hb_info = read_sidecar(self.lock)
             hb_parent = read_sidecar_parent_pid(self.lock)
-            if hb_info and hb_parent == parent.pid:
+            if hb_info and hb_parent == holder:
                 break
             time.sleep(0.1)
         self.assertIsNotNone(
             hb_info,
             f"heartbeat sidecar never appeared within 5s; heartbeat log tail:\n{self._hb_log_tail()}",
         )
-        self.assertEqual(hb_parent, parent.pid)
+        self.assertEqual(hb_parent, holder)
         hb_pid = hb_info[0]
         self.assertTrue(tick_gate._pid_alive(hb_pid))
 
-        # Kill the parent without calling --unlock; heartbeat must detect it and exit.
+        # The sidecar is written by the parent at spawn time, before the
+        # detached child finishes booting; wait until the child has
+        # actually renewed the lock once so killing the holder races
+        # neither its startup check nor a not-yet-started renew loop.
+        initial_time = tick_gate.read_lock_payload(self.lock)["time"]
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            payload = tick_gate.read_lock_payload(self.lock)
+            if payload and payload["time"] > initial_time:
+                break
+            time.sleep(0.1)
+        payload = tick_gate.read_lock_payload(self.lock)
+        self.assertGreater(
+            payload["time"],
+            initial_time,
+            f"heartbeat never renewed the lock; heartbeat log tail:\n{self._hb_log_tail()}",
+        )
+
+        # Kill the session holder without calling --unlock; the heartbeat
+        # must detect it and exit (the launcher parent dies too).
+        _kill_holder()
         parent.kill()
         parent.wait(timeout=5)
 
