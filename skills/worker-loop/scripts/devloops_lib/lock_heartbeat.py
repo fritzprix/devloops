@@ -36,6 +36,47 @@ def _sidecar(lock_file: Path) -> Path:
     return lock_file.with_name(f"{lock_file.name}.heartbeat")
 
 
+def _heartbeat_log_path(lock_file: Path) -> Path:
+    return lock_file.with_name(f"{lock_file.name}.heartbeat.log")
+
+
+def _log_to_heartbeat_log(lock_file: Path, message: str) -> None:
+    """Best-effort append to the heartbeat child's log file. Never raises."""
+    try:
+        path = _heartbeat_log_path(lock_file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] {message}\n")
+    except OSError:
+        pass
+
+
+# Set by the heartbeat child in main() so _log() can find the lock-dir log
+# file without threading the path through every call site.
+_CHILD_LOCK_FILE: "Path | None" = None
+
+
+def _log(message: str) -> None:
+    """Log from the heartbeat child: stderr plus the lock-dir log file.
+
+    ``start_detached`` redirects the child's stdout/stderr into the log file,
+    so stderr writes alone are invisible on Windows otherwise; the direct file
+    write guarantees the evidence survives even if redirection failed.
+    """
+    try:
+        sys.stderr.write(message + "\n")
+    except Exception:
+        pass
+    if _CHILD_LOCK_FILE is not None:
+        _log_to_heartbeat_log(_CHILD_LOCK_FILE, message)
+
+
+# Child startup can briefly race the parent's lock write; retry a few times
+# before deciding the lock is not ours.
+STARTUP_LOCK_RETRY_COUNT = 3
+STARTUP_LOCK_RETRY_INTERVAL = 0.2
+
+
 # Ancestor names skipped on Windows: the shells/harnesses that host a tick and
 # exit right after spawning it. Their parent (the agent or terminal host) is the
 # long-lived process worth watching.
@@ -286,6 +327,18 @@ def start_detached(lock_file: Path, token: str, *, parent_pid: int | None = None
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
     }
+    # Capture the child's output into a log file next to the sidecar so
+    # Windows startup failures (previously DEVNULL: zero evidence) are
+    # diagnosable from CI logs.
+    log_file = None
+    try:
+        log_path = _heartbeat_log_path(lock_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(log_path, "ab")
+        popen_kw["stdout"] = log_file
+        popen_kw["stderr"] = log_file
+    except OSError:
+        log_file = None
     if sys.platform == "win32":
         popen_kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
@@ -293,7 +346,14 @@ def start_detached(lock_file: Path, token: str, *, parent_pid: int | None = None
     cmd = [sys.executable, str(script), "--lock-file", str(lock_file), "--token", token]
     if watch_pid is not None:
         cmd.extend(["--parent-pid", str(watch_pid)])
-    proc = subprocess.Popen(cmd, **popen_kw)
+    try:
+        proc = subprocess.Popen(cmd, **popen_kw)
+    finally:
+        if log_file is not None:
+            try:
+                log_file.close()
+            except OSError:
+                pass
     write_sidecar(lock_file, proc.pid, token, parent_pid=watch_pid)
 
 
@@ -312,36 +372,59 @@ def _run(lock_file: Path, token: str, *, parent_pid: int | None = None) -> int:
 
     while not stopping:
         if parent_pid is not None and not tg._pid_alive(parent_pid):
+            _log(f"heartbeat: parent {parent_pid} exited; stopping")
             return 0
         if not tg.token_holds_lock(lock_file, token):
-            sys.stderr.write(f"lock heartbeat: lost lock ({tg.describe_lock(lock_file)})\n")
+            _log(f"heartbeat: lost lock ({tg.describe_lock(lock_file)})")
             return 1
         if not tg.renew_lock(lock_file, token):
-            sys.stderr.write(f"lock heartbeat: renew failed ({tg.describe_lock(lock_file)})\n")
+            _log(f"heartbeat: renew failed ({tg.describe_lock(lock_file)})")
             return 1
         if not _sidecar(lock_file).is_file():
+            _log("heartbeat: sidecar removed; stopping")
             return 0
         deadline = time.monotonic() + interval
         while time.monotonic() < deadline and not stopping:
             if parent_pid is not None and not tg._pid_alive(parent_pid):
+                _log(f"heartbeat: parent {parent_pid} exited; stopping")
                 return 0
             time.sleep(min(0.5, interval / 4))
     return 0
 
 
 def main(argv: list[str] | None = None) -> None:
+    global _CHILD_LOCK_FILE
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lock-file", type=Path, required=True)
     parser.add_argument("--token", required=True)
     parser.add_argument("--parent-pid", type=int, default=None)
     args = parser.parse_args(argv)
+    _CHILD_LOCK_FILE = args.lock_file
+    _log(
+        f"heartbeat: start pid={os.getpid()} ppid={os.getppid()} "
+        f"parent_pid={args.parent_pid} lock={args.lock_file} "
+        f"platform={sys.platform} py={sys.version.split()[0]} exe={sys.executable}"
+    )
     tg = _tick_gate()
     if args.parent_pid is not None and not tg._pid_alive(args.parent_pid):
+        _log(f"heartbeat: parent {args.parent_pid} not alive at startup; exiting")
         clear_sidecar(args.lock_file)
         return
-    if not tg.token_holds_lock(args.lock_file, args.token):
+    holds = False
+    for attempt in range(STARTUP_LOCK_RETRY_COUNT):
+        if tg.token_holds_lock(args.lock_file, args.token):
+            holds = True
+            break
+        if attempt + 1 < STARTUP_LOCK_RETRY_COUNT:
+            time.sleep(STARTUP_LOCK_RETRY_INTERVAL)
+    if not holds:
+        _log(
+            f"heartbeat: token does not hold lock after "
+            f"{STARTUP_LOCK_RETRY_COUNT} attempts ({tg.describe_lock(args.lock_file)}); exiting"
+        )
         return
     write_sidecar(args.lock_file, os.getpid(), args.token, parent_pid=args.parent_pid)
+    _log("heartbeat: startup checks passed; entering renew loop")
     try:
         raise SystemExit(_run(args.lock_file, args.token, parent_pid=args.parent_pid))
     finally:
