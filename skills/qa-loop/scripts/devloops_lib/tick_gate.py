@@ -973,9 +973,9 @@ def main(argv: list[str] | None = None) -> None:
             return
         print(f"TOKEN {tick_token}")
         if not wrapper_held and args.lock:
-            from devloops_lib.lock_heartbeat import start_detached
+            from devloops_lib.lock_heartbeat import resolve_parent_pid, start_detached
 
-            start_detached(lock_path, tick_token)
+            start_detached(lock_path, tick_token, parent_pid=resolve_parent_pid(args.pid))
 
     def _exit_busy() -> None:
         _finish_checkin()

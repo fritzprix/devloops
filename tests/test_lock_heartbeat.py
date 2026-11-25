@@ -19,6 +19,8 @@ from devloops_lib import tick_gate
 from devloops_lib.lock_heartbeat import (
     clear_sidecar,
     read_sidecar,
+    read_sidecar_parent_pid,
+    resolve_parent_pid,
     start_detached,
     stop_heartbeat,
     write_sidecar,
@@ -154,6 +156,106 @@ class LockHeartbeatTest(unittest.TestCase):
             clear_sidecar(self.lock)
         self.assertEqual(unlink_calls, 2)
         self.assertIsNone(read_sidecar(self.lock))
+
+    def test_heartbeat_exits_and_lock_expires_when_parent_killed(self):
+        # Spawn a parent process that runs `tick_gate.py --lock` and stays alive until killed.
+        parent_code = (
+            "import subprocess, sys, time; "
+            f"r = subprocess.run([sys.executable, {str(SCRIPTS / 'tick_gate.py')!r}, '--lock'], "
+            "capture_output=True, text=True); "
+            "print(r.stdout, flush=True); "
+            "time.sleep(60)"
+        )
+        parent = subprocess.Popen(
+            [sys.executable, "-c", parent_code],
+            cwd=str(self.loop_dir),
+            env=self.env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.addCleanup(lambda: (parent.kill(), parent.wait()) if parent.poll() is None else None)
+        self.addCleanup(lambda: stop_heartbeat(self.lock))
+
+        token = None
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            line = parent.stdout.readline()
+            if line.startswith("TOKEN "):
+                token = line.split()[1].strip()
+                break
+        self.assertIsNotNone(token, "parent did not emit TOKEN")
+
+        # Wait briefly for heartbeat sidecar to appear with parent_pid recorded.
+        hb_info = None
+        hb_parent = None
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            hb_info = read_sidecar(self.lock)
+            hb_parent = read_sidecar_parent_pid(self.lock)
+            if hb_info and hb_parent == parent.pid:
+                break
+            time.sleep(0.1)
+        self.assertIsNotNone(hb_info)
+        self.assertEqual(hb_parent, parent.pid)
+        hb_pid = hb_info[0]
+        self.assertTrue(tick_gate._pid_alive(hb_pid))
+
+        # Kill the parent without calling --unlock; heartbeat must detect it and exit.
+        parent.kill()
+        parent.wait(timeout=5)
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and tick_gate._pid_alive(hb_pid):
+            time.sleep(0.1)
+        self.assertFalse(tick_gate._pid_alive(hb_pid), "heartbeat did not exit after parent died")
+        self.assertIsNone(read_sidecar(self.lock))
+
+        # Once the heartbeat has stopped, the lock expires within the TTL.
+        time.sleep(self.ttl + 0.5)
+        self.assertFalse(tick_gate.check_lock(self.lock, ttl_seconds=self.ttl))
+
+    def test_unlock_stops_heartbeat_and_leaves_no_process(self):
+        first = subprocess.run(
+            [sys.executable, str(SCRIPTS / "tick_gate.py"), "--lock"],
+            cwd=str(self.loop_dir),
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(first.returncode, tick_gate.EXIT_RUN, first.stdout + first.stderr)
+        token = [ln.split()[1] for ln in first.stdout.splitlines() if ln.startswith("TOKEN ")][0]
+        hb_info = read_sidecar(self.lock)
+        self.assertIsNotNone(hb_info)
+        hb_pid = hb_info[0]
+        self.assertTrue(tick_gate._pid_alive(hb_pid))
+
+        unlock = subprocess.run(
+            [sys.executable, str(SCRIPTS / "tick_gate.py"), "--unlock", "--token", token],
+            cwd=str(self.loop_dir),
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(unlock.returncode, tick_gate.EXIT_RUN, unlock.stdout + unlock.stderr)
+        self.assertFalse(tick_gate._pid_alive(hb_pid))
+        self.assertIsNone(read_sidecar(self.lock))
+
+    def test_resolve_parent_pid_skips_transient_shells(self):
+        from devloops_lib import sessions
+
+        procs = {
+            300: sessions.ProcessInfo(comm="bash", cmdline=["bash", "-c", "python3 tick_gate.py --lock"], ppid=200),
+            200: sessions.ProcessInfo(comm="claude", cmdline=["claude"], ppid=1),
+        }
+        with patch("devloops_lib.lock_heartbeat.os.getppid", return_value=300), \
+                patch("devloops_lib.sessions._process_info", side_effect=lambda p: procs.get(p)), \
+                patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DEVLOOPS_SESSION_HOLDER_PID", None)
+            if sys.platform != "win32":
+                self.assertEqual(resolve_parent_pid(), 200)
 
 
 class LockTtlConfigTest(unittest.TestCase):
