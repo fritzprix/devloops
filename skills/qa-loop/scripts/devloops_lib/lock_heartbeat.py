@@ -36,6 +36,89 @@ def _sidecar(lock_file: Path) -> Path:
     return lock_file.with_name(f"{lock_file.name}.heartbeat")
 
 
+# Ancestor names skipped on Windows: the shells/harnesses that host a tick and
+# exit right after spawning it. Their parent (the agent or terminal host) is the
+# long-lived process worth watching.
+_WINDOWS_TRANSIENT_EXES = frozenset({"cmd.exe", "powershell.exe", "pwsh.exe", "conhost.exe"})
+
+
+def _windows_process_map() -> "dict[int, tuple[int, str]] | None":
+    """Map pid -> (parent_pid, exe basename lower) via a Toolhelp32 snapshot.
+
+    Returns None when the snapshot cannot be taken or read.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", ctypes.c_wchar * 260),
+        ]
+
+    TH32CS_SNAPPROCESS = 0x00000002
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Process32FirstW.restype = wintypes.BOOL
+    kernel32.Process32NextW.restype = wintypes.BOOL
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if not snapshot or ctypes.cast(snapshot, ctypes.c_void_p).value == ctypes.c_void_p(-1).value:
+        return None
+    entry = PROCESSENTRY32W()
+    entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+    procs: dict = {}
+    try:
+        if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+            return None
+        while True:
+            procs[int(entry.th32ProcessID)] = (
+                int(entry.th32ParentProcessID),
+                entry.szExeFile.rsplit("\\", 1)[-1].lower(),
+            )
+            if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                break
+        return procs
+    finally:
+        kernel32.CloseHandle(snapshot)
+
+
+def _resolve_parent_pid_windows() -> int | None:
+    """Walk up from os.getppid() with a Toolhelp32 snapshot.
+
+    Skips transient shells (cmd/powershell/pwsh/conhost) and returns the first
+    other ancestor. Returns None (no parent watch) when the snapshot is
+    unavailable or an ancestor is not visible in it.
+    """
+    pid = os.getppid()
+    if pid <= 0:
+        return None
+    procs = _windows_process_map()
+    if procs is None:
+        return None
+    for _ in range(40):
+        # 0 = Idle, 4 = System: never watch them.
+        if pid <= 0 or pid in (0, 4):
+            return None
+        info = procs.get(pid)
+        if info is None:
+            return None
+        ppid, exe = info
+        if exe in _WINDOWS_TRANSIENT_EXES:
+            pid = ppid
+            continue
+        return pid
+    return None
+
+
 def resolve_parent_pid(explicit: int | None = None) -> int | None:
     """Resolve the long-lived parent PID for the heartbeat to watch.
 
@@ -44,8 +127,12 @@ def resolve_parent_pid(explicit: int | None = None) -> int | None:
     - On Linux (``/proc``), walk up from ``os.getppid()``, skipping transient
       shells (``-c``, ``-lc``, ``/c``, etc.) and return the first non-transient
       ancestor with ``pid > 1``.
-    - Returns ``None`` (no parent watch) on Windows, when ``/proc`` is
-      unavailable, or when no ancestor with ``pid > 1`` can be determined.
+    - On Windows, walk up the Toolhelp32 snapshot, skipping
+      ``cmd/powershell/pwsh/conhost`` by exe name, and return the first other
+      ancestor.
+    - Returns ``None`` (no parent watch) when ``/proc`` is unavailable on
+      Linux, when the snapshot or an ancestor is not visible on Windows, or
+      when no watchable ancestor can be determined.
     """
     if explicit is not None:
         return explicit if explicit > 0 else None
@@ -57,7 +144,7 @@ def resolve_parent_pid(explicit: int | None = None) -> int | None:
         except ValueError:
             pass
     if sys.platform == "win32":
-        return None
+        return _resolve_parent_pid_windows()
     ppid = os.getppid()
     if ppid <= 1:
         return None

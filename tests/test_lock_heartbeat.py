@@ -266,10 +266,33 @@ class LockHeartbeatTest(unittest.TestCase):
             with patch("devloops_lib.sessions._process_info", return_value=None), \
                     patch("devloops_lib.lock_heartbeat.os.getppid", return_value=300):
                 self.assertIsNone(resolve_parent_pid())
-            with patch("devloops_lib.lock_heartbeat.sys.platform", "win32"):
+            with patch("devloops_lib.lock_heartbeat.sys.platform", "win32"), \
+                    patch("devloops_lib.lock_heartbeat._windows_process_map", return_value=None), \
+                    patch("devloops_lib.lock_heartbeat.os.getppid", return_value=300):
                 self.assertIsNone(resolve_parent_pid())
             with patch("devloops_lib.lock_heartbeat.os.getppid", return_value=1):
                 self.assertIsNone(resolve_parent_pid())
+
+    def test_resolve_parent_pid_windows_skips_transient_shells(self):
+        procs = {
+            300: (200, "cmd.exe"),
+            201: (200, "conhost.exe"),
+            200: (4, "agent.exe"),
+        }
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DEVLOOPS_SESSION_HOLDER_PID", None)
+            with patch("devloops_lib.lock_heartbeat.sys.platform", "win32"), \
+                    patch("devloops_lib.lock_heartbeat._windows_process_map", return_value=procs):
+                with patch("devloops_lib.lock_heartbeat.os.getppid", return_value=300):
+                    self.assertEqual(resolve_parent_pid(), 200)
+                with patch("devloops_lib.lock_heartbeat.os.getppid", return_value=201):
+                    self.assertEqual(resolve_parent_pid(), 200)
+                # An ancestor that is not visible in the snapshot: no watch.
+                with patch("devloops_lib.lock_heartbeat.os.getppid", return_value=999):
+                    self.assertIsNone(resolve_parent_pid())
+                # System pid is never watched.
+                with patch("devloops_lib.lock_heartbeat.os.getppid", return_value=4):
+                    self.assertIsNone(resolve_parent_pid())
 
     def test_start_detached_none_parent_pid_disables_parent_watch(self):
         captured: dict = {}
