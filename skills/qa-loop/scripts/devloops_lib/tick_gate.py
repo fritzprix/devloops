@@ -641,6 +641,26 @@ def token_holds_lock(lock_file: Path, token: str) -> bool:
     return bool(data) and data.get("token") == token
 
 
+def _find_slot_lock_by_token(state_path: Path, token: str) -> Path | None:
+    """Return the slot-scoped tick.lock under state_path.parent/agents/ whose
+    payload carries token, or None.
+
+    A slot auto-assigned by --lock (check-in) does not carry over to separate
+    --unlock or --renew calls without DEVLOOPS_AGENT_ID: they resolve the
+    unscoped path, find no lock, and report LOST even though the caller still
+    owns a slot-scoped lock (issue #79). Tokens are unique per lock, so the
+    token identifies the owning slot without asking the caller to export it.
+    """
+    agents_dir = state_path.parent / "agents"
+    if not agents_dir.is_dir():
+        return None
+    for lock_file in sorted(agents_dir.glob("*/tick.lock")):
+        payload = read_lock_payload(lock_file)
+        if payload and payload.get("token") == token:
+            return lock_file
+    return None
+
+
 def take_tick_lock(lock_file: Path, loop: str, pid: int | None = None) -> str | None:
     """Return this tick's token, or None if a live lock of this slot is held.
 
@@ -866,6 +886,19 @@ def main(argv: list[str] | None = None) -> None:
     state_path = args.state_file or default_state_path(args.loop)
     lock_path = state_path.parent / "tick.lock"
     token = args.token or os.environ.get(TOKEN_ENV)
+    # A slot auto-assigned by --lock does not carry over to separate --unlock or
+    # --renew calls without DEVLOOPS_AGENT_ID (issue #79). The token is unique per
+    # lock, so resolve the slot-scoped lock by token instead of reporting LOST from
+    # the unscoped path. An explicit --state-file stays authoritative for state;
+    # otherwise state follows the resolved slot so --update writes where --lock
+    # recorded tickStartFingerprint.
+    if token and not os.environ.get(AGENT_ID_ENV) and not getattr(args, "agent_id", None):
+        if not token_holds_lock(lock_path, token):
+            resolved = _find_slot_lock_by_token(state_path, token)
+            if resolved is not None:
+                lock_path = resolved
+                if args.state_file is None:
+                    state_path = resolved.parent / "state.json"
     # Under the wrapper, --lock and --unlock leave its lock in place.
     wrapper_held = held_by_wrapper(lock_path)
 
