@@ -319,6 +319,15 @@ class GapTests(unittest.TestCase):
         found = owner_comments_after(comments, "me", "2026-01-01T00:00:00Z")
         self.assertEqual([c["body"] for c in found], ["Update README for config"])
 
+    def test_qa_loop_marker_comment_is_not_an_owner_comment(self) -> None:
+        # Issue #65 AC: qa-loop markers never read as owner comments.
+        comments = [
+            {"author": {"login": "owner"}, "createdAt": "2026-01-02T00:00:00Z",
+             "body": "<!-- qa-loop: kind=verdict round=1 verdict=accepted head=a -->\n## QA",
+             "authorAssociation": "OWNER"},
+        ]
+        self.assertEqual(owner_comments_after(comments, "me", "2026-01-01T00:00:00Z"), [])
+
     def test_clean_marker_parsed(self) -> None:
         comments = [{"author": {"login": "me"}, "createdAt": "t",
                      "body": "<!-- gatekeeper-loop: verdict=clean head=abc -->"}]
@@ -444,17 +453,26 @@ class Issue14ClassificationTests(unittest.TestCase):
 class Issue14NeedsHumanTests(unittest.TestCase):
     """Needs-human marker parsing, idempotency, and label guidance (issue #14)."""
 
-    def test_needs_human_marker_is_not_a_verdict(self) -> None:
+    def test_needs_owner_marker_is_not_a_verdict(self) -> None:
         comments = [
             {"author": {"login": "me"}, "createdAt": "2026-01-01T00:00:00Z",
-             "body": "<!-- gatekeeper-loop: kind=needs-human reason=no-ci-on-head head=abc -->"}]
+             "body": "<!-- gatekeeper-loop: kind=needs-owner reason=no-ci-on-head head=abc -->"}]
         markers, _ = parse_markers(comments, "me")
         verdicts, cleans, needs = split_markers(markers)
         self.assertEqual((verdicts, cleans), ([], []))
         self.assertEqual(needs[0]["reason"], "no-ci-on-head")
 
+    def test_old_needs_human_marker_is_ignored(self) -> None:
+        # kind=needs-human no longer exists in the vocabulary: the marker is
+        # ignored entirely, not a verdict and not a needs-owner signal.
+        comments = [
+            {"author": {"login": "me"}, "createdAt": "2026-01-01T00:00:00Z",
+             "body": "<!-- gatekeeper-loop: kind=needs-human reason=no-ci-on-head head=abc -->"}]
+        markers, _ = parse_markers(comments, "me")
+        self.assertEqual(markers, [])
+
     def test_running_same_head_twice_does_not_inflate_rounds(self) -> None:
-        body = "<!-- gatekeeper-loop: kind=needs-human reason=no-ci-on-head head=abc -->"
+        body = "<!-- gatekeeper-loop: kind=needs-owner reason=no-ci-on-head head=abc -->"
         comments = [{"author": {"login": "me"}, "createdAt": f"2026-01-0{n}T00:00:00Z", "body": body}
                     for n in (1, 2)]
         markers, _ = parse_markers(comments, "me")

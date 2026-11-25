@@ -84,7 +84,7 @@ The `prs` list is sorted: priority 0 first (worker response, new head, rebase, o
 
 - **Never empty or skip a tick due to pending CI**: select PRs that actually have reviewable work in this tick.
 - PRs in `status: await-ci` have a `verdict=clean` marker for the current head and are only waiting for CI; do not re-review them.
-- PRs that change loop skill files (`own_skill`) are reviewed like any other PR and can reach `gatekeeper:approved`; only the **merge** stays with a human. Approving them keeps the stricter bar: a `### Checked` section with `file:line` evidence for every acceptance criterion and every earlier finding, and per-OS CI results. Keep them visible: ensure the `gatekeeper:needs-human` label and one `kind=needs-human` marker comment (reason `changes loop skill files`) exist. The label never blocks review or approval. Use `needsHuman` in the queue output (`labelPresent`/`commentPresent`) so unchanged ticks post nothing.
+- PRs that change loop skill files (`own_skill`) are reviewed like any other PR and can reach `gatekeeper:approved`; only the **merge** stays with a human. Approving them keeps the stricter bar: a `### Checked` section with `file:line` evidence for every acceptance criterion and every earlier finding, and per-OS CI results. Keep them visible: ensure the `gatekeeper:needs-human` label and one `kind=needs-owner` marker comment (reason `changes loop skill files`) exist. The label never blocks review or approval. Use `needsHuman` in the queue output (`labelPresent`/`commentPresent`) so unchanged ticks post nothing.
 - Use each entry's `reviewMode`: `full` (first review), `incremental` (`git diff reviewedHead..head`), `range-diff` (rebased; see step 2).
 - Stacked PRs (whose `base` is not the primary base branch from config) do not run CI: ignore `ciPending` and review normally. When approving, add the condition: _"CI requires verification after retargeting"_.
 
@@ -131,7 +131,7 @@ Keep it between ticks so caches stay warm. Local runs never lead to commits.
 - It changes permission, secret, policy, approval, or sandbox **code or config** → review it more strictly yourself: an `approve` is only valid if `### Checked` lists the concrete bypass scenarios you tried and why each is blocked. Never auto-approve it silently.
 - It does not (research notes, docs, and similar) → review normally.
 
-Never add `gatekeeper:needs-human` or a `kind=needs-human` marker because of a path-name match. Stricter review is the gatekeeper's job, not a human escalation.
+Never add `gatekeeper:needs-human` or a `kind=needs-owner` marker because of a path-name match. Stricter review is the gatekeeper's job, not a human escalation.
 
 On round ≥ 2, read the worker response first and settle every previous `G` item: fixed (verify in the diff), decline accepted, or disputed (restate once; a second dispute on the same item → escalate).
 
@@ -203,7 +203,7 @@ After completing PR reviews, validate up to `gatekeeper.max_issue_validations_pe
 - **Do not re-review diff in await-ci**: for an `await-ci` PR, verify only whether the head changed or CI completed. If green, approve.
 - **A push after an approve requires re-review.** An approve only covers the head, base and CI state it was issued for.
 - **Approve requires Checked section**: every approve verdict must contain a non-empty `### Checked` section citing `file:line` for all acceptance criteria.
-- **Needs-human visibility, human merges loop-skill PRs**: loop-skill PRs are reviewed and can be approved like any other PR — review and merge are separate, and only the merge stays with a human. Keep the `gatekeeper:needs-human` label and a single `kind=needs-human` marker comment per reason+head as a "human merges this" signal; the label never blocks review or approval, and is removed once its reason no longer applies. Never auto-approve blocked PRs. Only labels this loop added are ever removed; unrelated labels are untouched.
+- **Needs-human visibility, human merges loop-skill PRs**: loop-skill PRs are reviewed and can be approved like any other PR — review and merge are separate, and only the merge stays with a human. Keep the `gatekeeper:needs-human` label and a single `kind=needs-owner` marker comment per reason+head as a "human merges this" signal; the label never blocks review or approval, and is removed once its reason no longer applies. Never auto-approve blocked PRs. Only labels this loop added are ever removed; unrelated labels are untouched.
 - **Issue validation limits**: Validate at most `gatekeeper.max_issue_validations_per_tick` producer issues per tick (default 1). Never add `approved`, never close issues, and never change code.
 - Never push, commit, edit code, merge, enable auto-merge, close PRs/issues, or resolve the worker's threads. The gatekeeper only comments and labels.
 - Findings must be concrete: file:line, problem, expected fix or acceptance check. No vague "consider improving".
