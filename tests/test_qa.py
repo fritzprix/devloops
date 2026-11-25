@@ -77,6 +77,22 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(r["status"], "review")
 
 
+class OwnerCommentsTest(unittest.TestCase):
+    def test_loop_marker_comments_are_never_owner_comments(self):
+        # Issue #65 AC: a qa-loop (or gatekeeper/worker) marker comment is never
+        # an owner comment for any loop, from any author.
+        comments = [
+            c(qa_marker("accepted"), "2026-01-01T00:00:00Z"),
+            c("<!-- gatekeeper-loop: kind=needs-owner reason=x -->", "2026-01-02T00:00:00Z", author="owner"),
+            c("<!-- worker-loop: note round=1 -->", "2026-01-02T00:00:00Z"),
+            c("<!-- qa-loop: kind=post-merge pr=7 build=x check=y -->", "2026-01-02T00:00:00Z"),
+            c("accept without test", "2026-01-02T00:00:00Z", author="owner"),
+        ]
+        found = qa.owner_comments_after(comments, ME, "2026-01-01T12:00:00Z")
+        self.assertEqual([f["author"] for f in found], ["owner"])
+        self.assertEqual(len(found), 1)
+
+
 class SignoffTest(unittest.TestCase):
     def both(self, qa_head=HEAD, gk_head=HEAD, labels=("gatekeeper:approved", "qa:accepted"), **extra):
         comments = [c(gk_marker("approve", gk_head), "2026-01-01T00:00:00Z"),

@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from devloops_lib import contract
 from devloops_lib.config import get_state_path, load_config
 from devloops_lib.gh import GhError, gh
 from devloops_lib.tick_gate import load_state, save_state
@@ -44,9 +45,9 @@ def extract_task_from_labels(labels: set[str]) -> str:
 
 def filter_unjudged_producer_issues(
     issues: list[dict[str, Any]],
-    producer_label: str = "auto:producer",
-    validated_label: str = "validated",
-    rejected_label: str = "rejected",
+    producer_label: str = contract.PRODUCER,
+    validated_label: str = contract.VALIDATED,
+    rejected_label: str = contract.REJECTED,
 ) -> list[dict[str, Any]]:
     """Return open issues that have producer_label and neither validated nor rejected."""
     unjudged: list[dict[str, Any]] = []
@@ -93,9 +94,9 @@ def list_unjudged_issues(
     except json.JSONDecodeError as e:
         raise GhError(f"Failed to parse gh issue list output: {e}") from e
 
-    producer_lbl = cfg.get("labels", {}).get("producer", "auto:producer")
-    validated_lbl = cfg.get("labels", {}).get("validated", "validated")
-    rejected_lbl = cfg.get("labels", {}).get("rejected", "rejected")
+    producer_lbl = contract.issue_label(cfg, "producer")
+    validated_lbl = contract.issue_label(cfg, "validated")
+    rejected_lbl = contract.issue_label(cfg, "rejected")
 
     return filter_unjudged_producer_issues(
         issues,
@@ -128,7 +129,7 @@ def apply_verdict(
         raise ValueError(f"Invalid verdict '{verdict}'. Allowed: {VALID_VERDICTS}")
 
     cfg = config or load_config()
-    approved_label = cfg.get("labels", {}).get("approved", "approved")
+    approved_label = contract.issue_label(cfg, "approved")
     target_label = cfg.get("labels", {}).get(v_norm, v_norm)
 
     if target_label == approved_label or v_norm == "approved":

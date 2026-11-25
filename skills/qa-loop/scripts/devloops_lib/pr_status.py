@@ -27,9 +27,9 @@ except ImportError:
         sys.path.insert(0, str(_root))
     from devloops_lib.config import load_config
 
-# Loop markers must appear at the very start of the comment (ignoring optional UTF-8 BOM and leading whitespace).
+from devloops_lib import contract
 # Quoted markers or mentions later in the comment are ignored.
-START_MARKER = re.compile(r"^(?:\ufeff)?\s*<!--\s*(gatekeeper-loop|worker-loop):\s*(.*?)\s*-->")
+START_MARKER = contract.MARKER
 
 THREADS_QUERY = """
 query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
@@ -85,19 +85,20 @@ def duplicate_commits(base: str, head: str, cwd: str | None = None) -> list[str]
 
 
 def gatekeeper_state(comments: list[dict], me: str, head_sha: str) -> dict | None:
-    """Latest gatekeeper verdict (own comments only) and whether it awaits the worker."""
+    """Latest gatekeeper verdict (own markers only) and whether it awaits the worker.
+
+    Only markers that carry a verdict replace the latest verdict, so a
+    kind=needs-owner marker posted afterwards cannot hide a changes-requested
+    from the worker. Only kind=response worker markers count as responses.
+    """
     verdict, responded_rounds = None, set()
-    for c in comments:
-        if (c.get("author") or {}).get("login") != me:
-            continue
-        match = START_MARKER.match(c.get("body") or "")
-        if not match:
-            continue
-        fields = dict(kv.split("=", 1) for kv in match.group(2).split() if "=" in kv)
-        if match.group(1) == "gatekeeper-loop":
-            verdict = {**fields, "url": c.get("url"), "createdAt": c["createdAt"]}
-        elif verdict and c["createdAt"] > verdict["createdAt"]:
-            responded_rounds.add(fields.get("round"))
+    for m in contract.parse_markers(comments, me):
+        if m["loop"] == "gatekeeper-loop":
+            if m.get("verdict"):
+                verdict = {k: v for k, v in m.items() if k != "loop"}
+        elif m["loop"] == "worker-loop" and m.get("kind") == "response":
+            if verdict and m["createdAt"] > verdict["createdAt"]:
+                responded_rounds.add(m.get("round"))
     if verdict is None:
         return None
     verdict["awaitingWorker"] = (
@@ -284,7 +285,7 @@ def summarize(
     for c in pr.get("comments") or []:
         author_login = (c.get("author") or {}).get("login") or ""
         body = c.get("body") or ""
-        if author_login.endswith("[bot]") or START_MARKER.match(body):
+        if author_login.endswith("[bot]") or contract.is_marker(body):
             continue
         if c.get("createdAt", "") > last_commit_at:
             new_comments.append({

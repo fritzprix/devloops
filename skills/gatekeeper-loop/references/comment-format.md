@@ -62,17 +62,17 @@ Clean, waiting for CI (no label change, not a round; lets any tick or machine se
 <1–2 lines: what was reviewed, zero open required findings>
 ```
 
-Needs human (not a verdict, does not count as a round; post once per reason+head, never duplicate):
+Needs owner (not a verdict, does not count as a round; post once per reason+head, never duplicate):
 
 ```markdown
-<!-- gatekeeper-loop: kind=needs-human reason=ambiguous-review-criteria head=<sha> -->
+<!-- gatekeeper-loop: kind=needs-owner reason=ambiguous-review-criteria head=<sha> -->
 
 ## Gatekeeper · needs human · ambiguous review criteria
 
 <Concrete draft rubric or checklist the owner must confirm or edit — not open-ended questions.>
 ```
 
-Reasons: `ambiguous review criteria`, `changes loop skill files`. A path-name match is never a reason. Missing repo CI is **not** needs-human: the gatekeeper opens a bootstrap CI PR instead. `changes loop skill files` does not block review or approval — loop-skill PRs are reviewed normally and can be approved; the marker and label only signal that the merge itself stays with a human.
+Reasons: `ambiguous review criteria`, `changes loop skill files`. A path-name match is never a reason. Missing repo CI is not a needs-owner reason: the gatekeeper opens a bootstrap CI PR instead. `changes loop skill files` does not block review or approval — loop-skill PRs are reviewed normally and can be approved; the marker and the `gatekeeper:needs-human` label only signal that the merge itself stays with a human. There is no `kind=needs-human` marker; `kind=needs-owner` is the only human-attention marker kind for this loop.
 
 Escalate (round limit or second dispute on the same `G` item):
 

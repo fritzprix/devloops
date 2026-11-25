@@ -50,11 +50,13 @@ from devloops_lib.config import GATEKEEPER_APPROVED_LABEL, add_agent_id_argument
 from devloops_lib.gatekeeper_readiness import assess_readiness
 from devloops_lib.gh import GhError, gh
 from devloops_lib.config import run_main
+from devloops_lib import contract
 
 MAX_ROUNDS = 5
-# Loop markers must appear at the very start of the comment (ignoring optional UTF-8 BOM and leading whitespace).
-# Quoted markers or mentions later in the comment are ignored.
-START_MARKER = re.compile(r"^(?:\ufeff)?\s*<!--\s*(gatekeeper-loop|worker-loop):\s*(.*?)\s*-->")
+# Loop markers are defined once in devloops_lib.contract (issue #65): they must
+# open the comment (optional BOM/whitespace aside), cover all three loops, and
+# only accepted vocabulary counts.
+START_MARKER = contract.MARKER
 FAILED = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}
 PENDING = {"PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "EXPECTED", "REQUESTED"}
 PROTECTED_SKILL_PREFIXES = (
@@ -98,29 +100,27 @@ def is_dev_base(base: str, config: dict | None = None) -> bool:
 
 
 def parse_markers(comments: list[dict], me: str) -> tuple[list[dict], list[dict]]:
-    """Return (gatekeeper markers incl. `clean`, worker responses) authored by me."""
-    verdicts, responses = [], []
-    for c in comments:
-        if (c.get("author") or {}).get("login") != me:
-            continue
-        match = START_MARKER.match(c.get("body") or "")
-        if not match:
-            continue
-        fields = dict(kv.split("=", 1) for kv in match.group(2).split() if "=" in kv)
-        entry = {**fields, "createdAt": c["createdAt"], "url": c.get("url")}
-        (verdicts if match.group(1) == "gatekeeper-loop" else responses).append(entry)
+    """Return (gatekeeper markers incl. `clean` and kind=needs-owner, worker
+    responses) authored by me, using the shared vocabulary (issue #65).
+
+    Only kind=response worker markers count as responses; `note` and
+    `needs-owner` markers never settle a round.
+    """
+    verdicts = contract.parse_markers(comments, me, loop="gatekeeper-loop")
+    responses = [m for m in contract.parse_markers(comments, me, loop="worker-loop")
+                 if m.get("kind") == "response"]
     return verdicts, responses
 
 
 def split_markers(markers: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
-    """Split gatekeeper markers into (verdicts, clean, needs-human).
+    """Split gatekeeper markers into (verdicts, clean, needs-owner).
 
     Only markers with an explicit ``verdict`` key count as verdicts, so
-    ``kind=needs-human`` markers never inflate review rounds.
+    ``kind=needs-owner`` markers never inflate review rounds.
     """
     verdicts = [m for m in markers if m.get("verdict") and m["verdict"] != "clean"]
     cleans = [m for m in markers if m.get("verdict") == "clean"]
-    needs = [m for m in markers if m.get("kind") == "needs-human"]
+    needs = [m for m in markers if m.get("kind") == contract.NEEDS_OWNER]
     return verdicts, cleans, needs
 
 
@@ -129,7 +129,7 @@ def owner_comments_after(comments: list[dict], me: str, since: str | None) -> li
     found = []
     for c in comments:
         login = (c.get("author") or {}).get("login") or ""
-        if login.endswith("[bot]") or START_MARKER.match(c.get("body") or ""):
+        if login.endswith("[bot]") or contract.is_marker(c.get("body") or ""):
             continue
         if login != me and c.get("authorAssociation") not in OWNER_ASSOCIATIONS:
             continue

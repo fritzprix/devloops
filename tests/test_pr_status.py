@@ -193,6 +193,46 @@ class MarkerAndGatekeeperStateTest(unittest.TestCase):
         self.assertEqual(state["verdict"], "changes-requested")
         self.assertTrue(state["awaitingWorker"])
 
+    def test_needs_owner_marker_after_changes_requested_keeps_it_visible(self):
+        # Issue #65 AC: a changes-requested verdict stays visible to the worker
+        # whatever markers follow it.
+        comments = [
+            {"author": {"login": "me"}, "createdAt": "2026-10-31T08:00:00Z",
+             "body": "<!-- gatekeeper-loop: round=1 verdict=changes-requested head=sha1 -->",
+             "url": "http://example.com/c1"},
+            {"author": {"login": "me"}, "createdAt": "2026-10-31T09:00:00Z",
+             "body": "<!-- gatekeeper-loop: kind=needs-owner reason=ambiguous-review-criteria head=sha1 -->",
+             "url": "http://example.com/c2"},
+        ]
+        state = pr_status.gatekeeper_state(comments, "me", "sha1")
+        self.assertEqual(state["verdict"], "changes-requested")
+        self.assertTrue(state["awaitingWorker"])
+
+    def test_note_marker_does_not_settle_a_round(self):
+        # Only kind=response worker markers answer a changes-requested verdict.
+        comments = [
+            {"author": {"login": "me"}, "createdAt": "2026-10-31T08:00:00Z",
+             "body": "<!-- gatekeeper-loop: round=1 verdict=changes-requested head=sha1 -->",
+             "url": "http://example.com/c1"},
+            {"author": {"login": "me"}, "createdAt": "2026-10-31T09:00:00Z",
+             "body": "<!-- worker-loop: note round=1 head=sha1 -->",
+             "url": "http://example.com/c2"},
+        ]
+        state = pr_status.gatekeeper_state(comments, "me", "sha1")
+        self.assertTrue(state["awaitingWorker"])
+
+    def test_response_marker_settles_the_round(self):
+        comments = [
+            {"author": {"login": "me"}, "createdAt": "2026-10-31T08:00:00Z",
+             "body": "<!-- gatekeeper-loop: round=1 verdict=changes-requested head=sha1 -->",
+             "url": "http://example.com/c1"},
+            {"author": {"login": "me"}, "createdAt": "2026-10-31T09:00:00Z",
+             "body": "<!-- worker-loop: response round=1 head=sha2 -->",
+             "url": "http://example.com/c2"},
+        ]
+        state = pr_status.gatekeeper_state(comments, "me", "sha1")
+        self.assertFalse(state["awaitingWorker"])
+
 
 if __name__ == "__main__":
     unittest.main()

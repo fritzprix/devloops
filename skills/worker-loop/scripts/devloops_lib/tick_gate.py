@@ -83,6 +83,8 @@ except ImportError:
         session_key,
     )
 
+from devloops_lib import contract
+
 EXIT_RUN = 0
 EXIT_NOOP = 1
 EXIT_BUSY = 2
@@ -722,7 +724,7 @@ def compute_fingerprint(gate_data: dict | None = None, me: str | None = None) ->
     return hasher.hexdigest()
 
 
-def find_actionable_backlog(gate_data: dict, me: str, approved_label: str = "approved") -> list[int]:
+def find_actionable_backlog(gate_data: dict, me: str, approved_label: str = contract.APPROVED) -> list[int]:
     """Return open, actionable issues with the approved label and no open closing PR.
 
     An issue is actionable when it carries approved_label, is not assigned to another
@@ -797,7 +799,7 @@ def preflight_decision(config: dict | None = None) -> tuple[str, list[int]]:
     gate_data = fetch_gate_data()
     me = gh("api", "user", "--jq", ".login").strip()
     cfg = config or load_config()
-    approved_label = cfg.get("labels", {}).get("approved", "approved")
+    approved_label = contract.issue_label(cfg, "approved")
     return (
         compute_fingerprint(gate_data, me),
         find_actionable_backlog(gate_data, me, approved_label),

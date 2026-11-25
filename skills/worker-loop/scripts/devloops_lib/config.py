@@ -15,10 +15,13 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, NoReturn, Optional
 
+from devloops_lib import contract
+
 AGENT_ID_ENV = "DEVLOOPS_AGENT_ID"
 # The gatekeeper's approval label. Like the other gatekeeper:* labels it is part of
-# the comment protocol (comment-format.md), not a per-project setting.
-GATEKEEPER_APPROVED_LABEL = "gatekeeper:approved"
+# the comment protocol (comment-format.md), not a per-project setting. It lives in
+# devloops_lib.contract (issue #65).
+GATEKEEPER_APPROVED_LABEL = contract.GATEKEEPER_APPROVED
 # One path component on every OS: no separators, no leading or trailing dots.
 AGENT_ID_PATTERN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
 
@@ -55,10 +58,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "state_dir": ".devloops",
     "labels": {
-        "producer": "auto:producer",
-        "validated": "validated",
-        "rejected": "rejected",
-        "approved": "approved",
+        "producer": contract.PRODUCER,
+        "validated": contract.VALIDATED,
+        "rejected": contract.REJECTED,
+        "approved": contract.APPROVED,
     },
     "producer": {
         "default_period": "24h",

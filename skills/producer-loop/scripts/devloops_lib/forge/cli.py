@@ -13,6 +13,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from devloops_lib import contract
 from devloops_lib.forge.base import Forge, ForgeError
 from devloops_lib.forge.github import GitHubForge
 from devloops_lib.forge.models import Issue, PullRequest
@@ -21,11 +22,8 @@ EXIT_OK = 0
 EXIT_FORGE_ERROR = 3
 EXIT_UNSUPPORTED = 5
 
-VERDICT_LABELS = (
-    "gatekeeper:approved",
-    "gatekeeper:changes-requested",
-    "gatekeeper:escalated",
-)
+# The gatekeeper verdict labels live in devloops_lib.contract (issue #65).
+VERDICT_LABELS = contract.GATEKEEPER_VERDICT_LABELS
 
 
 def _issue_dict(issue: Issue) -> Dict[str, Any]:

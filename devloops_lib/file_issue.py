@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from devloops_lib import contract
 from devloops_lib.config import get_state_path, load_config
 from devloops_lib.producer import (
     DEFAULT_MAX_NEW_ISSUES_PER_RUN,
@@ -115,7 +116,7 @@ def file_producer_issues(
         existing_fps = {fp.lower() for fp in existing_fps}
 
     limit = get_max_new_issues(task, cfg, cli_override=max_new)
-    producer_label = cfg.get("labels", {}).get("producer", "auto:producer")
+    producer_label = contract.issue_label(cfg, "producer")
     task_label = f"auto:{task}"
     labels = [producer_label, task_label]
 

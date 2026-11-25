@@ -11,39 +11,27 @@ Python stdlib only. All GitHub access goes through devloops_lib.gh.
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from devloops_lib import contract
 from devloops_lib.config import GATEKEEPER_APPROVED_LABEL
 from devloops_lib.gh import gh
 
-QA_ACCEPTED_LABEL = "qa:accepted"
-QA_CHANGES_LABEL = "qa:changes-requested"
-QA_NEEDS_HUMAN_LABEL = "qa:needs-human"
-QA_LABELS = (QA_ACCEPTED_LABEL, QA_CHANGES_LABEL, QA_NEEDS_HUMAN_LABEL)
-QA_VERDICTS = ("accepted", "changes-requested", "needs-human")
+# Label names and the marker vocabulary live in devloops_lib.contract (issue #65).
+QA_ACCEPTED_LABEL = contract.QA_ACCEPTED
+QA_CHANGES_LABEL = contract.QA_CHANGES_REQUESTED
+QA_NEEDS_HUMAN_LABEL = contract.QA_NEEDS_HUMAN
+QA_LABELS = contract.QA_VERDICT_LABELS
+QA_VERDICTS = contract.QA_VERDICTS
 VERDICT_LABEL = {
     "accepted": QA_ACCEPTED_LABEL,
     "changes-requested": QA_CHANGES_LABEL,
     "needs-human": QA_NEEDS_HUMAN_LABEL,
 }
 
-QA_MARKER = re.compile(r"<!--\s*qa-loop:\s*([^>]*?)\s*-->")
-GATEKEEPER_MARKER = re.compile(r"<!--\s*gatekeeper-loop:\s*([^>]*?)\s*-->")
-# The worker answers a qa changes-requested verdict with this marker.
-QA_RESPONSE_MARKER = re.compile(r"<!--\s*worker-loop:\s*qa-response\b([^>]*?)\s*-->")
 OWNER_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
-
-
-def _fields(raw: str) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for token in raw.split():
-        if "=" in token:
-            key, val = token.split("=", 1)
-            out[key] = val
-    return out
 
 
 def _author(comment: dict) -> str:
@@ -51,32 +39,24 @@ def _author(comment: dict) -> str:
     return author.get("login", "") if isinstance(author, dict) else str(author)
 
 
-def parse_markers(comments: list[dict], me: str, pattern: re.Pattern = QA_MARKER) -> list[dict]:
-    """Return marker fields from comments by `me`, oldest first, with `createdAt`."""
-    found = []
-    for c in comments:
-        if _author(c) != me:
-            continue
-        m = pattern.search(c.get("body") or "")
-        if not m:
-            continue
-        fields = _fields(m.group(1))
-        fields["createdAt"] = c.get("createdAt", "")
-        found.append(fields)
-    found.sort(key=lambda f: f["createdAt"])
-    return found
+def parse_markers(comments: list[dict], me: str, loop: str = "qa-loop") -> list[dict]:
+    """Valid markers by `me` for one loop, oldest first, with `createdAt`.
+
+    Quoted markers and markers outside the shared vocabulary (issue #65) never
+    appear.
+    """
+    return contract.parse_markers(comments, me, loop=loop)
 
 
 def last_qa_verdict(comments: list[dict], me: str) -> Optional[dict]:
     """Latest qa verdict marker (kind=verdict) by `me`, or None."""
-    verdicts = [m for m in parse_markers(comments, me)
-                if m.get("kind", "verdict") == "verdict" and m.get("verdict") in QA_VERDICTS]
+    verdicts = [m for m in parse_markers(comments, me) if m.get("kind") == "verdict"]
     return verdicts[-1] if verdicts else None
 
 
 def last_gatekeeper_verdict(comments: list[dict], me: str) -> Optional[dict]:
     """Latest gatekeeper round verdict marker by `me` (clean and needs-human markers excluded)."""
-    verdicts = [m for m in parse_markers(comments, me, GATEKEEPER_MARKER)
+    verdicts = [m for m in parse_markers(comments, me, loop="gatekeeper-loop")
                 if "round" in m and m.get("verdict")]
     return verdicts[-1] if verdicts else None
 
@@ -85,8 +65,7 @@ def owner_comments_after(comments: list[dict], me: str, since: Optional[str]) ->
     """Unmarked owner (or `me`) comments posted after `since`."""
     out = []
     for c in comments:
-        body = c.get("body") or ""
-        if "<!--" in body and ("qa-loop:" in body or "gatekeeper-loop:" in body or "worker-loop:" in body):
+        if contract.is_marker(c.get("body") or ""):
             continue
         if since and c.get("createdAt", "") <= since:
             continue
@@ -110,7 +89,9 @@ def classify_pr(pr: dict, me: str) -> dict:
     last = last_qa_verdict(comments, me)
     owner = owner_comments_after(comments, me, (last or {}).get("createdAt"))
     worker_reply = bool(last) and any(
-        m["createdAt"] > last["createdAt"] for m in parse_markers(comments, me, QA_RESPONSE_MARKER)
+        m["createdAt"] > last["createdAt"]
+        for m in parse_markers(comments, me, loop="worker-loop")
+        if m.get("kind") == "qa-response"
     )
 
     if last is None:
