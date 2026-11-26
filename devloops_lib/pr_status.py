@@ -241,7 +241,12 @@ def select_next_action(
     has_comments: bool,
     failing: list[str],
     pending: list[str],
+    needs_owner: bool = False,
 ) -> str:
+    # Issue #67: an item parked with needs-owner and no owner answer gets no
+    # work from any loop, whatever else applies to it.
+    if needs_owner:
+        return "none"
     if retarget:
         return "retarget"
     if conflicting:
@@ -288,6 +293,34 @@ def summarize(
         if name:
             labels.append(str(name))
     labels = sorted(labels)
+
+    labels: list[str] = []
+    for item in pr.get("labels") or []:
+        label_name = item.get("name") if isinstance(item, dict) else item
+        if label_name:
+            labels.append(str(label_name))
+    labels = sorted(labels)
+    # Issue #67: the needs-owner ask parks the PR until an owner answer. The
+    # issue-comments API carries author_association, so the answer check uses
+    # it when reachable and the pr-view comments otherwise.
+    needs_owner_parked = False
+    if contract.NEEDS_OWNER in labels:
+        try:
+            raw = json.loads(gh(
+                "api", f"repos/{owner}/{name}/issues/{number}/comments", "--paginate"
+            ) or "[]")
+            if isinstance(raw, dict):
+                raw = raw.get("comments") or []
+            ask_comments = [
+                {"author": {"login": c.get("user", {}).get("login") or ""},
+                 "createdAt": c.get("created_at") or "",
+                 "body": c.get("body") or "",
+                 "authorAssociation": c.get("author_association") or ""}
+                for c in raw if isinstance(c, dict)
+            ]
+        except Exception:
+            ask_comments = pr.get("comments") or []
+        needs_owner_parked = contract.needs_owner_parked(ask_comments, me)
 
     threads = []
     cursor = None
@@ -351,6 +384,7 @@ def summarize(
         has_comments=bool(threads or new_comments),
         failing=failing,
         pending=pending,
+        needs_owner=needs_owner_parked,
     )
 
     return {
@@ -371,6 +405,7 @@ def summarize(
         "gatekeeper": gatekeeper,
         "qa": qa,
         "labels": labels,
+        "needsOwner": needs_owner_parked,
         "duplicateCommits": duplicates,
         "mergedParent": merged_parent,
         "retargetBase": retarget_base,

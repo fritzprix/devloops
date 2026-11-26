@@ -174,6 +174,17 @@ class GitHubForge:
         """Run a gh api command (gh api does not accept --repo)."""
         return self._run(list(args))
 
+    def _owner_repo(self) -> tuple[str, str]:
+        """Resolve owner/repo for `gh api` paths from --repo or the CWD repo."""
+        if self._repo:
+            owner, _, name = self._repo.partition("/")
+            if owner and name:
+                return owner, name
+        ref = self.repo_ref()
+        if not ref.owner or not ref.name:
+            raise ForgeError("GitHubForge: cannot resolve owner/repo for dependency operations")
+        return ref.owner, ref.name
+
     # -- identity / repository -------------------------------------------
 
     def whoami(self) -> str:
@@ -334,17 +345,32 @@ class GitHubForge:
             cursor = page_info.get("endCursor")
         return threads
 
-    def list_pr_comments(self, number: int) -> List[PrComment]:
-        data = json.loads(self._call("pr", "view", str(number), "--json", "comments"))
-        out: List[PrComment] = []
-        for c in data.get("comments") or []:
-            out.append(PrComment(
-                author=_login(c.get("author")),
-                created_at=c.get("createdAt") or "",
+    def list_comments(self, number: int) -> List[PrComment]:
+        """Comments of an issue OR a pull request (issue #67).
+
+        GitHub's issue-comments endpoint answers for pull requests too, so one
+        read works for both item kinds and carries author_association for the
+        needs-owner protocol.
+        """
+        owner, repo = self._owner_repo()
+        out = json.loads(self._api(
+            "api", f"repos/{owner}/{repo}/issues/{number}/comments", "--paginate"
+        ) or "[]")
+        if isinstance(out, dict):
+            out = out.get("comments") or []
+        items: List[PrComment] = []
+        for c in out if isinstance(out, list) else []:
+            items.append(PrComment(
+                author=_login(c.get("user")),
+                created_at=c.get("created_at") or "",
                 body=c.get("body") or "",
-                url=c.get("url"),
+                url=c.get("html_url"),
+                association=str(c.get("author_association") or ""),
             ))
-        return out
+        return items
+
+    def list_pr_comments(self, number: int) -> List[PrComment]:
+        return self.list_comments(number)
 
     def post_pr_comment(self, number: int, body: str) -> None:
         self._call("pr", "comment", str(number), "--body", body)

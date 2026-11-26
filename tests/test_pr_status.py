@@ -86,6 +86,19 @@ class SelectNextActionTest(unittest.TestCase):
     def action(self, **overrides):
         return pr_status.select_next_action(**{**self.base, **overrides})
 
+    def test_needs_owner_park_overrides_everything(self):
+        # Issue #67: a parked needs-owner item gets no work from any loop.
+        everything = dict(
+            retarget=True, conflicting=True, duplicates=["abc"], gatekeeper={"awaitingWorker": True},
+            qa={"awaitingWorker": True},
+            has_comments=True, failing=["ci"], pending=["ci"], needs_owner=True,
+        )
+        self.assertEqual(pr_status.select_next_action(**everything), "none")
+
+    def test_needs_owner_defaults_to_false(self):
+        # Callers that do not pass needs_owner keep their previous behaviour.
+        self.assertEqual(self.action(conflicting=True), "resolve-conflict")
+
     def test_priority_order(self):
         everything = dict(
             retarget=True, conflicting=True, duplicates=["abc"], gatekeeper={"awaitingWorker": True},

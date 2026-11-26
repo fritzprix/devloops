@@ -15,7 +15,7 @@ commands:
   lint: ""
   build: ""
 
-# Declared agent/harness capabilities; worker checks before needsUser (see escalation-policy.md)
+# Declared agent/harness capabilities; worker checks before a needs-owner ask (see escalation-policy.md)
 environment:
   capabilities:
     - browser
@@ -82,7 +82,7 @@ qa:
 
 worker:
   max_items_per_tick: 1       # PRs and issues to finish per tick
-  open_pr_limit: 5            # throttle: worker idles without needsUser while this many unapproved PRs (+ live issue claims without PR) are open
+  open_pr_limit: 5            # throttle: worker idles without a needs-owner ask while this many unapproved PRs (+ live issue claims without PR) are open
   issue_claim_ttl_minutes: 120  # an issue claim not refreshed for this long is stale and can be taken over
   lock_ttl_seconds: 1800        # tick lock TTL; DEVLOOPS_LOCK_TTL_SECONDS env overrides
 

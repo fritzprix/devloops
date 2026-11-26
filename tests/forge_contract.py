@@ -331,10 +331,17 @@ class FakeForge:
         return out
 
     def list_pr_comments(self, number: int):
+        return self.list_comments(number)
+
+    def list_comments(self, number: int):
+        # Issue #67: one read answers issues and pull requests.
         from devloops_lib.forge.models import PrComment
-        pr = self._pr(number)
+        try:
+            item: Dict[str, Any] = self._pr(number)
+        except ForgeError:
+            item = self._issue(number)
         return [PrComment(author=c["author"]["login"], created_at=c["createdAt"],
-                          body=c["body"], url=c["url"]) for c in pr["comments"]]
+                          body=c["body"], url=c["url"]) for c in item.get("comments") or []]
 
     def post_pr_comment(self, number: int, body: str) -> None:
         self._pr(number)["comments"].append({
@@ -431,6 +438,8 @@ class GhStub:
             return self._issue_create(args)
         if head == ("issue", "edit"):
             return self._issue_edit(argv[2], args)
+        if head == ("issue", "comment"):
+            return self._issue_comment(argv[2], args)
         if head == ("pr", "list"):
             return json.dumps(self._pr_list(args))
         if head == ("pr", "view"):
@@ -439,7 +448,7 @@ class GhStub:
             return self._pr_comment(argv[2], args)
         if head == ("api", "graphql"):
             return self._graphql(args)
-        if len(argv) > 1 and argv[0] == "api" and argv[1].startswith("repos/"):
+        if argv and argv[0] == "api" and len(argv) > 1 and argv[1].startswith("repos/"):
             return self._api_repo(argv[1], args)
         raise ForgeError(f"unexpected gh args: {args}")
 
@@ -524,6 +533,42 @@ class GhStub:
             "body": self._opt(args, "--body") or "", "url": url,
         })
         return url + "\n"
+
+    def _issue_comment(self, number_s: str, args: List[str]) -> str:
+        issue = self._find_issue(int(number_s))
+        comments = issue.setdefault("comments", [])
+        url = issue["url"] + f"#issuecomment-{len(comments) + 1}"
+        comments.append({
+            "author": {"login": SEED["user"]}, "createdAt": "2026-02-02T00:00:00Z",
+            "body": self._opt(args, "--body") or "", "url": url,
+        })
+        return url + "\n"
+
+    def _api_repo(self, path: str, args: List[str]) -> str:
+        parts = path.split("/")
+        if len(parts) == 6 and parts[0] == "repos" and parts[3] == "issues" and parts[5] == "comments":
+            # gh api repos/.../issues/{n}/comments answers for issues AND pull
+            # requests (issue #67); comments come back in REST shape.
+            number = int(parts[4])
+            item: Dict[str, Any] = {}
+            for i in self.issues:
+                if i["number"] == number:
+                    item = i
+                    break
+            else:
+                item = self._find_pr(number)
+            out = []
+            for c in item.get("comments") or []:
+                author = (c.get("author") or {}).get("login") or ""
+                out.append({
+                    "user": {"login": author},
+                    "created_at": c.get("createdAt", ""),
+                    "body": c.get("body", ""),
+                    "html_url": c.get("url"),
+                    "author_association": "OWNER" if author == SEED["user"] else "NONE",
+                })
+            return json.dumps(out)
+        raise ForgeError(f"unexpected gh api path: {path}")
 
     def _graphql(self, args: List[str]) -> str:
         self.graphql_calls.append(list(args))
@@ -718,6 +763,17 @@ class ForgeContract:
         after = self.forge.list_pr_comments(10)
         assert len(after) == len(before) + 1
         assert after[-1].body == "worker-loop: note"
+
+    def test_issue_comments_roundtrip(self):
+        # Issue #67 AC: the one comment read must answer for an ISSUE number
+        # on every binding, not only pull-request numbers.
+        before = self.forge.list_comments(2)
+        assert [c.body for c in before] == []
+        self.forge.post_issue_comment(2, "worker-loop: issue note")
+        after = self.forge.list_comments(2)
+        assert len(after) == len(before) + 1
+        assert after[-1].body == "worker-loop: issue note"
+        assert after[-1].author == USER
 
     # -- gate / refs --------------------------------------------------------
 

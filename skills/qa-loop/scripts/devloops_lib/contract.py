@@ -35,16 +35,13 @@ GATEKEEPER_ESCALATED = "gatekeeper:escalated"
 GATEKEEPER_NEEDS_HUMAN = "gatekeeper:needs-human"
 QA_ACCEPTED = "qa:accepted"
 QA_CHANGES_REQUESTED = "qa:changes-requested"
-# Transitional until issue #67 replaces the qa needs-human verdict with
-# needs-owner; until then it stays defined here and nowhere else.
-QA_NEEDS_HUMAN = "qa:needs-human"
 
 GATEKEEPER_VERDICT_LABELS = (
     GATEKEEPER_APPROVED,
     GATEKEEPER_CHANGES_REQUESTED,
     GATEKEEPER_ESCALATED,
 )
-QA_VERDICT_LABELS = (QA_ACCEPTED, QA_CHANGES_REQUESTED, QA_NEEDS_HUMAN)
+QA_VERDICT_LABELS = (QA_ACCEPTED, QA_CHANGES_REQUESTED)
 
 
 def issue_label(config: dict, key: str) -> str:
@@ -116,8 +113,7 @@ GATEKEEPER_VERDICTS = ("changes-requested", "approve", "clean", "escalate")
 GATEKEEPER_KINDS = ("needs-owner",)
 WORKER_KINDS = ("response", "qa-response", "note", "needs-owner")
 QA_KINDS = ("verdict", "post-merge", "needs-owner")
-# qa verdict values. "needs-human" is transitional until issue #67.
-QA_VERDICTS = ("accepted", "changes-requested", "needs-human")
+QA_VERDICTS = ("accepted", "changes-requested")
 # `clean` accepts one optional field: blocked-by=#N.
 BLOCKED_BY = re.compile(r"#\d+\Z")
 
@@ -192,3 +188,62 @@ def parse_markers(comments: list[dict], me: str, loop: Optional[str] = None) -> 
         found.append({**fields, "loop": name, "createdAt": c.get("createdAt", ""), "url": c.get("url")})
     found.sort(key=lambda f: f["createdAt"])
     return found
+
+
+# --- needs-owner protocol (issue #67) ------------------------------------------
+
+# Association values that mark a comment author as acting for the repository.
+OWNER_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+
+
+def author_login(comment: dict) -> str:
+    author = comment.get("author") or {}
+    if isinstance(author, dict):
+        return str(author.get("login") or "")
+    return str(author or "")
+
+
+def author_association(comment: dict) -> str:
+    """Author association of a comment, upper-cased, or "" when the forge does not report it."""
+    value = comment.get("authorAssociation") or comment.get("author_association") or ""
+    return str(value).upper()
+
+
+def first_owner_reply(comments: list[dict], me: str, since: str) -> Optional[dict]:
+    """First owner answer after `since` (ISO time), or None.
+
+    An owner answer is the first comment posted after `since` that carries no
+    loop marker and was written by a repository owner, member, or collaborator,
+    or by the shared account `me` itself.
+    """
+    for c in sorted(comments or [], key=lambda c: c.get("createdAt", "")):
+        if is_marker(c.get("body") or ""):
+            continue
+        if c.get("createdAt", "") <= since:
+            continue
+        login = author_login(c)
+        if login == me or author_association(c) in OWNER_ASSOCIATIONS:
+            return {
+                "author": login,
+                "createdAt": c.get("createdAt", ""),
+                "url": c.get("url"),
+            }
+    return None
+
+
+def needs_owner_parked(comments: list[dict], me: str) -> bool:
+    """True while a needs-owner ask is unresolved, so no loop may act.
+
+    The ask is the latest marker comment with kind=needs-owner (any loop). It
+    is resolved by `first_owner_reply` after that ask. A needs-owner label
+    with no findable ask stays parked until an owner answers.
+    """
+    comments = comments or []
+    asks: list[str] = []
+    for c in comments:
+        parsed = parse_marker(c.get("body") or "")
+        if parsed is not None and parsed[1].get("kind") == NEEDS_OWNER:
+            asks.append(c.get("createdAt", ""))
+    if not asks:
+        return True
+    return first_owner_reply(comments, me, max(asks)) is None

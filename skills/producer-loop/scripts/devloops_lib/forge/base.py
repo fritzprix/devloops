@@ -99,6 +99,10 @@ class Forge(Protocol):
 
     def add_blocker(self, number: int, blocker_number: int) -> None: ...
 
+    # Comments of an issue OR a pull request (issue #67). One read must work
+    # for both item kinds on every binding.
+    def list_comments(self, number: int) -> List[PrComment]: ...
+
     # gate / refs
     def gate_snapshot(self, pr_limit: int = 100, issue_limit: int = 100) -> GateSnapshot: ...
 

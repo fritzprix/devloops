@@ -44,7 +44,7 @@ Accepted (the `### Test plan` is mandatory; post-merge testing uses it):
 Needs human (a verdict; it blocks the sign-off until a human answers):
 
 ```markdown
-<!-- qa-loop: kind=verdict round=2 verdict=needs-human reason=<manual-only|tool-blocked|repeated-decline|loop-skill> head=<sha> -->
+<!-- qa-loop: kind=needs-owner reason=<manual-only|tool-blocked|repeated-decline|loop-skill> head=<sha> -->
 
 ## QA · round 2 · Needs human
 
@@ -72,15 +72,15 @@ The worker answers a qa `changes-requested` verdict in one comment:
 | --- | --- |
 | `qa:accepted` | qa accepted the current head. One half of the sign-off. |
 | `qa:changes-requested` | The worker must add a test, a test hook, or a manual-verification note. |
-| `qa:needs-human` | qa cannot decide alone. A human answers on the PR. |
+| `needs-owner` | The asking loop (worker, gatekeeper, or qa) needs the owner. Set with a `kind=needs-owner` marker comment; the asking loop clears it after the owner answers. No loop works on a parked item. |
 
 Keep exactly one `qa:*` label on a PR. Swap it with each verdict:
 
 ```bash
 python3 "$SKILL_DIR/scripts/forge.py" pr comment N --body-file <tmp>
-python3 "$SKILL_DIR/scripts/forge.py" pr label add N qa:accepted && python3 "$SKILL_DIR/scripts/forge.py" pr label remove N qa:changes-requested qa:needs-human
-python3 "$SKILL_DIR/scripts/forge.py" pr label add N qa:changes-requested && python3 "$SKILL_DIR/scripts/forge.py" pr label remove N qa:accepted qa:needs-human
-python3 "$SKILL_DIR/scripts/forge.py" pr label add N qa:needs-human && python3 "$SKILL_DIR/scripts/forge.py" pr label remove N qa:accepted qa:changes-requested
+python3 "$SKILL_DIR/scripts/forge.py" pr label add N qa:accepted && python3 "$SKILL_DIR/scripts/forge.py" pr label remove N qa:changes-requested
+python3 "$SKILL_DIR/scripts/forge.py" pr label add N qa:changes-requested && python3 "$SKILL_DIR/scripts/forge.py" pr label remove N qa:accepted
+python3 "$SKILL_DIR/scripts/forge.py" issue label add N needs-owner && python3 "$SKILL_DIR/scripts/forge.py" pr comment N --body-file ask.md  # kind=needs-owner marker; remove needs-owner after the owner answers
 ```
 
 Create missing labels once with `python3 "$SKILL_DIR/scripts/forge.py" label ensure <name> --color <hex> --description <text>`.

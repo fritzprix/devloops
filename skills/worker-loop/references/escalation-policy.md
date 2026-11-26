@@ -1,6 +1,6 @@
 # Escalation policy
 
-Loops are autonomous when work is **clear** and the **declared environment** can do it. Stop and record `needsUser` (worker) when the work is **ambiguous**, needs a **missing capability/secret/permission**, or is an **irreversible out-of-repo action**. Do not guess that something is impossible—check `environment.capabilities` in `devloops.config.yaml` (and any harness-provided capability list) explicitly.
+Loops are autonomous when work is **clear** and the **declared environment** can do it. Stop and ask the owner — the **needs-owner ask** (below) — when the work is **ambiguous**, needs a **missing capability/secret/permission**, or is an **irreversible out-of-repo action**. Do not guess that something is impossible—check `environment.capabilities` in `devloops.config.yaml` (and any harness-provided capability list) explicitly.
 
 ## Environment capabilities
 
@@ -17,11 +17,11 @@ environment:
     - diagrams    # Mermaid, PlantUML, ASCII architecture sketches
 ```
 
-- **Capability check**: Before `needsUser` for “cannot do X”, verify X maps to a capability name and that name is **not** listed. In `needsUser.question`, cite the missing capability (e.g. `missing capability: screen_capture`).
+- **Capability check**: Before a needs-owner ask for “cannot do X”, verify X maps to a capability name and that name is **not** listed. In the ask comment, cite the missing capability (e.g. `missing capability: screen_capture`).
 - **Harness override**: If the runtime documents extra capabilities (agent tool list), treat the union of config + harness as available. Never assume a capability that is not declared.
-- **Secrets/permissions**: Credentials are not capabilities. A listed `github_cli` capability does not imply push rights or org secrets—those are separate; record `needsUser` with the concrete secret or permission name.
+- **Secrets/permissions**: Credentials are not capabilities. A listed `github_cli` capability does not imply push rights or org secrets—those are separate; name the concrete secret or permission in the ask comment.
 
-## Do the work yourself (no `needsUser`)
+## Do the work yourself (no needs-owner ask)
 
 When the issue/PR requirement is **unambiguous** and each needed capability is declared:
 
@@ -31,9 +31,19 @@ When the issue/PR requirement is **unambiguous** and each needed capability is d
 
 **Not** a reason to stall: the task merely touches an “external” product, needs a screenshot of a public UI, or uses a live API—if `browser` / `network` / `screen_capture` are declared, do it.
 
-## Worker: `needsUser`
+## The needs-owner ask (all loops)
 
-Record `state.json` `needsUser` when **any** of these apply:
+An ask parks one item until the owner answers:
+
+1. Set the `needs-owner` label on the issue or PR.
+2. Post exactly one marker comment opening with the loop marker (worker: `<!-- worker-loop: kind=needs-owner ref=<item> -->`; qa: `<!-- qa-loop: kind=needs-owner reason=<...> head=<sha> -->`; gatekeeper: `<!-- gatekeeper-loop: kind=needs-owner reason=<...> -->`). The comment holds the blocked item, the question, the options, and a recommendation.
+3. Do not ask a second time while the label stands unanswered.
+4. An owner answer is the first later comment with no loop marker written by a repository owner, member, or collaborator — or by the shared account.
+5. The asking loop clears the label in its next tick after an answer and follows it. No loop works on the item while parked.
+
+## Worker: when to ask
+
+Post a needs-owner ask when **any** of these apply:
 
 | Trigger | What to ask |
 | --- | --- |
@@ -41,9 +51,9 @@ Record `state.json` `needsUser` when **any** of these apply:
 | **(b) Missing environment** | A required capability, secret, or permission is not in the declared environment (name it explicitly) |
 | **(c) Irreversible external** | Action outside the repo the agent must not simulate (production data deletion, payments, sending to real users, registry publish without access, legal sign-off) |
 
-**Not** `needsUser`:
+**Not** a needs-owner ask:
 
-- **Open PR limit** or **stack depth** → idle this tick only (worker SKILL); never throttle via `needsUser`.
+- **Open PR limit** or **stack depth** → idle this tick only (worker SKILL); never throttle via a needs-owner ask.
 - Clear issue with declared capabilities → execute; no “external services” catch-all.
 
 When blocked on (a), quote the ambiguous lines in `question` and stop work that depends on the answer. When blocked on (b), state the missing capability/secret/permission by name.
@@ -51,7 +61,7 @@ When blocked on (a), quote the ambiguous lines in `question` and stop work that 
 ## Sensitive paths and CI config
 
 - **Clear scope** in the issue/PR: edit `protected_paths`, `.github/workflows`, or release config as required; expect stricter gatekeeper review (bypass scenarios in `### Checked`). Worker does not stall for sensitivity alone.
-- **Ambiguous scope or approach** for those areas → **(a) Ambiguity** → `needsUser` before large edits.
+- **Ambiguous scope or approach** for those areas → **(a) Ambiguity** → needs-owner ask before large edits.
 
 ## Gatekeeper: `escalate` and `gatekeeper:needs-human`
 
