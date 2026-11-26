@@ -233,7 +233,10 @@ def find_merged_via_parent_issues(
 # The pr_status priority order. wait-ci and none need no work now.
 # Canonical list shared by the worker plan (skills/worker-loop/scripts/plan_tick.py)
 # and the PM pipeline counter prsNeedingWorker (devloops_lib.pm_pipeline, issue #71).
-WORKER_PR_ACTIONS = ["retarget", "resolve-conflict", "restack", "address-gatekeeper", "address-qa", "triage-comments", "fix-ci"]
+WORKER_PR_ACTIONS = [
+    "retarget", "resolve-conflict", "rebase", "restack",
+    "address-gatekeeper", "address-qa", "triage-comments", "fix-ci",
+]
 
 
 def select_next_action(
@@ -248,6 +251,8 @@ def select_next_action(
     pending: list[str],
     escalated: bool = False,
     needs_owner: bool = False,
+    open_blockers: bool = False,
+    rebase_after_blockers: bool = False,
 ) -> str:
     # Issue #67: an item parked with needs-owner and no owner answer gets no
     # work from any loop, whatever else applies to it.
@@ -255,10 +260,15 @@ def select_next_action(
     # The worker must not rebase, fix CI, triage, or answer reviews on it.
     if needs_owner or escalated:
         return "none"
+    # Issue #68 / overlap: open-blocker parks the PR (wait-blocker) until cleared.
+    if open_blockers:
+        return "wait-blocker"
     if retarget:
         return "retarget"
     if conflicting:
         return "resolve-conflict"
+    if rebase_after_blockers:
+        return "rebase"
     if duplicates:
         return "restack"
     if gatekeeper and gatekeeper["awaitingWorker"]:
@@ -272,6 +282,15 @@ def select_next_action(
     if pending:
         return "wait-ci"
     return "none"
+
+
+def latest_clean_marker(comments: list[dict], me: str) -> dict | None:
+    """Latest gatekeeper ``clean`` marker from @me, or None."""
+    clean = None
+    for marker in contract.parse_markers(comments, me):
+        if marker["loop"] == "gatekeeper-loop" and marker.get("verdict") == "clean":
+            clean = marker
+    return clean
 
 
 def summarize(
@@ -383,6 +402,27 @@ def summarize(
     )
     retarget_base = resolved_default if merged_parent else None
 
+    # Issue #68: blocker links park the PR (wait-blocker) or clear into rebase.
+    open_blocker_nums: list[int] = []
+    all_blocker_nums: list[int] = []
+    clean_marker = latest_clean_marker(pr.get("comments") or [], me)
+    if not needs_owner_parked:
+        try:
+            from devloops_lib.forge.detect import get_forge
+
+            forge_obj = get_forge(load_config())
+            all_blocker_nums = contract.blocker_numbers(forge_obj, number)
+            open_blocker_nums = contract.open_blockers(forge_obj, number)
+        except Exception:
+            all_blocker_nums = []
+            open_blocker_nums = []
+    rebase_after = contract.needs_blocker_rebase(
+        blocker_links=all_blocker_nums,
+        open_blocker_numbers=open_blocker_nums,
+        head=pr["headRefOid"],
+        clean_head=(clean_marker or {}).get("head"),
+    )
+
     next_action = select_next_action(
         retarget=bool(merged_parent),
         conflicting=pr.get("mergeable") == "CONFLICTING",
@@ -394,6 +434,8 @@ def summarize(
         pending=pending,
         escalated=escalated,
         needs_owner=needs_owner_parked,
+        open_blockers=bool(open_blocker_nums),
+        rebase_after_blockers=rebase_after,
     )
 
     return {
@@ -415,6 +457,7 @@ def summarize(
         "qa": qa,
         "labels": labels,
         "needsOwner": needs_owner_parked,
+        "openBlockers": open_blocker_nums,
         "duplicateCommits": duplicates,
         "mergedParent": merged_parent,
         "retargetBase": retarget_base,

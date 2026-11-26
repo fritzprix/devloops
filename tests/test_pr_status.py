@@ -95,6 +95,20 @@ class SelectNextActionTest(unittest.TestCase):
         )
         self.assertEqual(pr_status.select_next_action(**everything), "none")
 
+
+    def test_open_blockers_wait_blocker(self):
+        self.assertEqual(self.action(open_blockers=True), "wait-blocker")
+
+    def test_needs_owner_outranks_open_blockers(self):
+        self.assertEqual(self.action(needs_owner=True, open_blockers=True, failing=["CI"]), "none")
+
+    def test_rebase_after_blockers(self):
+        self.assertEqual(self.action(rebase_after_blockers=True), "rebase")
+
+    def test_open_blockers_outrank_rebase(self):
+        self.assertEqual(self.action(open_blockers=True, rebase_after_blockers=True), "wait-blocker")
+
+
     def test_needs_owner_defaults_to_false(self):
         # Callers that do not pass needs_owner keep their previous behaviour.
         self.assertEqual(self.action(conflicting=True), "resolve-conflict")
