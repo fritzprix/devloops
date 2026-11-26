@@ -263,3 +263,28 @@ class NeedsOwnerProtocolTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BlockerRebaseTest(unittest.TestCase):
+    """Issue #68: wait while open, rebase when closed + clean at head."""
+
+    class Forge:
+        def __init__(self, blockers):
+            self._blockers = blockers
+
+        def blocked_by(self, number):
+            return list(self._blockers)
+
+    def test_blocker_numbers_includes_closed(self):
+        forge = self.Forge([Blocker(12, "open"), Blocker(5, "closed")])
+        self.assertEqual(contract.blocker_numbers(forge, 20), [5, 12])
+
+    def test_needs_rebase_only_when_links_closed_and_clean_matches(self):
+        self.assertFalse(contract.needs_blocker_rebase(
+            blocker_links=[], open_blocker_numbers=[], head="abc", clean_head="abc"))
+        self.assertFalse(contract.needs_blocker_rebase(
+            blocker_links=[5], open_blocker_numbers=[5], head="abc", clean_head="abc"))
+        self.assertFalse(contract.needs_blocker_rebase(
+            blocker_links=[5], open_blocker_numbers=[], head="abc", clean_head="old"))
+        self.assertTrue(contract.needs_blocker_rebase(
+            blocker_links=[5], open_blocker_numbers=[], head="abc", clean_head="abc"))

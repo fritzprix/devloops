@@ -931,3 +931,27 @@ class LockPublicationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FindRebasePrsTest(unittest.TestCase):
+    def test_counts_only_clean_at_head_with_closed_blockers(self):
+        from types import SimpleNamespace
+        class Forge:
+            def blocked_by(self, number):
+                from devloops_lib.forge.models import Blocker
+                return [Blocker(9, "closed")]
+        gate = {"prs": [
+            {"number": 1, "headRefOid": "aaa", "isDraft": False, "author": {"login": "me"}},
+            {"number": 2, "headRefOid": "bbb", "isDraft": False, "author": {"login": "me"}},
+            {"number": 3, "headRefOid": "ccc", "isDraft": False, "author": {"login": "other"}},
+        ]}
+        def comments(number):
+            if number == 1:
+                return [{"author": {"login": "me"}, "createdAt": "t",
+                         "body": "<!-- gatekeeper-loop: verdict=clean head=aaa base=main -->"}]
+            if number == 2:
+                return [{"author": {"login": "me"}, "createdAt": "t",
+                         "body": "<!-- gatekeeper-loop: verdict=clean head=old base=main -->"}]
+            return []
+        found = tick_gate.find_rebase_prs(gate, "me", forge=Forge(), comments_fn=comments)
+        self.assertEqual(found, [1])

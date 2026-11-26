@@ -26,6 +26,8 @@ status values:
   approved   - approve verdict exists for the current head, base unchanged, CI
                not failing, no newer owner comment.
   escalate   - round limit reached or second dispute on the same finding; maintainer direction.
+  blocked    - open forge blocker link (issue #68); parked until blockers close.
+               No review comment while blocked.
   wait-owner - needs-owner ask (label or real ask marker) with no owner answer.
 
 No status skips review (issue #81): every reviewable PR gets a full review at
@@ -265,6 +267,7 @@ def classify(
     repo_has_ci: bool = True,
     stalled: list[str] | None = None,
     needs_owner: bool = False,
+    open_blocker_numbers: list[int] | None = None,
 ) -> tuple[str, str, int]:
     """Return (status, one-line reason, priority). Lower priority number is handled first."""
     ci_applies = is_dev_base(base, config=config)
@@ -273,6 +276,11 @@ def classify(
     # Issue #67: a parked needs-owner ask gets no work from any loop.
     if needs_owner:
         return "wait-owner", "needs-owner ask awaiting owner answer", 9
+
+    # Issue #68 / overlap: open-blocker parks before merge-conflict and verdicts.
+    blockers = sorted({int(n) for n in (open_blocker_numbers or [])})
+    if blockers:
+        return "blocked", f"open blocker #{', #'.join(str(n) for n in blockers)}", 9
 
     if mergeable == "CONFLICTING":
         return "wait-worker", "merge conflict; worker must rebase", 9
@@ -446,6 +454,16 @@ def summarize(
         comments, me, labeled=contract.NEEDS_OWNER in labels,
     )
 
+    open_blocker_nums: list[int] = []
+    if not parked:
+        try:
+            from devloops_lib.forge.detect import get_forge
+
+            forge_obj = get_forge(cfg, state=state)
+            open_blocker_nums = contract.open_blockers(forge_obj, number)
+        except Exception:
+            open_blocker_nums = []
+
     status, reason, priority = classify(
         mergeable=pr.get("mergeable"),
         head=head,
@@ -467,6 +485,7 @@ def summarize(
         repo_has_ci=repo_has_ci,
         stalled=stalled,
         needs_owner=parked,
+        open_blocker_numbers=open_blocker_nums,
     )
     # Loop-skill PRs keep their normal status; own_skill only drives needsHuman below.
     needs_at_head = next((m for m in reversed(needs) if m.get("head") == head), None)

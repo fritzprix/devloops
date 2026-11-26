@@ -846,21 +846,87 @@ def preflight_forge(
     return record, changed
 
 
+def find_rebase_prs(
+    gate_data: dict,
+    me: str,
+    *,
+    forge: object | None = None,
+    comments_fn=None,
+) -> list[int]:
+    """PRs that meet the issue #68 rebase rule (closed blockers + clean at head).
+
+    Blockers are read only for PRs whose latest gatekeeper ``clean`` marker is at
+    the current head. The gate GraphQL snapshot is unchanged.
+    """
+    forge_obj = forge
+    if forge_obj is None:
+        try:
+            from devloops_lib.forge.detect import get_forge
+
+            forge_obj = get_forge(load_config())
+        except Exception:
+            return []
+
+    def _comments(number: int) -> list[dict]:
+        if comments_fn is not None:
+            return list(comments_fn(number))
+        raw = json.loads(
+            gh("pr", "view", str(number), "--json", "comments") or "{}"
+        )
+        return list(raw.get("comments") or [])
+
+    out: list[int] = []
+    for pr in gate_data.get("prs") or []:
+        if not pr:
+            continue
+        if (pr.get("author") or {}).get("login") != me:
+            continue
+        if pr.get("isDraft"):
+            continue
+        number = int(pr["number"])
+        head = str(pr.get("headRefOid") or "")
+        comments = _comments(number)
+        clean = None
+        for marker in contract.parse_markers(comments, me):
+            if marker["loop"] == "gatekeeper-loop" and marker.get("verdict") == "clean":
+                clean = marker
+        if not clean or clean.get("head") != head:
+            continue
+        try:
+            links = contract.blocker_numbers(forge_obj, number)
+            opens = contract.open_blockers(forge_obj, number)
+        except Exception:
+            continue
+        if contract.needs_blocker_rebase(
+            blocker_links=links,
+            open_blocker_numbers=opens,
+            head=head,
+            clean_head=clean.get("head"),
+        ):
+            out.append(number)
+    return sorted(out)
+
+
 def preflight_decision(config: dict | None = None) -> tuple[str, list[int]]:
-    """Return (fingerprint, actionable approved backlog) from one GraphQL fetch.
+    """Return (fingerprint, actionable work numbers) from one GraphQL fetch.
 
     The backlog makes the gate RUN even when the fingerprint is unchanged, so an
     approved issue with no closing PR is not starved by a quiet repo. An idle tick
     records the fingerprint as 'idleFingerprint' on exit; while candidate state keeps
     matching it, the gate returns NOOP even with a backlog (issue #76).
+
+    Issue #68: PRs that meet the blocker-rebase rule are also counted as work
+    (same ``needs_blocker_rebase`` helper) and wake the gate like an approved backlog.
     """
     gate_data = fetch_gate_data()
     me = gh("api", "user", "--jq", ".login").strip()
     cfg = config or load_config()
     approved_label = contract.issue_label(cfg, "approved")
+    backlog = find_actionable_backlog(gate_data, me, approved_label)
+    rebase_prs = find_rebase_prs(gate_data, me)
     return (
         compute_fingerprint(gate_data, me),
-        find_actionable_backlog(gate_data, me, approved_label),
+        sorted(set(backlog) | set(rebase_prs)),
     )
 
 
@@ -1120,7 +1186,7 @@ def main(argv: list[str] | None = None) -> None:
             state["tickStartFingerprint"] = fp
             save_state(state_path, state)
         if last_fp and last_fp == fp:
-            print(f"RUN (approved backlog waiting: #{', #'.join(map(str, backlog))})")
+            print(f"RUN (actionable work waiting: #{', #'.join(map(str, backlog))})")
         else:
             print(f"RUN (changes detected: {fp[:12]})")
         _emit_token(tick_token)

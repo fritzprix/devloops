@@ -100,6 +100,30 @@ def open_blockers(forge: Any, number: int) -> List[int]:
     return sorted(int(b.number) for b in forge.blocked_by(number) if str(b.state).lower() == "open")
 
 
+def blocker_numbers(forge: Any, number: int) -> List[int]:
+    """Sorted numbers of every blocker link on issue/PR `number` (open or closed)."""
+    return sorted(int(b.number) for b in forge.blocked_by(number))
+
+
+def needs_blocker_rebase(
+    *,
+    blocker_links: Iterable[Any],
+    open_blocker_numbers: Iterable[int],
+    head: str,
+    clean_head: Optional[str],
+) -> bool:
+    """True when the worker should rebase a parked PR after its blockers closed (issue #68).
+
+    Requires at least one blocker link, no open blockers, and a gatekeeper ``clean``
+    marker whose ``head`` still matches the PR head.
+    """
+    if not list(blocker_links):
+        return False
+    if list(open_blocker_numbers):
+        return False
+    return bool(clean_head) and clean_head == head
+
+
 # --- Marker grammar --------------------------------------------------------------
 
 # A marker must open the comment (ignoring an optional UTF-8 BOM and leading
