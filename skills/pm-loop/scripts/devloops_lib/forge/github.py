@@ -90,6 +90,11 @@ query($prQuery: String!, $prLimit: Int!, $owner: String!, $name: String!, $issue
         updatedAt
         labels(first: 20) { nodes { name } }
         assignees(first: 10) { nodes { login } }
+        comments(last: 1) {
+          nodes {
+            createdAt
+          }
+        }
       }
     }
   }

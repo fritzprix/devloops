@@ -4,7 +4,9 @@
 Computes a fingerprint from a single GraphQL request covering:
   - Open PRs authored by @me: headRefOid, mergeable, CI statusCheckRollup state,
     updatedAt, and last comment createdAt.
-  - Candidate issues: updatedAt timestamps.
+  - Candidate issues: number, updatedAt, label names, and last comment createdAt.
+    Blocker and sub-issue link changes move an issue's updatedAt, so they are
+    covered too; a blocker closing drops it from the open-issue list.
 
 It also detects an actionable approved backlog: open issues carrying the approved
 label, not assigned to another user, and with no open PR closing them.
@@ -12,6 +14,15 @@ label, not assigned to another user, and with no open PR closing them.
 If state.json has no 'current', the fingerprint matches 'lastFingerprint', and there
 is no actionable approved backlog, outputs 'NOOP' and exits with code 1 so external
 schedulers (e.g., `python3 tick_gate.py && ...`) do not invoke the LLM.
+
+A backlog candidate alone still wakes the gate once, but an idle tick ends by
+recording 'idleFingerprint' (via --update); while the candidate state keeps
+matching it, the gate returns NOOP even with a backlog, so a quiet queue with a
+starved approved issue does not wake a full tick on every schedule. The memo also
+records 'idleFingerprintAt' and expires after ``worker.issue_claim_ttl_minutes``:
+issue claims live on ``wip/issue-N`` branches and are not part of the fingerprint,
+so an expired foreign claim would otherwise leave the gate stuck at NOOP. A
+non-idle tick (--unlock without --update) clears the memo.
 
 The tick lock belongs to one loop slot (loop + agent id). `--lock` prints the
 ownership token as `TOKEN <token>`; `--renew`, `--unlock`, the claims, and the
@@ -49,6 +60,7 @@ try:
         get_agent_id,
         get_checkins_path,
         get_state_path,
+        issue_claim_ttl_seconds,
         load_config,
         lock_ttl_seconds,
     )
@@ -71,6 +83,7 @@ except ImportError:
         get_agent_id,
         get_checkins_path,
         get_state_path,
+        issue_claim_ttl_seconds,
         load_config,
         lock_ttl_seconds,
     )
@@ -157,6 +170,11 @@ query($prQuery: String!, $prLimit: Int!, $owner: String!, $name: String!, $issue
         updatedAt
         labels(first: 20) { nodes { name } }
         assignees(first: 10) { nodes { login } }
+        comments(last: 1) {
+          nodes {
+            createdAt
+          }
+        }
       }
     }
   }
@@ -701,10 +719,14 @@ def fetch_gate_data() -> dict:
 
 
 def compute_fingerprint(gate_data: dict | None = None, me: str | None = None) -> str:
-    """Compute sha256 hash from @me open PRs and candidate issue updatedAt timestamps.
+    """Compute sha256 hash from @me open PRs and candidate issues.
 
     Only PR state fields that require worker action are hashed; labels, assignees,
     and PR body text are intentionally excluded so they do not mask a stable fingerprint.
+    Issues contribute number, updatedAt, sorted label names, and the last comment
+    createdAt. A label change or a new issue comment therefore moves the fingerprint;
+    blocker and sub-issue link changes move an issue's updatedAt, and a blocker closing
+    drops it from the open-issue list, so those changes are covered as well.
     """
     if gate_data is None:
         gate_data = fetch_gate_data()
@@ -737,7 +759,17 @@ def compute_fingerprint(gate_data: dict | None = None, me: str | None = None) ->
         ))
     prs_fingerprint.sort()
 
-    issues_fingerprint = sorted((i["number"], i.get("updatedAt")) for i in gate_data["issues"])
+    issues_fingerprint = sorted(
+        (
+            i["number"],
+            i.get("updatedAt"),
+            tuple(sorted(
+                l.get("name") for l in ((i.get("labels") or {}).get("nodes") or []) if l and l.get("name")
+            )),
+            ((i.get("comments") or {}).get("nodes") or [{}])[0].get("createdAt") or "",
+        )
+        for i in gate_data["issues"]
+    )
 
     hasher = hashlib.sha256()
     hasher.update(json.dumps({"prs": prs_fingerprint, "issues": issues_fingerprint}).encode("utf-8"))
@@ -814,7 +846,9 @@ def preflight_decision(config: dict | None = None) -> tuple[str, list[int]]:
     """Return (fingerprint, actionable approved backlog) from one GraphQL fetch.
 
     The backlog makes the gate RUN even when the fingerprint is unchanged, so an
-    approved issue with no closing PR is never starved by a quiet repo.
+    approved issue with no closing PR is not starved by a quiet repo. An idle tick
+    records the fingerprint as 'idleFingerprint' on exit; while candidate state keeps
+    matching it, the gate returns NOOP even with a backlog (issue #76).
     """
     gate_data = fetch_gate_data()
     me = gh("api", "user", "--jq", ".login").strip()
@@ -824,6 +858,35 @@ def preflight_decision(config: dict | None = None) -> tuple[str, list[int]]:
         compute_fingerprint(gate_data, me),
         find_actionable_backlog(gate_data, me, approved_label),
     )
+
+
+def _clear_idle_memo(state: dict) -> None:
+    """Drop idle-memo fields so the next --lock is not pinned to NOOP."""
+    state.pop("idleFingerprint", None)
+    state.pop("idleFingerprintAt", None)
+
+
+def idle_memo_expired(
+    state: dict,
+    *,
+    now: float | None = None,
+    ttl_seconds: int | None = None,
+    config: dict | None = None,
+) -> bool:
+    """True when the idle memo is older than the issue-claim TTL (or has no timestamp).
+
+    Issue claims are not part of ``compute_fingerprint``; without an expiry the
+    memo would keep NOOPing after a foreign ``wip/issue-N`` claim becomes takeable.
+    A missing ``idleFingerprintAt`` is treated as expired so pre-TTL memos cannot
+    stick forever.
+    """
+    if not state.get("idleFingerprint"):
+        return False
+    recorded = state.get("idleFingerprintAt")
+    if not isinstance(recorded, (int, float)):
+        return True
+    ttl = ttl_seconds if ttl_seconds is not None else issue_claim_ttl_seconds(config or load_config())
+    return (now if now is not None else time.time()) - float(recorded) >= ttl
 
 
 def _maybe_auto_checkin(args: argparse.Namespace, loop: str) -> tuple[bool, Path | None, str | None]:
@@ -958,9 +1021,26 @@ def main(argv: list[str] | None = None) -> None:
                 state = load_state(state_path)
                 tick_start_fp = state.pop("tickStartFingerprint", None)
                 if args.update and tick_start_fp is not None:
+                    # Idle end: memoize the fingerprint of the candidate state so the
+                    # next --lock gives NOOP even when an approved backlog is still
+                    # listed (#76). The next --lock re-checks the fingerprint against
+                    # GitHub, so any change still wakes the gate. idleFingerprintAt
+                    # bounds the memo to the issue-claim TTL so an expired foreign
+                    # claim can wake the gate even when PR/issue fingerprint is stable.
                     state["lastFingerprint"] = tick_start_fp
+                    state["idleFingerprint"] = tick_start_fp
+                    state["idleFingerprintAt"] = time.time()
                     print(f"UPDATED: {tick_start_fp[:12]}")
-                if tick_start_fp is not None or (args.update and state_path.is_file()):
+                elif tick_start_fp is None:
+                    # No fingerprint was recorded for this tick (e.g. a current-work
+                    # tick, or --update without a preceding --lock): it cannot be
+                    # memoized, so drop any stale memo rather than risk a stuck NOOP.
+                    _clear_idle_memo(state)
+                else:
+                    # Non-idle end (--unlock without --update): clear the idle memo so
+                    # the next --lock is not pinned to NOOP after real work.
+                    _clear_idle_memo(state)
+                if tick_start_fp is not None or state_path.is_file():
                     save_state(state_path, state)
             finally:
                 # The lock is released even if the state update fails.
@@ -1008,6 +1088,21 @@ def main(argv: list[str] | None = None) -> None:
             _finish_checkin()
             print("NOOP (no changes)")
             sys.exit(EXIT_NOOP)
+
+        # A previous idle tick memoized this fingerprint: the backlog still lists
+        # candidates, but their state has not changed since, so waking the tick
+        # again would only re-read the same issues (#76). Any fingerprint change
+        # falls through and wakes the gate. An expired memo (past issue-claim TTL,
+        # or missing idleFingerprintAt) is cleared so a takeable claim can RUN.
+        idle_fp = state.get("idleFingerprint")
+        if idle_fp and idle_fp == fp:
+            if idle_memo_expired(state):
+                _clear_idle_memo(state)
+                save_state(state_path, state)
+            else:
+                _finish_checkin()
+                print("NOOP (idle memo: candidate state unchanged)")
+                sys.exit(EXIT_NOOP)
 
         # State changed (or approved backlog waiting): acquire lock if requested, but DO NOT save lastFingerprint yet.
         # lastFingerprint must be saved only after a successful tick via --update.
