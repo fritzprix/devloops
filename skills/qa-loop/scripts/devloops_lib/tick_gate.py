@@ -904,7 +904,6 @@ def preflight_decision(
     """Return (fingerprint, actionable approved backlog) from one GraphQL fetch.
 
     The backlog makes the gate RUN even when the fingerprint is unchanged, so an
-    The backlog makes the gate RUN even when the fingerprint is unchanged, so an
     approved issue with no closing PR is not starved by a quiet repo. Uses the
     shared worker-candidate filter (issue #66), including ``state["skipped"]``
     and open forge blockers when a forge adapter is available. An idle tick
