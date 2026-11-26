@@ -973,9 +973,9 @@ def main(argv: list[str] | None = None) -> None:
             return
         print(f"TOKEN {tick_token}")
         if not wrapper_held and args.lock:
-            from devloops_lib.lock_heartbeat import start_detached
+            from devloops_lib.lock_heartbeat import resolve_parent_pid, start_detached
 
-            start_detached(lock_path, tick_token)
+            start_detached(lock_path, tick_token, parent_pid=resolve_parent_pid(args.pid))
 
     def _exit_busy() -> None:
         _finish_checkin()
@@ -1002,7 +1002,6 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(EXIT_LOST)
 
         if args.unlock and not wrapper_held:
-            stop_heartbeat(lock_path)
             if not token:
                 sys.stderr.write(
                     f"--unlock needs the token printed by --lock (--token or ${TOKEN_ENV}); "
@@ -1011,10 +1010,13 @@ def main(argv: list[str] | None = None) -> None:
                 sys.exit(EXIT_ERROR)
             # Renewing (not just reading the token) keeps the lock live for a TTL, so
             # nobody can reclaim it between this check and the state write below.
+            # Stop the heartbeat only after ownership is confirmed: a LOST unlock
+            # must not kill the new owner's renewer (macOS CI flake on #78 / TTL=1).
             if not renew_lock(lock_path, token):
                 # A tick that lost its lock must not write the slot's state either.
                 print(f"LOST ({describe_lock(lock_path)})")
                 sys.exit(EXIT_LOST)
+            stop_heartbeat(lock_path)
 
         if args.update or args.unlock:
             try:
