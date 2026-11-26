@@ -51,6 +51,24 @@ class DetermineStatusTests(unittest.TestCase):
         self.assertEqual(status, "wait-owner")
         self.assertIn("needs-owner", reason)
 
+
+    def test_open_blocker_is_blocked(self) -> None:
+        status, reason, prio = classify(**base_args(open_blocker_numbers=[12, 3]))
+        self.assertEqual(status, "blocked")
+        self.assertIn("#3", reason)
+        self.assertIn("#12", reason)
+        self.assertEqual(prio, 9)
+
+    def test_needs_owner_outranks_open_blocker(self) -> None:
+        status, _, _ = classify(**base_args(needs_owner=True, open_blocker_numbers=[12]))
+        self.assertEqual(status, "wait-owner")
+
+    def test_open_blocker_outranks_merge_conflict(self) -> None:
+        status, _, _ = classify(**base_args(
+            mergeable="CONFLICTING", open_blocker_numbers=[9]))
+        self.assertEqual(status, "blocked")
+
+
     def test_loop_skill_notice_flag_false_still_reviews(self) -> None:
         status = determine_status(**base_args(needs_owner=False))
         self.assertEqual(status, "review")
