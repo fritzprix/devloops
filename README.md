@@ -267,7 +267,7 @@ See [`scheduling.md`](skills/worker-loop/references/scheduling.md) (installed at
 | `approved` | **human only** | Scope accepted; the worker can take a producer issue |
 | `gatekeeper:changes-requested` | gatekeeper | The worker must answer the findings |
 | `gatekeeper:approved` | gatekeeper | Ready for a human merge |
-| `gatekeeper:escalated` | gatekeeper | Review round limit or repeated dispute on the same finding |
+| `gatekeeper:escalated` | gatekeeper | Review round limit or unresolved product/security/data owner decision; owner removes the label to resume |
 | `gatekeeper:needs-human` | gatekeeper | Stricter review before approve (security, protected paths, loop skills, no CI on head) |
 
 ## Safety rules

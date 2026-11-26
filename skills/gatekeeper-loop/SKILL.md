@@ -95,7 +95,7 @@ Other statuses:
 - `needs-human` — **ambiguous review criteria** only (loop-skill changes are reviewed normally and only carry the needs-human label/marker; path names are never a reason). Post a draft rubric/checklist for the owner; do not use this status for missing CI (bootstrap CI instead).
 - `wait-worker` — worker's turn (changes requested at current head without response, or merge conflicts).
 - `approved` — nothing to do; make sure the label is `gatekeeper:approved`. For any PR with `staleApprovedLabel: true` (status no longer `approved`), swap the label right away (`gatekeeper:changes-requested` if CI is failing, otherwise remove `gatekeeper:approved`) before reviewing, so a stale approve is never visible. The script already turns an approve back into `review` when the head changed (a push after an approve **always requires re-review**), CI fails, the base changed (e.g. stacked PR retargeted), or the owner commented.
-- `escalate` — post an `escalate` verdict if none exists yet and swap the label to `gatekeeper:escalated`. Note: An owner comment on an escalated PR resets status to `review` so the gatekeeper can incorporate owner direction.
+- `escalate` — parked once `gatekeeper:escalated` is on the PR. If status is `escalate` because the round limit was hit and the label is not yet set, first add the label and post the `escalate` verdict (same protocol as Step 3), then stop — do not review the diff. Once labelled, do not review it; the worker does not act on it. The only exit is the owner removing `gatekeeper:escalated` — an owner comment alone never ends an escalation. After removal the next verdict is round 1. Rules: see **escalate** under Step 3.
 
 ### 2. Review (read-only)
 
@@ -133,7 +133,7 @@ Keep it between ticks so caches stay warm. Local runs never lead to commits.
 
 Never add `gatekeeper:needs-human` or a `kind=needs-owner` marker because of a path-name match. Stricter review is the gatekeeper's job, not a human escalation.
 
-On round ≥ 2, read the worker response first and settle every previous `G` item: fixed (verify in the diff), decline accepted, or disputed (restate once; a second dispute on the same item → escalate).
+On round ≥ 2, read the worker response first and settle every previous `G` item: fixed (verify in the diff), decline accepted, or disputed (restate once; on a second rebuttal of the same item **you decide** — write the decision and its evidence (`file:line`) in your next verdict, and the finding is then either required or withdrawn. Do not escalate a dispute).
 
 ### 3. Verdict
 
@@ -145,7 +145,7 @@ Decide:
   - **Per-OS CI evidence**: when the diff adds or changes tests or code touching paths, shell, processes or other OS behavior, `### Checked` must name the result of each OS job (ubuntu / windows / macos) for the reviewed head. A skipped or cancelled job is not green. Do not approve on one OS's green.
   - **Stacked PRs**: if the PR targets a non-primary branch (`retargetBeforeMerge: true`), CI does not run; approve directly with the explicit warning _"Retarget before merge (do not merge into the parent branch); CI requires verification after retargeting"_.
 - **clean, await CI** — code review completed with zero open required findings, but CI checks are still running (`ciPending` not empty on primary-targeted PR). Post a `verdict=clean head=<sha>` marker comment, remove any stale `gatekeeper:changes-requested` label (`python3 "$SKILL_DIR/scripts/forge.py" pr label set-verdict N clean`; does not count as a round), optionally mirror it in state, and move on to the next PR. On a later tick the script reports `await-ci`; once CI completes it reports `review` again: do not re-review the diff, just post `approve` if green (and swap verdict labels) or diagnose the failure.
-- **escalate** — round limit (5) reached; a second dispute on the same `G` item; or an unresolved product/security/data owner decision the worker correctly parked in `needsUser` / PR discussion (see [../worker-loop/references/escalation-policy.md](../worker-loop/references/escalation-policy.md)).
+- **escalate** — used for exactly two cases: the round limit of 5 is reached, or an unresolved product/security/data owner decision the worker parked for the owner (see [../worker-loop/references/escalation-policy.md](../worker-loop/references/escalation-policy.md)). A dispute you can settle is yours: decide with `file:line` evidence instead. Escalation protocol: first add the label (`python3 "$SKILL_DIR/scripts/forge.py" pr label set-verdict N escalated`), then post the `escalate` verdict. The PR then stays parked — the gatekeeper does not review it and the worker does not act on it. The only exit is the owner removing `gatekeeper:escalated`; an owner comment alone never ends an escalation. Once the label is gone the PR is in review again and the round count restarts at 1. An approve that is the 5th (last allowed) verdict stands; the round limit never turns an approve into an escalation.
 
 Immediately before posting, re-check the PR, because a review takes time and the PR can move during it:
 

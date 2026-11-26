@@ -25,5 +25,5 @@ Classify every finding. Code review and `changes-requested` verdicts proceed imm
 ## Re-review discipline
 
 - Round ≥ 2: review only (a) previous required findings and (b) the incremental diff `reviewedHead..headSha`. Do not raise new findings on unchanged code unless they are blockers.
-- A worker **decline** with a sound reason closes the finding. If you still disagree, restate once with evidence; a second disagreement on the same item → `escalate`.
+- A worker **decline** with a sound reason closes the finding. If you still disagree, restate once with evidence; on a second rebuttal of the same item **you decide** — write the decision and its evidence (`file:line`) in your next verdict. Do not escalate a dispute.
 - Never request changes for something the rubric marks minor/nit.
