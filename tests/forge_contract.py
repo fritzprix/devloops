@@ -719,24 +719,28 @@ class ForgeContract:
         assert "42" in self.forge.pr_head_ref(42)
 
     # -- issue dependencies (issue #65) -------------------------------------
-
-    def test_blocked_by_issue_number(self):
-        blockers = self.forge.blocked_by(1)
-        assert [(b.number, b.state, b.is_pr) for b in blockers] == [(2, "open", False)]
-
-    def test_blocked_by_pr_number(self):
-        blockers = self.forge.blocked_by(10)
-        assert [(b.number, b.state, b.is_pr) for b in blockers] == [(11, "open", True)]
+    # Self-contained: every binding (in-memory fakes and the live server)
+    # numbers its items differently, so these tests create their own
+    # dependencies instead of reading seeded ones.
 
     def test_blocked_by_empty_when_no_dependencies(self):
         assert self.forge.blocked_by(2) == []
 
-    def test_add_blocker_links_and_is_idempotent(self):
-        self.forge.add_blocker(2, 1)
-        assert [b.number for b in self.forge.blocked_by(2)] == [1]
-        self.forge.add_blocker(2, 1)
-        assert [b.number for b in self.forge.blocked_by(2)] == [1]
+    def test_add_blocker_issue_number_and_read_back(self):
+        self.forge.add_blocker(2, 1)  # open issue 1 blocks issue 2
+        assert [(b.number, b.state, b.is_pr) for b in self.forge.blocked_by(2)] == [(1, "open", False)]
+        self.forge.add_blocker(2, 1)  # safe to call twice
+        assert len([b for b in self.forge.blocked_by(2) if b.number == 1]) == 1
 
-    def test_add_blocker_on_pr_target(self):
-        self.forge.add_blocker(11, 3)  # closed issue 3 blocks PR 11
-        assert [(b.number, b.state, b.is_pr) for b in self.forge.blocked_by(11)] == [(3, "closed", False)]
+    def test_add_blocker_pr_number(self):
+        numbers = sorted(p.number for p in self.forge.list_prs())
+        assert len(numbers) >= 2
+        target, blocker = numbers[0], numbers[1]
+        self.forge.add_blocker(target, blocker)
+        blockers = {b.number: b for b in self.forge.blocked_by(target)}
+        assert blockers[blocker].state == "open"
+        assert blockers[blocker].is_pr is True
+
+    def test_add_blocker_closed_blocker_state(self):
+        self.forge.add_blocker(2, 3)  # closed issue 3 blocks issue 2
+        assert [b.state for b in self.forge.blocked_by(2) if b.number == 3] == ["closed"]
