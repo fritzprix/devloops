@@ -17,6 +17,7 @@ import json
 import re
 import sys
 
+from devloops_lib import contract
 from devloops_lib.claims import pr_is_approved
 from devloops_lib.config import load_config, open_pr_limit as configured_open_pr_limit
 from devloops_lib.gh import GhError, gh
@@ -124,6 +125,7 @@ def filter_and_rank_issues(
     me: str,
     config: dict | None = None,
     merged_prs: list[dict] | None = None,
+    issue_comments: dict[int, list] | None = None,
 ) -> dict:
     cfg = config or load_config()
     producer_label = cfg.get("labels", {}).get("producer", "auto:producer")
@@ -164,6 +166,11 @@ def filter_and_rank_issues(
             reason = f"label: {', '.join(sorted(labels & EXCLUDED_LABELS))}"
         elif producer_label in labels and approved_label not in labels:
             reason = f"producer issue not approved ({producer_label})"
+        elif contract.NEEDS_OWNER in labels and contract.needs_owner_parked(
+            (issue_comments or {}).get(number) or [], me
+        ):
+            # Issue #67: parked needs-owner gets no work until an owner answers.
+            reason = "needs-owner (awaiting owner answer)"
         elif assignees and me not in assignees:
             reason = f"assigned to {', '.join(assignees)}"
         elif number in closing_pr:
@@ -242,7 +249,37 @@ def fetch_candidates(limit: int = 100) -> dict:
         gh("pr", "list", "--state", "merged", "--limit", "100", "--json",
            "number,title,body,headRefName,baseRefName,url")
     )
-    return filter_and_rank_issues(issues, open_prs, me, merged_prs=merged_prs)
+    # Issue #67: needs-owner issues need comments to tell parked from answered.
+    issue_comments: dict[int, list] = {}
+    repo = json.loads(gh("repo", "view", "--json", "owner,name"))
+    owner, name = repo["owner"]["login"], repo["name"]
+    for issue in issues:
+        labels = {
+            label["name"] if isinstance(label, dict) else label
+            for label in issue.get("labels") or []
+        }
+        if contract.NEEDS_OWNER not in labels:
+            continue
+        try:
+            raw = json.loads(gh(
+                "api", f"repos/{owner}/{name}/issues/{issue['number']}/comments", "--paginate"
+            ) or "[]")
+        except GhError:
+            raw = []
+        if isinstance(raw, dict):
+            raw = raw.get("comments") or []
+        issue_comments[issue["number"]] = [
+            {
+                "author": {"login": (c.get("user") or {}).get("login") or ""},
+                "createdAt": c.get("created_at") or "",
+                "body": c.get("body") or "",
+                "authorAssociation": c.get("author_association") or "",
+            }
+            for c in raw if isinstance(c, dict)
+        ]
+    return filter_and_rank_issues(
+        issues, open_prs, me, merged_prs=merged_prs, issue_comments=issue_comments,
+    )
 
 
 def main() -> None:
