@@ -139,12 +139,17 @@ def parent_pr_merged(
     base: str,
     default_base: str,
     merged_prs: list[dict] | None,
+    open_head_refs: set[str] | frozenset[str] | None = None,
 ) -> dict | None:
     """Return the merged parent PR if `base` is a stacked branch whose PR merged into `default_base`.
 
     Stacks are capped at depth 1, so only parents merged into `default_base` trigger retargeting.
+    If an open PR still uses ``base`` as its head (branch name reused after an
+    earlier merge), that open PR is the live parent — do not retarget yet.
     """
     if not base or base == default_base or not merged_prs:
+        return None
+    if open_head_refs and base in open_head_refs:
         return None
     for pr in merged_prs:
         if pr.get("headRefName") == base and (pr.get("baseRefName") or default_base) == default_base:
@@ -274,6 +279,7 @@ def summarize(
     *,
     default_base: str | None = None,
     merged_prs: list[dict] | None = None,
+    open_head_refs: set[str] | frozenset[str] | None = None,
 ) -> dict:
     pr = json.loads(
         gh(
@@ -345,7 +351,12 @@ def summarize(
 
     duplicates = duplicate_commits(pr["baseRefName"], pr["headRefName"])
     resolved_default = default_base or load_config().get("project", {}).get("base_branch", "main")
-    merged_parent = parent_pr_merged(pr["baseRefName"], resolved_default, merged_prs)
+    merged_parent = parent_pr_merged(
+        pr["baseRefName"],
+        resolved_default,
+        merged_prs,
+        open_head_refs=open_head_refs,
+    )
     retarget_base = resolved_default if merged_parent else None
 
     next_action = select_next_action(
@@ -399,19 +410,37 @@ def summarize_prs(number: int | None = None) -> list[dict]:
     me = gh("api", "user", "--jq", ".login").strip()
     default_base = load_config().get("project", {}).get("base_branch", "main")
     merged_prs: list[dict] | None = None
+    # All open heads (any author): a reused base branch with a live PR must not
+    # look like a merged parent just because an older PR of the same name merged.
+    open_listed = json.loads(
+        gh("pr", "list", "--state", "open", "--limit", "100", "--json", "number,isDraft,headRefName,baseRefName,author")
+    )
+    open_head_refs = {
+        p["headRefName"]
+        for p in open_listed
+        if p.get("headRefName") and not p.get("isDraft")
+    }
     if number:
         numbers = [number]
         merged_prs = _fetch_merged_prs()
     else:
-        listed = json.loads(
-            gh("pr", "list", "--author", "@me", "--state", "open", "--json", "number,isDraft,baseRefName")
-        )
-        open_ready = [p for p in listed if not p.get("isDraft")]
+        open_ready = [
+            p for p in open_listed
+            if not p.get("isDraft") and (p.get("author") or {}).get("login") == me
+        ]
         numbers = [p["number"] for p in open_ready]
         if any((p.get("baseRefName") or default_base) != default_base for p in open_ready):
             merged_prs = _fetch_merged_prs()
     return [
-        summarize(n, owner, name, me, default_base=default_base, merged_prs=merged_prs)
+        summarize(
+            n,
+            owner,
+            name,
+            me,
+            default_base=default_base,
+            merged_prs=merged_prs,
+            open_head_refs=open_head_refs,
+        )
         for n in numbers
     ]
 
