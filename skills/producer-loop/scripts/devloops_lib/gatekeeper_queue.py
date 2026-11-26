@@ -176,32 +176,61 @@ def queued_not_started(checks: list[dict]) -> list[str]:
             for c in checks if check_state(c) in NOT_STARTED]
 
 
-def merge_queued_since(current_queued: list[str], queued_since: dict, now: str) -> dict:
-    """First-seen-queued timestamps for the checks queued now; drops the rest.
+def _queued_since_checks(queued_since: dict | None, head: str | None = None) -> dict:
+    """Check-name -> first-seen ISO map for `head`, or {} when the head changed.
 
-    The gatekeeper tick persists this map in state.json per PR so the next tick
-    can tell "just queued" from "queued for an hour and never started".
+    Accepts the nested shape ``{"head": sha, "checks": {...}}`` and the legacy
+    flat ``{name: iso}`` shape (treated as matching any head).
     """
-    return {name: str(queued_since.get(name) or now) for name in current_queued}
+    raw = queued_since or {}
+    if "checks" in raw or "head" in raw:
+        if head is not None and str(raw.get("head") or "") != str(head):
+            return {}
+        checks = raw.get("checks") or {}
+        return checks if isinstance(checks, dict) else {}
+    return dict(raw)
 
 
-def stalled_checks(current_queued: list[str], queued_since: dict, now: str,
-                   limit_minutes: int = DEFAULT_CI_STALL_MINUTES) -> list[str]:
+def merge_queued_since(
+    current_queued: list[str],
+    queued_since: dict,
+    now: str,
+    *,
+    head: str = "",
+) -> dict:
+    """First-seen-queued timestamps for the checks queued now on `head`.
+
+    Persisted in state.json per PR as ``{"head": <sha>, "checks": {name: iso}}``
+    so a new head cannot inherit stall clocks from an earlier head (issue #81 G1.1).
+    """
+    prev = _queued_since_checks(queued_since, head=head or None)
+    checks = {name: str(prev.get(name) or now) for name in current_queued}
+    return {"head": head, "checks": checks}
+
+
+def stalled_checks(
+    current_queued: list[str],
+    queued_since: dict,
+    now: str,
+    limit_minutes: int = DEFAULT_CI_STALL_MINUTES,
+    *,
+    head: str = "",
+) -> list[str]:
     """Checks queued without starting for at least `limit_minutes` (issue #81).
 
-    `queued_since` maps check name -> ISO time first observed queued. A check
-    is stalled when it is still queued now and was first seen at or before
-    `now - limit_minutes`. Detection only: the tick reports it on the PR with
-    the cause; nothing polls inside a tick.
+    `queued_since` is the nested map from ``merge_queued_since`` (or legacy flat).
+    Times from another head are ignored. Detection only: the tick reports the
+    stall on the PR; nothing polls inside a tick.
     """
     try:
         limit = datetime.timedelta(minutes=limit_minutes)
         now_dt = datetime.datetime.fromisoformat(now.replace("Z", "+00:00"))
     except ValueError:
         return []
+    checks = _queued_since_checks(queued_since, head=head or None)
     stalled = []
     for name in current_queued:
-        since = queued_since.get(name)
+        since = checks.get(name)
         if not since:
             continue
         try:
@@ -381,12 +410,12 @@ def summarize(
     now_iso = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     queued = queued_not_started(checks)
     seen_queued = pr_state.get("queuedSince") or {}
-    queued_since = merge_queued_since(queued, seen_queued, now_iso)
+    queued_since = merge_queued_since(queued, seen_queued, now_iso, head=head)
     try:
         stall_limit = int((cfg.get("gatekeeper") or {}).get("ci_stall_minutes", DEFAULT_CI_STALL_MINUTES))
     except (TypeError, ValueError):
         stall_limit = DEFAULT_CI_STALL_MINUTES
-    stalled = stalled_checks(queued, seen_queued, now_iso, stall_limit)
+    stalled = stalled_checks(queued, queued_since, now_iso, stall_limit, head=head)
 
     reviewed_head = (clean or last or {}).get("head") or state_reviewed_head
     if reviewed_head and reviewed_head != head:

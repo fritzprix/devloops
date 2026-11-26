@@ -6,12 +6,30 @@ Worker and gatekeeper share one GitHub account, and GitHub rejects Approve / Req
 
 `head` = full SHA of the PR head that was reviewed. `base` = the PR's base branch at review time (a later change forces re-review). `round` starts at 1 and increments per verdict (`clean` markers do not count).
 
+### Score (required on every verdict and every `clean` marker)
+
+Every review posts a **Score** before Required/Suggestions/Checked. Scale is integer **1–5**:
+
+| Score | Meaning |
+| --- | --- |
+| **5** | Ready to approve once CI (when it applies) is green; no open required findings. |
+| **4** | Solid; only non-blocking suggestions remain. |
+| **3** | Clear path forward; at least one required finding or missing proof. |
+| **2** | Major gaps (wrong approach, missing tests, unsafe path) — not mergeable soon. |
+| **1** | Out of scope, unsafe, or does not match the linked issue. |
+
+One line of justification after the number. Score is judgment for humans and later rounds; it does not replace the verdict or labels.
+
 ```markdown
 <!-- gatekeeper-loop: round=2 verdict=changes-requested head=<sha> base=<branch> -->
 
 ## Gatekeeper · round 2 · Changes requested
 
 Scope: <one line — what the PR claims and whether the diff matches it>
+
+### Score
+
+**3/5** — <one line: why this score>
 
 ### Required
 
@@ -34,6 +52,10 @@ Approve:
 <!-- gatekeeper-loop: round=3 verdict=approve head=<sha> base=<branch> -->
 
 ## Gatekeeper · round 3 · ✅ Approve
+
+### Score
+
+**5/5** — <one line: why this score>
 
 <2–3 lines: what was verified (diff, tests, CI green at <short-sha>), residual risks, suggestions left open>
 
@@ -58,6 +80,10 @@ Clean, waiting for CI (no label change, not a round; lets any tick or machine se
 <!-- gatekeeper-loop: verdict=clean head=<sha> base=<branch> -->
 
 ## Gatekeeper · reviewed clean · waiting for CI
+
+### Score
+
+**5/5** — <one line: why this score>
 
 <1–2 lines: what was reviewed, zero open required findings>
 ```

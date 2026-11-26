@@ -596,19 +596,36 @@ class Issue81AlwaysReviewTests(unittest.TestCase):
         self.assertEqual(queued_not_started(checks), ["Build", "Lint"])
 
     def test_merge_queued_since_keeps_first_seen_and_drops_finished(self) -> None:
-        merged = merge_queued_since(["Build", "Lint"], {"Build": "2026-11-27T00:00:00Z", "Old": "x"}, "2026-11-27T01:00:00Z")
-        self.assertEqual(merged["Build"], "2026-11-27T00:00:00Z")
-        self.assertEqual(merged["Lint"], "2026-11-27T01:00:00Z")
-        self.assertNotIn("Old", merged)
+        merged = merge_queued_since(
+            ["Build", "Lint"],
+            {"head": "abc", "checks": {"Build": "2026-11-27T00:00:00Z", "Old": "x"}},
+            "2026-11-27T01:00:00Z",
+            head="abc",
+        )
+        self.assertEqual(merged["head"], "abc")
+        self.assertEqual(merged["checks"]["Build"], "2026-11-27T00:00:00Z")
+        self.assertEqual(merged["checks"]["Lint"], "2026-11-27T01:00:00Z")
+        self.assertNotIn("Old", merged["checks"])
+
+    def test_merge_queued_since_resets_when_head_changes(self) -> None:
+        # G1.1: clocks from an earlier head must not stall a new push immediately.
+        prev = {"head": "old", "checks": {"Build": "2026-11-01T00:00:00Z"}}
+        merged = merge_queued_since(["Build"], prev, "2026-11-27T01:00:00Z", head="new")
+        self.assertEqual(merged["head"], "new")
+        self.assertEqual(merged["checks"]["Build"], "2026-11-27T01:00:00Z")
+        self.assertEqual(
+            stalled_checks(["Build"], prev, "2026-11-27T01:00:00Z", 45, head="new"),
+            [],
+        )
 
     def test_stalled_after_limit_but_not_before(self) -> None:
-        since = {"Build": "2026-11-27T00:00:00Z"}
-        at_40m = stalled_checks(["Build"], since, "2026-11-27T00:40:00Z", limit_minutes=45)
+        since = {"head": "h", "checks": {"Build": "2026-11-27T00:00:00Z"}}
+        at_40m = stalled_checks(["Build"], since, "2026-11-27T00:40:00Z", limit_minutes=45, head="h")
         self.assertEqual(at_40m, [])
-        at_46m = stalled_checks(["Build"], since, "2026-11-27T00:46:00Z", limit_minutes=45)
+        at_46m = stalled_checks(["Build"], since, "2026-11-27T00:46:00Z", limit_minutes=45, head="h")
         self.assertEqual(at_46m, ["Build"])
         # A check first seen this tick (no recorded since) is never stalled yet.
-        self.assertEqual(stalled_checks(["Fresh"], since, "2026-11-27T05:00:00Z", 45), [])
+        self.assertEqual(stalled_checks(["Fresh"], since, "2026-11-27T05:00:00Z", 45, head="h"), [])
 
     def test_stalled_check_reports_on_await_ci_with_cause(self) -> None:
         status, reason, priority = classify(
@@ -619,6 +636,20 @@ class Issue81AlwaysReviewTests(unittest.TestCase):
         self.assertIn("Build", reason)
         self.assertIn("not started", reason)
         self.assertLess(priority, 9)  # reportable now, not parked
+
+    def test_stalled_ignored_when_ci_does_not_apply(self) -> None:
+        # G1.2: stacked/non-dev base still gets "issue the verdict".
+        status, reason, _ = classify(
+            **base_args(
+                clean_head="head1",
+                base="feat/parent",
+                pending_checks=["Build"],
+                total_checks=1,
+                stalled=["Build"],
+            ),
+        )
+        self.assertEqual(status, "review")
+        self.assertIn("issue the verdict", reason)
 
     def test_clean_verdict_valid_while_ci_pending(self) -> None:
         # reviewed clean + pending CI -> await-ci (clean stands; no re-review, no verdict held).
@@ -643,7 +674,8 @@ class Issue81AlwaysReviewTests(unittest.TestCase):
                                         readiness=readiness)
         self.assertEqual(summary["ciQueued"], ["Build"])
         self.assertEqual(summary["ciStalled"], [])
-        self.assertIn("Build", summary["queuedSince"])
+        self.assertEqual(summary["queuedSince"]["head"], "abc")
+        self.assertIn("Build", summary["queuedSince"]["checks"])
 
 
 class RetargetBeforeMergeTests(unittest.TestCase):
