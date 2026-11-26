@@ -74,6 +74,21 @@ class ClassifyTest(unittest.TestCase):
         comments = [c(ask, "2026-01-01T00:00:00Z")]
         self.assertEqual(qa.classify_pr(pr(comments), ME)["status"], "wait-owner")
 
+    def test_loop_skill_notice_does_not_park(self):
+        # G1.1: informational marker must not become wait-owner.
+        notice = (
+            "<!-- qa-loop: kind=needs-owner reason=changes-loop-skill-files "
+            "head=%s -->\n## notice" % HEAD
+        )
+        comments = [c(notice, "2026-01-01T00:00:00Z")]
+        self.assertEqual(qa.classify_pr(pr(comments), ME)["status"], "review")
+
+    def test_worker_ask_parks_qa(self):
+        # G1.2: a PR parked by another loop is wait-owner for qa too.
+        ask = "<!-- worker-loop: kind=needs-owner reason=ambiguous-decision -->\nQ?"
+        comments = [c(ask, "2026-01-01T00:00:00Z", author="worker-bot")]
+        self.assertEqual(qa.classify_pr(pr(comments), ME)["status"], "wait-owner")
+
     def test_owner_comment_reopens_after_needs_owner_ask(self):
         ask = "<!-- qa-loop: kind=needs-owner reason=tool-blocked head=%s -->\n## QA" % HEAD
         comments = [c(ask, "2026-01-01T00:00:00Z"),

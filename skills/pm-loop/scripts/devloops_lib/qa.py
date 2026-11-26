@@ -92,11 +92,10 @@ def classify_pr(pr: dict, me: str) -> dict:
         if m.get("kind") == "qa-response"
     )
 
-    asks = [m for m in parse_markers(comments, me) if m.get("kind") == contract.NEEDS_OWNER]
-    last_ask = asks[-1] if asks else None
-
-    if last_ask and not contract.first_owner_reply(comments, me, last_ask["createdAt"]):
-        status, reason = "wait-owner", "qa asked the owner to decide at this head"
+    # Issue #67 / G1: any loop's unanswered ask parks; loop-skill notices do not.
+    labeled = contract.NEEDS_OWNER in labels
+    if contract.needs_owner_parked(comments, me, labeled=labeled):
+        status, reason = "wait-owner", "needs-owner ask awaiting owner answer"
     elif last is None:
         status, reason = "review", "never reviewed by qa"
     elif last.get("head") != head:

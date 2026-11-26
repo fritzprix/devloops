@@ -843,6 +843,10 @@ def find_actionable_backlog(
         )
         if prelim is not None:
             continue
+        # Issue #67: needs-owner parks every loop; gate has labels only, so
+        # fail closed on the label (no comments in the gate snapshot).
+        if contract.NEEDS_OWNER in labels:
+            continue
         blockers: list[int] = []
         subs: list[int] = []
         if forge is not None:
