@@ -227,6 +227,19 @@ class DetermineStatusTests(unittest.TestCase):
         )
         self.assertEqual(status, "review")
 
+    def test_max_rounds_reads_from_config(self) -> None:
+        # G2.1 / #102: gatekeeper.max_rounds overrides default 5; invalid values fall back to 5.
+        args = base_args(
+            total_verdicts=3,
+            last_verdict={"round": "3", "verdict": "changes-requested", "head": "h0"},
+        )
+        self.assertEqual(determine_status(**args), "review")
+        status, reason, _ = classify(**args, config={"gatekeeper": {"max_rounds": 3}})
+        self.assertEqual(status, "escalate")
+        self.assertIn("3", reason)
+        self.assertEqual(determine_status(**args, config={"gatekeeper": {"max_rounds": 0}}), "review")
+        self.assertEqual(determine_status(**args, config={"gatekeeper": {"max_rounds": True}}), "review")
+
     def test_max_rounds_escalates(self) -> None:
         status = determine_status(
             mergeable="MERGEABLE",

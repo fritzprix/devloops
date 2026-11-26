@@ -62,6 +62,14 @@ from devloops_lib.config import run_main
 from devloops_lib import contract
 
 MAX_ROUNDS = 5
+
+
+def max_rounds_from_config(config: dict | None = None) -> int:
+    """Return configured gatekeeper.max_rounds, defaulting to MAX_ROUNDS (5)."""
+    raw = ((config or {}).get("gatekeeper") or {}).get("max_rounds")
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
+        return raw
+    return MAX_ROUNDS
 # Loop markers are defined once in devloops_lib.contract (issue #65): they must
 # open the comment (optional BOM/whitespace aside), cover all three loops, and
 # only accepted vocabulary counts.
@@ -313,8 +321,9 @@ def classify(
             return "review", "CI failing after approve", 0
         return "approved", "approved at current head", 9
 
-    if total_verdicts >= MAX_ROUNDS:
-        return "escalate", f"round limit ({MAX_ROUNDS}) reached", 9
+    max_rounds = max_rounds_from_config(config)
+    if total_verdicts >= max_rounds:
+        return "escalate", f"round limit ({max_rounds}) reached", 9
 
     if at_head and last_verdict.get("verdict") == "changes-requested":
         if worker_response is None:
