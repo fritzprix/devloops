@@ -18,7 +18,9 @@ status values:
                worker response, an owner comment, never reviewed, CI failed
                (also after approve), or CI passed for a clean-marked PR.
   await-ci   - current head has a `verdict=clean` marker (or state entry) and
-               only pending CI remains. Not reviewed again.
+               only pending CI remains. Not reviewed again. When `ciStalled`
+               lists checks queued and not started past the limit, the reason
+               says so: report the stall on the PR with the cause; never poll.
   wait-worker- changes requested at the current head without response, or merge
                conflicts. Worker's turn to fix.
   approved   - approve verdict exists for the current head, base unchanged, CI
@@ -28,11 +30,11 @@ status values:
                round limit of 5 is reached. Only the owner removing the label
                resumes review, and the round count then restarts at 1; a bare
                owner comment does not end an escalation (issue #70).
-  await-bootstrap - reviewed clean but the repo lacks PR CI (or it has not run on
-               this head yet while bootstrap is in flight). The gatekeeper opens
-               CI/rubric PRs autonomously; worker PRs wait for checks then continue.
-  needs-human - judgment criteria are ambiguous: gatekeeper posted a draft rubric
-               for the owner to confirm. Not used for missing CI (bootstrap instead).
+
+No status skips review (issue #81): every reviewable PR gets a full review at
+the first tick that sees it, whatever CI or repo-readiness looks like. Gaps
+outside the PR (missing repo CI, missing or ambiguous rubric) are tracked by
+issues the gatekeeper files; they never hold back a review verdict.
 
 PRs that change loop skill files get the same statuses as any other PR; they are
 reviewed and can be approved. They additionally carry `gatekeeper:needs-human`
@@ -45,6 +47,7 @@ first), then oldest PR first. Every entry carries a one-line `reason`.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import re
@@ -65,6 +68,10 @@ MAX_ROUNDS = 5
 START_MARKER = contract.MARKER
 FAILED = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}
 PENDING = {"PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "EXPECTED", "REQUESTED"}
+# Pending states that mean the check has not started yet (issue #81: a check
+# that stays queued and never starts is a reportable stall, not silent waiting).
+NOT_STARTED = {"QUEUED", "EXPECTED", "REQUESTED", "WAITING"}
+DEFAULT_CI_STALL_MINUTES = 45
 PROTECTED_SKILL_PREFIXES = (
     "skills/gatekeeper-loop/",
     "skills/worker-loop/",
@@ -185,6 +192,78 @@ def load_state(path: Path | None = None) -> dict:
     return {}
 
 
+def queued_not_started(checks: list[dict]) -> list[str]:
+    """Names of checks still waiting to start (queued/expected/requested/waiting)."""
+    return [str(c.get("name") or c.get("context") or "")
+            for c in checks if check_state(c) in NOT_STARTED]
+
+
+def _queued_since_checks(queued_since: dict | None, head: str | None = None) -> dict:
+    """Check-name -> first-seen ISO map for `head`, or {} when the head changed.
+
+    Accepts the nested shape ``{"head": sha, "checks": {...}}`` and the legacy
+    flat ``{name: iso}`` shape (treated as matching any head).
+    """
+    raw = queued_since or {}
+    if "checks" in raw or "head" in raw:
+        if head is not None and str(raw.get("head") or "") != str(head):
+            return {}
+        checks = raw.get("checks") or {}
+        return checks if isinstance(checks, dict) else {}
+    return dict(raw)
+
+
+def merge_queued_since(
+    current_queued: list[str],
+    queued_since: dict,
+    now: str,
+    *,
+    head: str = "",
+) -> dict:
+    """First-seen-queued timestamps for the checks queued now on `head`.
+
+    Persisted in state.json per PR as ``{"head": <sha>, "checks": {name: iso}}``
+    so a new head cannot inherit stall clocks from an earlier head (issue #81 G1.1).
+    """
+    prev = _queued_since_checks(queued_since, head=head or None)
+    checks = {name: str(prev.get(name) or now) for name in current_queued}
+    return {"head": head, "checks": checks}
+
+
+def stalled_checks(
+    current_queued: list[str],
+    queued_since: dict,
+    now: str,
+    limit_minutes: int = DEFAULT_CI_STALL_MINUTES,
+    *,
+    head: str = "",
+) -> list[str]:
+    """Checks queued without starting for at least `limit_minutes` (issue #81).
+
+    `queued_since` is the nested map from ``merge_queued_since`` (or legacy flat).
+    Times from another head are ignored. Detection only: the tick reports the
+    stall on the PR; nothing polls inside a tick.
+    """
+    try:
+        limit = datetime.timedelta(minutes=limit_minutes)
+        now_dt = datetime.datetime.fromisoformat(now.replace("Z", "+00:00"))
+    except ValueError:
+        return []
+    checks = _queued_since_checks(queued_since, head=head or None)
+    stalled = []
+    for name in current_queued:
+        since = checks.get(name)
+        if not since:
+            continue
+        try:
+            since_dt = datetime.datetime.fromisoformat(str(since).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if now_dt - since_dt >= limit:
+            stalled.append(name)
+    return sorted(stalled)
+
+
 def classify(
     *,
     mergeable: str | None,
@@ -206,7 +285,7 @@ def classify(
     total_checks: int | None = None,
     config: dict | None = None,
     repo_has_ci: bool = True,
-    rubric_ready: bool = True,
+    stalled: list[str] | None = None,
 ) -> tuple[str, str, int]:
     """Return (status, one-line reason, priority). Lower priority number is handled first."""
     ci_applies = is_dev_base(base, config=config)
@@ -256,15 +335,17 @@ def classify(
 
     if reviewed_clean:
         if failing_checks and ci_applies:
-            return "review", "clean at head but CI failing; diagnose and request changes", 1
+            return "review", "clean at head but CI failing; diagnose the cause — only a failure this diff caused earns changes-requested", 1
+        # G1.2: stall status only where CI applies; stacked/non-dev bases still
+        # reach "issue the verdict" instead of waiting on inapplicable checks.
+        if stalled and ci_applies:
+            return "await-ci", f"clean at head; CI queued and not started ({', '.join(stalled)}) — report the stall on the PR with cause", 1
         if ci_applies and pending_checks:
             return "await-ci", "reviewed clean; waiting for pending CI", 9
         if ci_applies and total_checks == 0:
             if not repo_has_ci:
-                return "await-bootstrap", "reviewed clean; gatekeeper must add repo CI before approve", 8
+                return "await-ci", "reviewed clean; repo has no PR CI — the gatekeeper files the gap issue; never a changes-requested for this cause", 8
             return "await-ci", "reviewed clean; waiting for CI to run on head", 9
-        if not rubric_ready:
-            return "await-bootstrap", "reviewed clean; gatekeeper must finalize review criteria", 8
         return "review", "reviewed clean; CI done or not applicable, issue the verdict", 1
 
     if failing_checks and ci_applies:
@@ -287,28 +368,26 @@ def sensitive_candidates(paths: list[str], protected_paths: tuple[str, ...] = ()
 
 def needs_human_guidance(
     *,
-    status: str,
     own_skill: bool,
     labels: list[str],
     needs_comment_present: bool,
 ) -> dict | None:
     """What the gatekeeper should post/keep for human attention, or None.
 
+    Issue #81: the merge decision is the only gate reserved to a human. Loop-skill PRs
+    are reviewed and approved like any other PR; `changes loop skill files`
+    signals only that the merge stays with a human. There is no status-based
+    reason: ambiguous review criteria is filed as an issue (carrying
+    `needs-owner`), never a review skip.
+
     Idempotency lives here: `commentPresent`/`labelPresent` tell the tick to skip
     work it already did. `staleLabel` marks a `gatekeeper:needs-human` label whose
     reason no longer applies; labels this loop did not add are never removed.
     Path-name matches (`sensitiveCandidates`) are deliberately not a reason: the
     gatekeeper reads those files and applies stricter review itself.
-    Loop-skill changes are reviewed and approved like any other PR; their reason
-    only signals that the merge itself stays with a human.
     """
     label_present = "gatekeeper:needs-human" in labels
-    if own_skill:
-        reason = "changes loop skill files"
-    elif status == "needs-human":
-        reason = "ambiguous review criteria"
-    else:
-        reason = None
+    reason = "changes loop skill files" if own_skill else None
     if reason is None:
         if not label_present:
             return None
@@ -333,8 +412,6 @@ def summarize(
     cfg = config or load_config()
     readiness = readiness or assess_readiness(config=cfg)
     repo_has_ci = bool((readiness.get("ci") or {}).get("present"))
-    rubric_status = (readiness.get("rubric") or {}).get("status", "present")
-    rubric_ready = rubric_status == "present"
     base = pr["baseRefName"]
     checks = pr.get("statusCheckRollup") or []
     failing = [c.get("name") or c.get("context") for c in checks if check_state(c) in FAILED]
@@ -376,6 +453,16 @@ def summarize(
     findings = pr_state.get("findings", {})
     has_open_findings = any(v == "open" for v in findings.values()) if isinstance(findings, dict) else bool(findings)
 
+    now_iso = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    queued = queued_not_started(checks)
+    seen_queued = pr_state.get("queuedSince") or {}
+    queued_since = merge_queued_since(queued, seen_queued, now_iso, head=head)
+    try:
+        stall_limit = int((cfg.get("gatekeeper") or {}).get("ci_stall_minutes", DEFAULT_CI_STALL_MINUTES))
+    except (TypeError, ValueError):
+        stall_limit = DEFAULT_CI_STALL_MINUTES
+    stalled = stalled_checks(queued, queued_since, now_iso, stall_limit, head=head)
+
     reviewed_head = (clean or last or {}).get("head") or state_reviewed_head
     if reviewed_head and reviewed_head != head:
         subprocess.run(["git", "fetch", "origin", f"refs/pull/{number}/head", "--quiet"],
@@ -410,12 +497,12 @@ def summarize(
         total_checks=len(checks),
         config=cfg,
         repo_has_ci=repo_has_ci,
-        rubric_ready=rubric_ready,
+        stalled=stalled,
     )
     # Loop-skill PRs keep their normal status; own_skill only drives needsHuman below.
     needs_at_head = next((m for m in reversed(needs) if m.get("head") == head), None)
     needs_human = needs_human_guidance(
-        status=status, own_skill=own_skill,
+        own_skill=own_skill,
         labels=labels, needs_comment_present=bool(needs_at_head),
     )
 
@@ -452,6 +539,9 @@ def summarize(
         "createdAt": pr["createdAt"],
         "ciPending": pending,
         "ciFailing": failing,
+        "ciQueued": queued,
+        "ciStalled": stalled,
+        "queuedSince": queued_since,
     }
 
 

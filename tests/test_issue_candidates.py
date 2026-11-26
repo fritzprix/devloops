@@ -211,7 +211,9 @@ class OpenPrLimitTest(unittest.TestCase):
 
     def test_limit_is_reached_at_five(self):
         prs = [_pr(n, f"feat/{n}") for n in range(1, 6)]
-        result = filter_and_rank_issues([], prs, "me", config={})
+        # Explicit config: the repo's own devloops.config.yaml may configure a
+        # different limit, and the default itself is covered in test_config.py.
+        result = filter_and_rank_issues([], prs, "me", config={"worker": {"open_pr_limit": 5}})
         self.assertEqual(result["openPRLimit"], {"unapproved": 5, "limit": 5, "reached": True})
 
 

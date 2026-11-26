@@ -27,6 +27,9 @@ owner_comments_after = _module.owner_comments_after
 parse_markers = _module.parse_markers
 needs_human_guidance = _module.needs_human_guidance
 round_restart = _module.round_restart
+queued_not_started = _module.queued_not_started
+merge_queued_since = _module.merge_queued_since
+stalled_checks = _module.stalled_checks
 sensitive_candidates = _module.sensitive_candidates
 split_markers = _module.split_markers
 
@@ -405,13 +408,15 @@ class Issue14ClassificationTests(unittest.TestCase):
             clean_head="head0", pending_checks=["Test"], total_checks=1))
         self.assertEqual(status, "review")
 
-    def test_clean_head_without_repo_ci_is_await_bootstrap(self) -> None:
+    def test_clean_head_without_repo_ci_is_await_ci_not_bootstrap(self):
+        # Issue #81: a repo without PR CI parks the PR in await-ci with the cause
+        # named; the gatekeeper files a gap issue. No bootstrap status exists.
         status, reason, _ = classify(
             **base_args(clean_head="head1", total_checks=0),
             repo_has_ci=False,
         )
-        self.assertEqual(status, "await-bootstrap")
-        self.assertIn("CI", reason)
+        self.assertEqual(status, "await-ci")
+        self.assertIn("no PR CI", reason)
 
     def test_clean_head_with_repo_ci_but_no_runs_is_await_ci(self) -> None:
         status, reason, _ = classify(
@@ -483,18 +488,17 @@ class Issue14NeedsHumanTests(unittest.TestCase):
         self.assertEqual(len(needs), 2)  # tick sees commentPresent and posts nothing new
 
     def test_own_skill_pr_keeps_needs_human_reason_but_normal_status(self) -> None:
-        # Issue #62: loop-skill PRs get needsHuman guidance regardless of status,
-        # but the status itself is never overridden (no `human-only`).
-        for status in ("review", "wait-worker", "await-ci", "approved"):
-            guidance = needs_human_guidance(status=status, own_skill=True,
-                                            labels=["gatekeeper:needs-human"], needs_comment_present=True)
-            self.assertEqual(guidance["reason"], "changes loop skill files", status)
-            self.assertTrue(guidance["labelPresent"], status)
-            self.assertTrue(guidance["commentPresent"], status)
-            self.assertFalse(guidance["staleLabel"], status)
+        # Issue #62/#81: loop-skill PRs get needsHuman guidance, and the guidance
+        # no longer even looks at status — the status itself is never overridden.
+        guidance = needs_human_guidance(own_skill=True,
+                                        labels=["gatekeeper:needs-human"], needs_comment_present=True)
+        self.assertEqual(guidance["reason"], "changes loop skill files")
+        self.assertTrue(guidance["labelPresent"])
+        self.assertTrue(guidance["commentPresent"])
+        self.assertFalse(guidance["staleLabel"])
 
     def test_own_skill_without_label_asks_to_add(self) -> None:
-        guidance = needs_human_guidance(status="review", own_skill=True,
+        guidance = needs_human_guidance(own_skill=True,
                                         labels=[], needs_comment_present=False)
         self.assertEqual(guidance["reason"], "changes loop skill files")
         self.assertFalse(guidance["labelPresent"])
@@ -507,16 +511,19 @@ class Issue14NeedsHumanTests(unittest.TestCase):
         self.assertNotIn("human-only", source)
         self.assertNotIn("human_only", source)
 
-    def test_ambiguous_rubric_guidance(self) -> None:
-        guidance = needs_human_guidance(status="needs-human", own_skill=False,
-                                        labels=[], needs_comment_present=False)
-        self.assertEqual(guidance["reason"], "ambiguous review criteria")
-        self.assertFalse(guidance["labelPresent"])
-        self.assertFalse(guidance["commentPresent"])
+    def test_ambiguous_criteria_is_not_a_status_guidance(self) -> None:
+        # Issue #81: ambiguous review criteria becomes a needs-owner *issue*,
+        # never a needs-human label reason or a review skip.
+        self.assertIsNone(needs_human_guidance(own_skill=False, labels=[], needs_comment_present=False))
+        # A leftover ambiguous-criteria label is stale and should be removed.
+        guidance = needs_human_guidance(own_skill=False, labels=["gatekeeper:needs-human"],
+                                        needs_comment_present=True)
+        self.assertTrue(guidance["staleLabel"])
+        self.assertIsNone(guidance["reason"])
 
     def test_resolved_needs_human_label_is_stale(self) -> None:
         guidance = needs_human_guidance(
-            status="review", own_skill=False,
+            own_skill=False,
             labels=["gatekeeper:needs-human", "gatekeeper:changes-requested"],
             needs_comment_present=True)
         self.assertTrue(guidance["staleLabel"])
@@ -524,7 +531,7 @@ class Issue14NeedsHumanTests(unittest.TestCase):
 
     def test_no_needs_human_when_clean_and_unlabelled(self) -> None:
         self.assertIsNone(needs_human_guidance(
-            status="approved", own_skill=False,
+            own_skill=False,
             labels=["gatekeeper:approved"], needs_comment_present=False))
 
     def test_path_name_match_is_candidate_not_needs_human(self) -> None:
@@ -532,11 +539,11 @@ class Issue14NeedsHumanTests(unittest.TestCase):
         self.assertEqual(sensitive_candidates(paths), ["docs/research/permissions-notes.md"])
         # A reviewable PR whose only signal is a path-name match gets no human gate.
         self.assertIsNone(needs_human_guidance(
-            status="review", own_skill=False, labels=[], needs_comment_present=False))
+            own_skill=False, labels=[], needs_comment_present=False))
 
     def test_path_only_needs_human_label_is_stale(self) -> None:
         guidance = needs_human_guidance(
-            status="review", own_skill=False,
+            own_skill=False,
             labels=["gatekeeper:needs-human"], needs_comment_present=True)
         self.assertTrue(guidance["staleLabel"])
 
@@ -546,6 +553,130 @@ class Issue14NeedsHumanTests(unittest.TestCase):
         self.assertEqual(
             sensitive_candidates(paths, ("secure/",)),
             ["config/credentials.yaml", "secure/keys.toml", "src/sandbox/mod.rs", "src/shell_policy.rs"])
+
+
+class Issue81AlwaysReviewTests(unittest.TestCase):
+    """Issue #81: the queue never emits a skip-review status; stalled CI is reportable."""
+
+    def test_no_skip_review_status_exists(self) -> None:
+        import inspect
+        source = inspect.getsource(_module)
+        self.assertNotIn("await-" + "bootstrap", source)
+        self.assertNotIn('status == "needs-human"', source)  # no needs-human status branch
+        self.assertNotIn('"needs-human",', source)           # no needs-human status return
+        # classify never returns a skip status; every path is one of the known ones.
+        allowed = {"review", "await-ci", "wait-worker", "approved", "escalate"}
+        for kwargs in (
+            base_args(mergeable="CONFLICTING"),
+            base_args(),
+            base_args(clean_head="head1", total_checks=0),
+            base_args(clean_head="head1", total_checks=0, repo_has_ci=False),
+            base_args(clean_head="head1", pending_checks=["t"], total_checks=1),
+            base_args(clean_head="head1", stalled=["t"]),
+            base_args(total_verdicts=5, last_verdict={"head": "x", "verdict": "changes-requested"}),
+        ):
+            status, reason, _ = classify(**kwargs)
+            self.assertIn(status, allowed)
+            self.assertTrue(reason)
+
+    def test_loop_skill_path_keeps_reviewable_status(self) -> None:
+        # A loop-skill file change is never parked: guidance only signals the merge owner.
+        for status in ("review", "await-ci", "approved", "wait-worker"):
+            guidance = needs_human_guidance(own_skill=True, labels=["gatekeeper:needs-human"],
+                                            needs_comment_present=True)
+            self.assertEqual(guidance["reason"], "changes loop skill files", status)
+            self.assertFalse(guidance["staleLabel"], status)
+
+    def test_queued_not_started_excludes_in_progress(self) -> None:
+        checks = [
+            {"name": "Build", "state": "QUEUED"},
+            {"name": "Test", "status": "IN_PROGRESS"},
+            {"context": "Lint", "state": "REQUESTED"},
+            {"name": "Pass", "state": "SUCCESS"},
+        ]
+        self.assertEqual(queued_not_started(checks), ["Build", "Lint"])
+
+    def test_merge_queued_since_keeps_first_seen_and_drops_finished(self) -> None:
+        merged = merge_queued_since(
+            ["Build", "Lint"],
+            {"head": "abc", "checks": {"Build": "2026-11-27T00:00:00Z", "Old": "x"}},
+            "2026-11-27T01:00:00Z",
+            head="abc",
+        )
+        self.assertEqual(merged["head"], "abc")
+        self.assertEqual(merged["checks"]["Build"], "2026-11-27T00:00:00Z")
+        self.assertEqual(merged["checks"]["Lint"], "2026-11-27T01:00:00Z")
+        self.assertNotIn("Old", merged["checks"])
+
+    def test_merge_queued_since_resets_when_head_changes(self) -> None:
+        # G1.1: clocks from an earlier head must not stall a new push immediately.
+        prev = {"head": "old", "checks": {"Build": "2026-11-01T00:00:00Z"}}
+        merged = merge_queued_since(["Build"], prev, "2026-11-27T01:00:00Z", head="new")
+        self.assertEqual(merged["head"], "new")
+        self.assertEqual(merged["checks"]["Build"], "2026-11-27T01:00:00Z")
+        self.assertEqual(
+            stalled_checks(["Build"], prev, "2026-11-27T01:00:00Z", 45, head="new"),
+            [],
+        )
+
+    def test_stalled_after_limit_but_not_before(self) -> None:
+        since = {"head": "h", "checks": {"Build": "2026-11-27T00:00:00Z"}}
+        at_40m = stalled_checks(["Build"], since, "2026-11-27T00:40:00Z", limit_minutes=45, head="h")
+        self.assertEqual(at_40m, [])
+        at_46m = stalled_checks(["Build"], since, "2026-11-27T00:46:00Z", limit_minutes=45, head="h")
+        self.assertEqual(at_46m, ["Build"])
+        # A check first seen this tick (no recorded since) is never stalled yet.
+        self.assertEqual(stalled_checks(["Fresh"], since, "2026-11-27T05:00:00Z", 45, head="h"), [])
+
+    def test_stalled_check_reports_on_await_ci_with_cause(self) -> None:
+        status, reason, priority = classify(
+            **base_args(clean_head="head1", pending_checks=["Build"], total_checks=1),
+            stalled=["Build"],
+        )
+        self.assertEqual(status, "await-ci")
+        self.assertIn("Build", reason)
+        self.assertIn("not started", reason)
+        self.assertLess(priority, 9)  # reportable now, not parked
+
+    def test_stalled_ignored_when_ci_does_not_apply(self) -> None:
+        # G1.2: stacked/non-dev base still gets "issue the verdict".
+        status, reason, _ = classify(
+            **base_args(
+                clean_head="head1",
+                base="feat/parent",
+                pending_checks=["Build"],
+                total_checks=1,
+                stalled=["Build"],
+            ),
+        )
+        self.assertEqual(status, "review")
+        self.assertIn("issue the verdict", reason)
+
+    def test_clean_verdict_valid_while_ci_pending(self) -> None:
+        # reviewed clean + pending CI -> await-ci (clean stands; no re-review, no verdict held).
+        status, reason, _ = classify(**base_args(
+            clean_head="head1", pending_checks=["Test"], total_checks=1))
+        self.assertEqual(status, "await-ci")
+        self.assertIn("clean", reason)
+
+    def test_summarize_surfaces_ci_fields(self) -> None:
+        import json
+        from unittest.mock import patch
+        pr_payload = {
+            "number": 7, "title": "t", "url": "u", "headRefName": "b", "headRefOid": "abc",
+            "baseRefName": "main", "isDraft": False, "mergeable": "MERGEABLE",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "statusCheckRollup": [{"name": "Build", "state": "QUEUED"}],
+            "comments": [], "labels": [], "files": [{"path": "a.py"}],
+        }
+        readiness = {"ci": {"present": True}, "rubric": {"status": "present"}}
+        with patch.object(_module, "gh", return_value=json.dumps(pr_payload)):
+            summary = _module.summarize(7, "me", state={}, config={"project": {"base_branch": "main"}},
+                                        readiness=readiness)
+        self.assertEqual(summary["ciQueued"], ["Build"])
+        self.assertEqual(summary["ciStalled"], [])
+        self.assertEqual(summary["queuedSince"]["head"], "abc")
+        self.assertIn("Build", summary["queuedSince"]["checks"])
 
 
 class RetargetBeforeMergeTests(unittest.TestCase):

@@ -111,8 +111,12 @@ def _is_transient_shell(info: ProcessInfo) -> bool:
     base = _comm_base(info.comm)
     if base not in _TRANSIENT_SHELLS and not base.startswith("bash"):
         return False
-    lowered = [arg.lower() for arg in info.cmdline]
-    return "-c" in info.cmdline or "/c" in lowered
+    for arg in info.cmdline[1:]:
+        if arg == "-c" or arg.lower() == "/c":
+            return True
+        if arg.startswith("-") and not arg.startswith("--") and "c" in arg[1:]:
+            return True
+    return False
 
 
 def _is_ephemeral_runner(info: ProcessInfo) -> bool:

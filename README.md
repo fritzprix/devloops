@@ -68,11 +68,7 @@ human ───────────► merge
   tools in `qa.tools`. A PR is merge-ready only when `gatekeeper:approved` and
   `qa:accepted` are both on the current head (`qa_queue.py signoff N`). After merges,
   qa builds and tests the base branch locally and files issues for failures.
-- The gatekeeper **expands its own prerequisites** (CI workflows, review rubrics, fixtures)
-  when missing, instead of blocking on `needs-human`. Humans collaborate only when judgment
-  criteria are ambiguous (draft rubric for confirm/edit). `gatekeeper:needs-human` remains for
-  loop-skill edits and ambiguous criteria. Sensitive-looking paths are read and get stricter
-  review from the gatekeeper, not a human gate.
+- The gatekeeper **always reviews** every PR in the first tick that sees it; it never opens PRs. Missing prerequisites (CI workflows, review rubrics, fixtures) become gap **issues** instead of blocking review — ambiguous criteria carry a concrete draft with `needs-owner`. `gatekeeper:needs-human` remains only as the "human merges this" signal for loop-skill edits. Sensitive-looking paths are read and get stricter review from the gatekeeper, not a human gate.
 
 ### Tick gate
 
@@ -203,7 +199,7 @@ Edit `<project>/devloops.config.yaml`:
 | `project.base_branch` | Branch that PRs target |
 | `commands.test`, `commands.lint`, `commands.build` | Project commands that the loops use to verify |
 | `environment.capabilities` | Declared agent tools (browser, screen_capture, etc.); worker cites a **missing** name before `needsUser`. See escalation-policy.md. |
-| `protected_paths` | High-attention paths. Producer: findings only. Worker: edits when in scope and unambiguous. Gatekeeper: `gatekeeper:needs-human` for stricter review. See `skills/worker-loop/references/escalation-policy.md`. |
+| `protected_paths` | High-attention paths. Producer: findings only. Worker: edits when in scope and unambiguous. Gatekeeper: reads them and reviews strictly (never a `gatekeeper:needs-human` from a path match). See `skills/worker-loop/references/escalation-policy.md`. |
 | `cleanup.protected_branches` | Branches that the `cleanup` task never proposes to delete |
 | `state_dir` | Directory for each loop's `state.json` and `tick.lock` (default `.devloops`). `$LOOP_STATE_DIR` overrides it. `--agent-id` scopes the paths to one agent (see `scheduling.md`). |
 | `labels.producer` / `validated` / `rejected` / `approved` | Label names for the issue flow |
@@ -268,7 +264,7 @@ See [`scheduling.md`](skills/worker-loop/references/scheduling.md) (installed at
 | `gatekeeper:changes-requested` | gatekeeper | The worker must answer the findings |
 | `gatekeeper:approved` | gatekeeper | Ready for a human merge |
 | `gatekeeper:escalated` | gatekeeper | Review round limit or unresolved product/security/data owner decision; owner removes the label to resume |
-| `gatekeeper:needs-human` | gatekeeper | Stricter review before approve (security, protected paths, loop skills, no CI on head) |
+| `gatekeeper:needs-human` | gatekeeper | "Human merges this" signal (loop-skill edits). Never blocks review or approval; never set from a path-name match |
 
 ## Safety rules
 

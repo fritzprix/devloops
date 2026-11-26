@@ -288,6 +288,9 @@ class LostOwnershipProcessTest(SingleSlotProcessTest):
 
         late = self.script("tick_gate.py", "--unlock", "--token", first)
         self.assertEqual(late.returncode, EXIT_LOST, late.stdout)
+        # A LOST unlock must not stop the new owner's heartbeat: wait past the
+        # TTL so a killed renewer would make the lock stale (macOS CI / #78).
+        time.sleep(self.ttl + 0.5)
         self.assertTrue(tick_gate.lock_is_owned(lock, second))
 
         marker = self.root / "pushed"
