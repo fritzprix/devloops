@@ -140,7 +140,16 @@ class StackedPrLifecycleTest(unittest.TestCase):
                 open_head_refs={"feat/parent-1"},
             )
         )
-
+        # Draft heads are included in open_head_refs (same rule as summarize_prs; #66 G1.2).
+        draft_listed = [
+            {"headRefName": "feat/parent-1", "isDraft": True},
+            {"headRefName": "feat/child", "isDraft": False},
+        ]
+        open_heads = {p["headRefName"] for p in draft_listed if p.get("headRefName")}
+        self.assertIn("feat/parent-1", open_heads)
+        self.assertIsNone(
+            pr_status.parent_pr_merged("feat/parent-1", "main", merged, open_head_refs=open_heads)
+        )
     def test_find_merged_via_parent_issues(self):
         open_issues = [{"number": 20}, {"number": 30}]
         merged = [

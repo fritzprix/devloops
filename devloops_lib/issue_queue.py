@@ -197,6 +197,4 @@ def apply_verdict(
         if edit_res.returncode != 0:
             raise GhError(f"gh issue edit failed (code {edit_res.returncode}): {edit_res.stderr.strip()}")
 
-        result["state_updated"] = False
-
     return result
