@@ -101,8 +101,22 @@ _WINDOWS_TRANSIENT_EXES = frozenset(
 )
 # Venv / store redirector stubs share the python.exe name with the real
 # interpreter and often exit when the script (tick_gate) exits. Skip one such
-# ancestor so we watch the session host (pytest, agent, CI runner) instead.
+# ancestor only while running inside a venv (see _running_in_venv).
 _WINDOWS_INTERPRETER_EXES = frozenset({"python.exe", "pythonw.exe"})
+
+
+def _running_in_venv() -> bool:
+    """True when this process is a venv / virtualenv interpreter.
+
+    Used on Windows so we skip only the venv ``Scripts\\python.exe`` redirector
+    of ``tick_gate``, not a Python-based session host that must stay watched
+    (issue #78 G3.1).
+    """
+    base = getattr(sys, "base_prefix", sys.prefix)
+    if sys.prefix != base:
+        return True
+    # virtualenv (older) sets real_prefix; ignore missing attribute.
+    return getattr(sys, "real_prefix", None) is not None
 
 
 def _windows_process_map() -> "dict[int, tuple[int, str]] | None":
@@ -172,12 +186,13 @@ def _windows_process_map() -> "dict[int, tuple[int, str]] | None":
 def _resolve_parent_pid_windows() -> int | None:
     """Walk up from os.getppid() with a Toolhelp32 snapshot.
 
-    Skips transient shells (cmd/powershell/pwsh/conhost/bash/sh) and one
-    ``python.exe``/``pythonw.exe`` ancestor (venv redirector of ``tick_gate``
-    that dies when the script exits — issue #78 G2.1). Returns the first other
-    ancestor that is still alive, or None when the snapshot is unavailable, an
-    ancestor is not visible, or the candidate is not alive — a wrong pid would
-    make the heartbeat exit early and stop renewing a live tick's lock.
+    Skips transient shells (cmd/powershell/pwsh/conhost/bash/sh). When this
+    process runs inside a venv, also skips one ``python.exe``/``pythonw.exe``
+    ancestor — the venv redirector of ``tick_gate`` that dies when the script
+    exits (issue #78 G2.1 / G3.1). Outside a venv, Python ancestors stay
+    watchable so a Python-based session host is not skipped. Returns the first
+    other ancestor that is still alive, or None when the snapshot is
+    unavailable, an ancestor is not visible, or the candidate is not alive.
     """
     try:
         pid = os.getppid()
@@ -186,6 +201,9 @@ def _resolve_parent_pid_windows() -> int | None:
         procs = _windows_process_map()
         if procs is None:
             return None
+        # Only the venv Scripts\python.exe stub should be skipped; a bare
+        # system/agent python.exe host must remain watchable (#78 G3.1).
+        skip_venv_launcher = _running_in_venv()
         skipped_interpreter = False
         our_exe = Path(sys.executable).name.lower()
         for _ in range(40):
@@ -199,11 +217,12 @@ def _resolve_parent_pid_windows() -> int | None:
             if exe in _WINDOWS_TRANSIENT_EXES:
                 pid = ppid
                 continue
-            # Skip one interpreter stub (venv Scripts\python.exe launcher that
-            # dies when tick_gate exits). Match by known names or same basename
-            # as sys.executable. The next ancestor is the session host.
-            if not skipped_interpreter and (
-                exe in _WINDOWS_INTERPRETER_EXES or exe == our_exe
+            # Skip one venv redirector only. Match known interpreter names or
+            # the same basename as sys.executable (store/alias layouts).
+            if (
+                skip_venv_launcher
+                and not skipped_interpreter
+                and (exe in _WINDOWS_INTERPRETER_EXES or exe == our_exe)
             ):
                 skipped_interpreter = True
                 pid = ppid
@@ -347,8 +366,9 @@ def stop_heartbeat(lock_file: Path, *, wait_seconds: float = 10.0) -> None:
     pid, _token = info
     if pid == os.getpid():
         return
-    # Never signal a reused PID: a dead-at-startup child can leave a sidecar
-    # naming a pid that another process already took (issue #78 G1.5).
+    # Skip signaling when the sidecar PID is already dead (issue #78 G1.5).
+    # A dead-at-startup child can leave a stale sidecar; we do not claim that
+    # a live reused PID is never signalled — only that a dead one is skipped.
     if not _tick_gate()._pid_alive(pid):
         return
     terminate_process_tree(pid, wait_seconds=wait_seconds)

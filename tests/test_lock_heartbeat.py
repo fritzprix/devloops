@@ -368,8 +368,8 @@ class LockHeartbeatTest(unittest.TestCase):
                 self.assertIsNone(resolve_parent_pid())
 
     def test_resolve_parent_pid_windows_skips_venv_python_launcher(self):
-        # G2.1: venv Scripts\python.exe that launched tick_gate dies with it;
-        # skip that one interpreter ancestor and watch the session host.
+        # G2.1/G3.1: inside a venv, skip the Scripts\python.exe redirector and
+        # watch the session host.
         procs = {
             400: (300, "python.exe"),  # venv launcher (immediate parent)
             300: (4, "agent.exe"),     # long-lived session host
@@ -380,9 +380,30 @@ class LockHeartbeatTest(unittest.TestCase):
                     patch("devloops_lib.lock_heartbeat._windows_process_map", return_value=procs), \
                     patch("devloops_lib.tick_gate._pid_alive", return_value=True), \
                     patch("devloops_lib.lock_heartbeat.os.getppid", return_value=400), \
+                    patch("devloops_lib.lock_heartbeat._running_in_venv", return_value=True), \
                     patch("devloops_lib.lock_heartbeat.sys.executable",
                           r"C:\venv\Scripts\python.exe"):
                 self.assertEqual(resolve_parent_pid(), 300)
+
+    def test_resolve_parent_pid_windows_keeps_python_session_host(self):
+        # G3.1: outside a venv, a python.exe ancestor is the session host and
+        # must stay watched (explorer → cmd → python → bash → tick_gate).
+        procs = {
+            500: (400, "bash.exe"),
+            400: (300, "python.exe"),  # Python-based agent host
+            300: (200, "cmd.exe"),
+            200: (4, "explorer.exe"),
+        }
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DEVLOOPS_SESSION_HOLDER_PID", None)
+            with patch("devloops_lib.lock_heartbeat.sys.platform", "win32"), \
+                    patch("devloops_lib.lock_heartbeat._windows_process_map", return_value=procs), \
+                    patch("devloops_lib.tick_gate._pid_alive", return_value=True), \
+                    patch("devloops_lib.lock_heartbeat.os.getppid", return_value=500), \
+                    patch("devloops_lib.lock_heartbeat._running_in_venv", return_value=False), \
+                    patch("devloops_lib.lock_heartbeat.sys.executable",
+                          r"C:\Python313\python.exe"):
+                self.assertEqual(resolve_parent_pid(), 400)
 
     def test_start_detached_none_parent_pid_disables_parent_watch(self):
         captured: dict = {}
