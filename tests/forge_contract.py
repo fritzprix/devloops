@@ -546,16 +546,28 @@ class GhStub:
     def _issue_id(self, number: int) -> int:
         return 10000 + number
 
+    def _find_issue_or_pr(self, number: int) -> Dict[str, Any]:
+        """GitHub issues API returns PRs too, with a pull_request field."""
+        try:
+            return dict(self._find_issue(number))
+        except ForgeError:
+            item = dict(self._find_pr(number))
+            item.setdefault("pull_request", {"url": item["url"]})
+            return item
+
     def _api_repo(self, path: str, args: List[str]) -> str:
         parts = path.split("/")
         if len(parts) >= 5 and parts[0] == "repos" and parts[3] == "issues":
             number = int(parts[4])
             if len(parts) == 5:
-                item = dict(self._find_issue(number))
+                item = self._find_issue_or_pr(number)
                 item.setdefault("id", self._issue_id(number))
                 return json.dumps(item)
             if parts[5] == "dependencies":
                 if "-X" in args and "POST" in args:
+                    # Match verified GitHub API: PR numbers are refused (422).
+                    if any(p["number"] == number for p in self.prs):
+                        raise ForgeError("HTTP 422: Source issue may only be an issue")
                     issue_id = None
                     for a in args:
                         if a.startswith("issue_id="):
@@ -563,11 +575,10 @@ class GhStub:
                     deps = self.dependencies.setdefault(number, [])
                     for item in self.issues + self.prs:
                         if self._issue_id(item["number"]) == issue_id:
+                            if any(p["number"] == item["number"] for p in self.prs):
+                                raise ForgeError("HTTP 422: Target issue may only be an issue")
                             if item["number"] not in [d["number"] for d in deps]:
-                                entry = copy.deepcopy(item)
-                                if any(p["number"] == item["number"] for p in self.prs):
-                                    entry.setdefault("pull_request", {"url": item["url"]})
-                                deps.append(entry)
+                                deps.append(copy.deepcopy(item))
                             break
                     return json.dumps(deps)
                 return json.dumps(self.dependencies.get(number, []))
@@ -732,10 +743,19 @@ class ForgeContract:
         self.forge.add_blocker(2, 1)  # safe to call twice
         assert len([b for b in self.forge.blocked_by(2) if b.number == 1]) == 1
 
+    def supports_pr_dependencies(self) -> bool:
+        """GitHub issue dependencies are issue-only (owner decision on #91)."""
+        return self.forge.__class__.__name__ != "GitHubForge"
+
     def test_add_blocker_pr_number(self):
         numbers = sorted(p.number for p in self.forge.list_prs())
         assert len(numbers) >= 2
         target, blocker = numbers[0], numbers[1]
+        if not self.supports_pr_dependencies():
+            import pytest
+            with pytest.raises(ForgeError, match="pull request|may only be an issue|issue-only"):
+                self.forge.add_blocker(target, blocker)
+            return
         self.forge.add_blocker(target, blocker)
         blockers = {b.number: b for b in self.forge.blocked_by(target)}
         assert blockers[blocker].state == "open"

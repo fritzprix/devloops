@@ -92,8 +92,9 @@ class Forge(Protocol):
 
     def post_issue_comment(self, number: int, body: str) -> None: ...
 
-    # issue dependencies (issue #65). Both operations must work for issue AND
-    # pull-request numbers; unknown numbers raise ForgeError.
+    # issue dependencies (issue #65). Gitea/Forgejo accept issue and PR numbers.
+    # GitHub's API is issue-only: add_blocker raises ForgeError when either
+    # number is a pull request (owner decision on #91). Unknown numbers raise.
     def blocked_by(self, number: int) -> List[Blocker]: ...
 
     def add_blocker(self, number: int, blocker_number: int) -> None: ...

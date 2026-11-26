@@ -260,7 +260,11 @@ class GiteaFixtureStub:
                     return 404, {}, json.dumps({"message": "not found"})
                 deps = self.dependencies.setdefault(num, {"blocked_by": [], "blocks": []})
                 if method == "GET":
-                    return 200, {}, json.dumps(deps)
+                    page = int((qs.get("page") or ["1"])[0])
+                    limit = int((qs.get("limit") or ["50"])[0])
+                    start = (page - 1) * limit
+                    chunk = deps["blocked_by"][start:start + limit]
+                    return 200, {}, json.dumps({"blocked_by": chunk, "blocks": deps.get("blocks") or []})
                 if method == "POST":
                     idx = int(body["index"])
                     if not any(d["number"] == idx for d in deps["blocked_by"]):
@@ -495,6 +499,44 @@ class GiteaForgeBehaviorTest(unittest.TestCase):
         with self.assertRaises(ForgeError) as ctx:
             forge.blocked_by(1)
         self.assertIn("Enable issue dependencies", str(ctx.exception))
+
+    def test_blocked_by_paginates_past_first_page(self):
+        stub = GiteaFixtureStub()
+        # More blockers than page_size so a single request cannot see them all.
+        extras = []
+        for i in range(5):
+            issue = {
+                "number": 100 + i, "title": f"Extra {i}", "state": "open",
+                "html_url": f"https://git.example.com/{OWNER}/{NAME}/issues/{100 + i}",
+                "body": "", "labels": [], "assignees": [],
+                "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+                "id": 20000 + i,
+            }
+            stub.issues.append(issue)
+            extras.append(copy.deepcopy(issue))
+        stub.dependencies[1] = {
+            "blocked_by": [copy.deepcopy(stub.issues[1])] + extras,
+            "blocks": [],
+        }
+        forge = GiteaForge(
+            base_url="https://git.example.com", owner=OWNER, name=NAME,
+            version="1.22.0", retry_backoff=0.0, page_size=2, opener=stub,
+        )
+        blockers = forge.blocked_by(1)
+        self.assertEqual([b.number for b in blockers], [2, 100, 101, 102, 103, 104])
+        dep_gets = [r for r in stub.requests if r[0] == "GET" and "dependencies" in r[1]]
+        self.assertGreaterEqual(len(dep_gets), 3)
+
+    def test_auth_check_reports_disabled_dependencies(self):
+        stub = GiteaFixtureStub()
+        stub.dependencies_disabled = True
+        forge = GiteaForge(
+            base_url="https://git.example.com", owner=OWNER, name=NAME,
+            version="1.22.0", retry_backoff=0.0, opener=stub,
+        )
+        status = forge.auth_check()
+        self.assertTrue(status.ok)
+        self.assertIn("issue dependencies appear disabled", status.output)
 
     def test_get_forge_factory_returns_forgejo_and_gitea(self):
         f = get_forge(

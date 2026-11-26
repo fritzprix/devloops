@@ -386,14 +386,37 @@ class GitHubForge:
             ))
         return blockers
 
-    def add_blocker(self, number: int, blocker_number: int) -> None:
+    def _issue_resource(self, number: int) -> dict:
+        """GET repos/.../issues/{n}; GitHub returns PRs here with a pull_request key."""
         owner, repo = self._owner_repo()
+        raw = self._api("api", f"repos/{owner}/{repo}/issues/{number}") or "{}"
+        try:
+            data = json.loads(raw)
+        except ValueError as exc:
+            raise ForgeError(f"GitHub issue #{number}: invalid JSON: {exc}") from exc
+        if not isinstance(data, dict) or data.get("number") is None:
+            raise ForgeError(f"GitHub issue #{number} not found")
+        return data
+
+    def _reject_pr_dependency(self, number: int, role: str) -> dict:
+        data = self._issue_resource(number)
+        if "pull_request" in data:
+            raise ForgeError(
+                f"GitHub add_blocker: #{number} ({role}) is a pull request; "
+                "GitHub issue dependencies are issue-only"
+            )
+        return data
+
+    def add_blocker(self, number: int, blocker_number: int) -> None:
+        # Owner decision (#91): no PR numbers, no body-line fallback.
+        self._reject_pr_dependency(number, "target")
+        blocker = self._reject_pr_dependency(blocker_number, "blocker")
         if any(b.number == blocker_number for b in self.blocked_by(number)):
             return
-        data = json.loads(self._api("api", f"repos/{owner}/{repo}/issues/{blocker_number}") or "{}")
-        issue_id = data.get("id") if isinstance(data, dict) else None
+        issue_id = blocker.get("id")
         if issue_id is None:
             raise ForgeError(f"GitHub issue #{blocker_number} has no numeric id for dependency link")
+        owner, repo = self._owner_repo()
         self._api(
             "api",
             f"repos/{owner}/{repo}/issues/{number}/dependencies/blocked_by",
