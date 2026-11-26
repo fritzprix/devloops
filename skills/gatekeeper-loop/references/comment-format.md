@@ -91,11 +91,11 @@ Clean, waiting for CI (no label change, not a round; lets any tick or machine se
 Needs owner (not a verdict, does not count as a round; post once per reason+head, never duplicate):
 
 ```markdown
-<!-- gatekeeper-loop: kind=needs-owner reason=ambiguous-review-criteria head=<sha> -->
+<!-- gatekeeper-loop: kind=needs-owner reason=changes-loop-skill-files head=<sha> -->
 
-## Gatekeeper · needs human · ambiguous review criteria
+## Gatekeeper · needs human · changes loop skill files
 
-<Concrete draft rubric or checklist the owner must confirm or edit — not open-ended questions.>
+This PR modifies loop skill files; review and approval proceed normally, and the merge stays with a human.
 ```
 
 Reason: `changes-loop-skill-files` (hyphenated; marker tokens are space-split). A path-name match is never a reason. Missing repo CI is not a needs-owner reason: the gatekeeper files a gap issue instead and keeps reviewing. `changes-loop-skill-files` does not block review or approval — loop-skill PRs are reviewed normally and can be approved; the marker and the `gatekeeper:needs-human` label only signal that the merge itself stays with a human. There is no `kind=needs-human` marker; `kind=needs-owner` is the only human-attention marker kind for this loop.

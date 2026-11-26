@@ -331,5 +331,41 @@ class QaStateTest(unittest.TestCase):
         self.assertEqual(action, "address-gatekeeper")
 
 
+class SummarizePrFailClosedTest(unittest.TestCase):
+    def test_blocker_forge_error_fails_closed_to_wait_blocker(self):
+        # G2.1: forge error while reading blockers in summarize_pr must park as wait-blocker.
+        import json
+        from unittest import mock
+
+        pr_payload = {
+            "number": 99,
+            "title": "feat: example (Fixes #10)",
+            "body": "Fixes #10",
+            "url": "https://example.invalid/pr/99",
+            "headRefName": "feat/example-10",
+            "headRefOid": "sha1",
+            "baseRefName": "main",
+            "isDraft": False,
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "CLEAN",
+            "reviewDecision": "",
+            "statusCheckRollup": [],
+            "comments": [],
+            "labels": [],
+        }
+
+        def fake_gh(*args, **kwargs):
+            if args and args[0] == "api":
+                return json.dumps({"data": {}})
+            return json.dumps(pr_payload)
+
+        with mock.patch.object(pr_status, "gh", side_effect=fake_gh), \
+             mock.patch.object(pr_status, "duplicate_commits", return_value=[]), \
+             mock.patch.object(pr_status, "parent_pr_merged", return_value=None), \
+             mock.patch("devloops_lib.forge.detect.get_forge", side_effect=RuntimeError("forge unavailable")):
+            summary = pr_status.summarize(99, "owner", "repo", "me", default_base="main", merged_prs=[])
+        self.assertEqual(summary["nextAction"], "wait-blocker")
+
+
 if __name__ == "__main__":
     unittest.main()

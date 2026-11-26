@@ -891,9 +891,10 @@ def find_rebase_prs(
                 clean = marker
         if not clean or clean.get("head") != head:
             continue
+        pr_text = f"{pr.get('title') or ''} {pr.get('bodyText') or pr.get('body') or ''}"
         try:
-            links = contract.blocker_numbers(forge_obj, number)
-            opens = contract.open_blockers(forge_obj, number)
+            links = contract.pr_blocker_numbers(forge_obj, pr_text)
+            opens = contract.pr_open_blockers(forge_obj, pr_text)
         except Exception:
             continue
         if contract.needs_blocker_rebase(

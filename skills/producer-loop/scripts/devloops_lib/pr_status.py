@@ -297,7 +297,7 @@ def summarize(
     pr = json.loads(
         gh(
             "pr", "view", str(number), "--json",
-            "number,title,url,headRefName,headRefOid,baseRefName,isDraft,mergeable,"
+            "number,title,body,url,headRefName,headRefOid,baseRefName,isDraft,mergeable,"
             "mergeStateStatus,reviewDecision,statusCheckRollup,commits,comments,labels",
         )
     )
@@ -399,8 +399,9 @@ def summarize(
             from devloops_lib.forge.detect import get_forge
 
             forge_obj = get_forge(load_config())
-            all_blocker_nums = contract.blocker_numbers(forge_obj, number)
-            open_blocker_nums = contract.open_blockers(forge_obj, number)
+            pr_text = f"{pr.get('title') or ''} {pr.get('body') or ''}"
+            all_blocker_nums = contract.pr_blocker_numbers(forge_obj, pr_text)
+            open_blocker_nums = contract.pr_open_blockers(forge_obj, pr_text)
         except Exception as exc:
             forge_error = str(exc) or exc.__class__.__name__
     rebase_after = (

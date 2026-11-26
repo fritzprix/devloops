@@ -1,10 +1,8 @@
 """Repo readiness for gatekeeper review: CI, rubrics, and judgment criteria.
 
 Issue #81: the gatekeeper never opens PRs. A gap it discovers (missing CI,
-missing or ambiguous rubric) becomes one issue, and each affected PR is
-linked/reported against it. Ambiguous judgment criteria get a concrete draft
-in that issue and the `needs-owner` label for the owner to confirm; a gap
-never holds back a review verdict.
+missing or thin rubric) becomes one issue, and each affected PR is
+linked/reported against it; a gap never holds back a review verdict.
 """
 from __future__ import annotations
 
@@ -27,12 +25,6 @@ _DEFAULT_ISSUE_RULES_CANDIDATES = (
     "docs/ISSUE_RULES.md",
     "writing/ISSUE_RULES.md",
     ".agents/ISSUE_RULES.md",
-)
-
-_AMBIGUOUS_MARKERS = re.compile(
-    r"\b(TBD|TODO\b.*(?:owner|criteria|rubric)|FIXME\b.*criteria|"
-    r"\?\?\?|fill in|owner must decide)\b",
-    re.I,
 )
 
 _REQUIRED_RUBRIC_HINTS = (
@@ -84,12 +76,10 @@ def _candidate_paths(root: Path, names: tuple[str, ...], extra: list[str]) -> li
 
 
 def _rubric_quality(text: str) -> str:
-    """Return ``present``, ``ambiguous``, or ``insufficient``."""
+    """Return ``present`` or ``insufficient``."""
     stripped = text.strip()
     if len(stripped) < 120:
         return "insufficient"
-    if _AMBIGUOUS_MARKERS.search(stripped):
-        return "ambiguous"
     hits = sum(1 for pat in _REQUIRED_RUBRIC_HINTS if pat.search(stripped))
     if hits < 2:
         return "insufficient"
@@ -137,14 +127,6 @@ def assess_rubric(root: Path, config: dict[str, Any]) -> dict[str, Any]:
             "issue_rules": [str(p.relative_to(root)) for p in issue_paths],
             "action": None,
         }
-    if quality == "ambiguous":
-        return {
-            "status": "ambiguous",
-            "path": rel,
-            "action": "open_issue",
-            "goal": ("File one issue holding a concrete draft rubric for the owner to confirm or edit; "
-                     "label it needs-owner. Review continues meanwhile."),
-        }
     return {
         "status": "insufficient",
         "path": rel,
@@ -191,9 +173,6 @@ def assess_readiness(start_dir: Path | str | None = None, config: dict | None = 
     if rubric["status"] in ("missing", "insufficient"):
         gaps.append({"kind": "rubric", "priority": 1, "status": rubric["status"],
                      "path": rubric.get("path"), **{k: rubric[k] for k in ("action", "goal")}})
-    if rubric["status"] == "ambiguous":
-        gaps.append({"kind": "rubric", "priority": 0, "status": "ambiguous",
-                     "path": rubric.get("path"), **{k: rubric[k] for k in ("action", "goal")}})
 
     gaps.sort(key=lambda g: g["priority"])
 
@@ -201,8 +180,7 @@ def assess_readiness(start_dir: Path | str | None = None, config: dict | None = 
         "principle": (
             "Always review: gaps outside the PR (CI, rubrics) are filed as "
             "issues, never verdicts held back. The gatekeeper files issues and "
-            "comments; it never opens PRs. Ambiguous criteria co-create from a "
-            "concrete draft via a needs-owner issue."
+            "comments; it never opens PRs."
         ),
         "ci": ci,
         "rubric": rubric,
