@@ -91,11 +91,25 @@ class MarkerVocabularyTest(unittest.TestCase):
     def test_gatekeeper_needs_human_kind_is_gone(self):
         self.assertIsNone(contract.parse_marker("<!-- gatekeeper-loop: kind=needs-human reason=x head=sha -->"))
 
-    def test_gatekeeper_clean_blocked_by(self):
-        parsed = contract.parse_marker("<!-- gatekeeper-loop: verdict=clean head=sha base=main blocked-by=#42 -->")
-        self.assertIsNotNone(parsed)
-        self.assertEqual(parsed[1]["blocked-by"], "#42")
+    def test_gatekeeper_clean_rejects_blocked_by(self):
+        # Owner decision G1.3: dependencies live only on issues, never on clean markers.
+        self.assertIsNone(contract.parse_marker("<!-- gatekeeper-loop: verdict=clean head=sha base=main blocked-by=#42 -->"))
         self.assertIsNone(contract.parse_marker("<!-- gatekeeper-loop: verdict=clean head=sha blocked-by=soon -->"))
+
+    def test_pr_blockers_read_from_closed_issues_only(self):
+        from devloops_lib.forge.models import Blocker
+        queried = []
+        class Forge:
+            def blocked_by(self, number):
+                queried.append(number)
+                if number == 10:
+                    return [Blocker(7, "open"), Blocker(8, "closed")]
+                return []
+        self.assertEqual(contract.closed_issue_numbers("Fixes #10, closes #11"), [10, 11])
+        self.assertEqual(contract.pr_blocker_numbers(Forge(), "Fixes #10"), [7, 8])
+        self.assertEqual(contract.pr_open_blockers(Forge(), "Fixes #10"), [7])
+        self.assertEqual(queried, [10, 10])
+        self.assertEqual(contract.pr_open_blockers(Forge(), "no closing keyword"), [])
 
     def test_worker_kinds_parse(self):
         for k in contract.WORKER_KINDS:
