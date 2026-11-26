@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from devloops_lib import worker_candidates
-from devloops_lib.tick_gate import find_actionable_backlog
+from devloops_lib.tick_gate import find_actionable_backlog, preflight_decision
 
 
 class WorkerCandidatesTest(unittest.TestCase):
@@ -92,6 +93,14 @@ class WorkerCandidatesTest(unittest.TestCase):
             open_blockers_fn=blockers,
         )
         self.assertEqual(got, [100, 105])
+
+    def test_preflight_decision_fails_closed_when_forge_unavailable(self):
+        # G1.1: get_forge errors must surface, not yield an unchecked backlog.
+        with patch("devloops_lib.tick_gate.fetch_gate_data", return_value={"prs": [], "issues": []}), \
+             patch("devloops_lib.tick_gate.gh", return_value="me\n"), \
+             patch("devloops_lib.forge.detect.get_forge", side_effect=RuntimeError("no forge")):
+            with self.assertRaises(RuntimeError):
+                preflight_decision(config={}, state={})
 
 
 if __name__ == "__main__":

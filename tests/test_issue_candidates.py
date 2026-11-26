@@ -4,6 +4,7 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -149,6 +150,26 @@ class IssueCandidatesRule3Test(unittest.TestCase):
         )
         self.assertEqual([c["number"] for c in clear["candidates"]], [7])
 
+    def test_forge_detection_failure_excludes_with_reason(self):
+        # G1.1: get_forge failure must not silently skip blocker checks.
+        issues = [
+            {
+                "number": 8,
+                "title": "Approved",
+                "body": "x",
+                "labels": [{"name": "approved"}],
+                "assignees": [],
+                "updatedAt": "2026-10-31T00:00:00Z",
+            }
+        ]
+        with mock.patch(
+            "devloops_lib.forge.detect.get_forge",
+            side_effect=RuntimeError("no forge"),
+        ):
+            result = filter_and_rank_issues(issues, self.open_prs, self.me)
+        self.assertEqual(result["candidates"], [])
+        self.assertIn("forge unavailable for blocker check", result["excluded"][0]["reason"])
+        self.assertIn("no forge", result["excluded"][0]["reason"])
 
 def _issue(number, body="", labels=None):
     return {

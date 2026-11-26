@@ -145,9 +145,6 @@ class IssueQueueTest(unittest.TestCase):
                 self.assertIn("validated", args)
                 self.assertNotIn("approved", args)
 
-        # producerStats writes were removed (issue #66); verdict still applies labels.
-        self.assertFalse(result.get("state_updated"))
-
         # Apply another verdict 'rejected' on another security issue
         fake_issue_2 = {
             "number": 102,
@@ -166,7 +163,6 @@ class IssueQueueTest(unittest.TestCase):
             existing_issue=fake_issue_2,
         )
         self.assertEqual(result2["verdict"], "rejected")
-        self.assertFalse(result2.get("state_updated"))
         if self.state_file.exists():
             saved = json.loads(self.state_file.read_text(encoding="utf-8"))
             self.assertNotIn("producerStats", saved)

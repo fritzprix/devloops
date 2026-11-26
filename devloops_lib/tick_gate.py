@@ -873,12 +873,10 @@ def preflight_decision(
     skipped = (state or {}).get("skipped") if isinstance(state, dict) else None
     forge_obj = forge
     if forge_obj is None:
-        try:
-            from devloops_lib.forge.detect import get_forge
+        # Fail closed: without a forge, open blockers cannot be read (#66 G1.1).
+        from devloops_lib.forge.detect import get_forge
 
-            forge_obj = get_forge(cfg, state=state)
-        except Exception:
-            forge_obj = None
+        forge_obj = get_forge(cfg, state=state)
     return (
         compute_fingerprint(gate_data, me),
         find_actionable_backlog(

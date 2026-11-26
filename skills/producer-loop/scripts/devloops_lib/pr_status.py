@@ -395,10 +395,10 @@ def summarize_prs(number: int | None = None) -> list[dict]:
     open_listed = json.loads(
         gh("pr", "list", "--state", "open", "--limit", "100", "--json", "number,isDraft,headRefName,baseRefName,author")
     )
+    # Include drafts: a draft parent on a reused branch name is still the live
+    # stack parent and must block retarget (#66 G1.2).
     open_head_refs = {
-        p["headRefName"]
-        for p in open_listed
-        if p.get("headRefName") and not p.get("isDraft")
+        p["headRefName"] for p in open_listed if p.get("headRefName")
     }
     if number:
         numbers = [number]

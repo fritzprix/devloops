@@ -156,13 +156,15 @@ def filter_and_rank_issues(
             mentioned_by_pr.setdefault(ref, []).append(pr["number"])
 
     forge_obj = forge
+    forge_error: str | None = None
     if forge_obj is None and open_blockers_fn is None:
         try:
             from devloops_lib.forge.detect import get_forge
 
             forge_obj = get_forge(cfg)
-        except Exception:
-            forge_obj = None
+        except Exception as exc:
+            # Fail closed for blocker checks (#66 G1.1): do not treat as "no blockers".
+            forge_error = str(exc) or exc.__class__.__name__
 
     candidates, excluded = [], []
     for issue in issues:
@@ -196,6 +198,8 @@ def filter_and_rank_issues(
             )
             if prelim is not None:
                 reason = prelim
+            elif forge_error is not None:
+                reason = f"forge unavailable for blocker check: {forge_error}"
             else:
                 blockers: list[int] = []
                 if open_blockers_fn is not None:
