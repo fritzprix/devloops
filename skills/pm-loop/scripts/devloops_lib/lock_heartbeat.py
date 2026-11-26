@@ -99,6 +99,10 @@ STARTUP_LOCK_RETRY_INTERVAL = 0.2
 _WINDOWS_TRANSIENT_EXES = frozenset(
     {"cmd.exe", "powershell.exe", "pwsh.exe", "conhost.exe", "bash.exe", "sh.exe"}
 )
+# Venv / store redirector stubs share the python.exe name with the real
+# interpreter and often exit when the script (tick_gate) exits. Skip one such
+# ancestor so we watch the session host (pytest, agent, CI runner) instead.
+_WINDOWS_INTERPRETER_EXES = frozenset({"python.exe", "pythonw.exe"})
 
 
 def _windows_process_map() -> "dict[int, tuple[int, str]] | None":
@@ -168,11 +172,12 @@ def _windows_process_map() -> "dict[int, tuple[int, str]] | None":
 def _resolve_parent_pid_windows() -> int | None:
     """Walk up from os.getppid() with a Toolhelp32 snapshot.
 
-    Skips transient shells (cmd/powershell/pwsh/conhost) and returns the first
-    other ancestor that is still alive. Returns None (no parent watch) when the
-    snapshot is unavailable, an ancestor is not visible in it, or the candidate
-    is not alive — a wrong pid would make the heartbeat exit early and stop
-    renewing a live tick's lock, which is worse than no watch.
+    Skips transient shells (cmd/powershell/pwsh/conhost/bash/sh) and one
+    ``python.exe``/``pythonw.exe`` ancestor (venv redirector of ``tick_gate``
+    that dies when the script exits — issue #78 G2.1). Returns the first other
+    ancestor that is still alive, or None when the snapshot is unavailable, an
+    ancestor is not visible, or the candidate is not alive — a wrong pid would
+    make the heartbeat exit early and stop renewing a live tick's lock.
     """
     try:
         pid = os.getppid()
@@ -181,6 +186,8 @@ def _resolve_parent_pid_windows() -> int | None:
         procs = _windows_process_map()
         if procs is None:
             return None
+        skipped_interpreter = False
+        our_exe = Path(sys.executable).name.lower()
         for _ in range(40):
             # 0 = Idle, 4 = System: never watch them.
             if pid <= 0 or pid in (0, 4):
@@ -190,6 +197,15 @@ def _resolve_parent_pid_windows() -> int | None:
                 return None
             ppid, exe = info
             if exe in _WINDOWS_TRANSIENT_EXES:
+                pid = ppid
+                continue
+            # Skip one interpreter stub (venv Scripts\python.exe launcher that
+            # dies when tick_gate exits). Match by known names or same basename
+            # as sys.executable. The next ancestor is the session host.
+            if not skipped_interpreter and (
+                exe in _WINDOWS_INTERPRETER_EXES or exe == our_exe
+            ):
+                skipped_interpreter = True
                 pid = ppid
                 continue
             if not _tick_gate()._pid_alive(pid):
@@ -331,6 +347,10 @@ def stop_heartbeat(lock_file: Path, *, wait_seconds: float = 10.0) -> None:
     pid, _token = info
     if pid == os.getpid():
         return
+    # Never signal a reused PID: a dead-at-startup child can leave a sidecar
+    # naming a pid that another process already took (issue #78 G1.5).
+    if not _tick_gate()._pid_alive(pid):
+        return
     terminate_process_tree(pid, wait_seconds=wait_seconds)
     # A child that was still booting can write its own sidecar between the
     # clear above and the kill; clear again after the process is gone (a
@@ -382,6 +402,18 @@ def start_detached(lock_file: Path, token: str, *, parent_pid: int | None = None
         f"heartbeat: spawned child pid={proc.pid} parent_pid={watch_pid} lock={lock_file}",
     )
     write_sidecar(lock_file, proc.pid, token, parent_pid=watch_pid)
+    # If the child exits immediately (e.g. watched parent already dead), clear
+    # the spawn-time sidecar so stop_heartbeat never targets a reused PID
+    # (issue #78 G1.5). Brief poll — startup checks are near-instant.
+    poll = getattr(proc, "poll", None)
+    if callable(poll):
+        for _ in range(10):
+            if poll() is not None:
+                info = read_sidecar(lock_file)
+                if info and info[0] == proc.pid and info[1] == token:
+                    clear_sidecar(lock_file)
+                break
+            time.sleep(0.05)
 
 
 def _run(lock_file: Path, token: str, *, parent_pid: int | None = None) -> int:
@@ -439,11 +471,16 @@ def main(argv: list[str] | None = None) -> None:
         # to "no parent watch" to keep renewing. A watched parent that is
         # already dead when the child boots means the session that armed the
         # tick is over (or the resolver picked an ephemeral shell), so exit
-        # before taking any ownership of the lock.
+        # before taking any ownership of the lock. Clear a spawn-time sidecar
+        # that names us so a reused PID is never killed (G1.5).
         _log(
             f"heartbeat: parent {args.parent_pid} not alive at startup; "
             "exiting (never continue without the watched parent)"
         )
+        info = read_sidecar(args.lock_file)
+        if info and info[1] == args.token:
+            # Sidecar may still name the Popen pid written by start_detached.
+            clear_sidecar(args.lock_file)
         return
     holds = False
     for attempt in range(STARTUP_LOCK_RETRY_COUNT):

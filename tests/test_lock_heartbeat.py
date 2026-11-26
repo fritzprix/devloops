@@ -367,6 +367,23 @@ class LockHeartbeatTest(unittest.TestCase):
                     patch("devloops_lib.lock_heartbeat.os.getppid", return_value=300):
                 self.assertIsNone(resolve_parent_pid())
 
+    def test_resolve_parent_pid_windows_skips_venv_python_launcher(self):
+        # G2.1: venv Scripts\python.exe that launched tick_gate dies with it;
+        # skip that one interpreter ancestor and watch the session host.
+        procs = {
+            400: (300, "python.exe"),  # venv launcher (immediate parent)
+            300: (4, "agent.exe"),     # long-lived session host
+        }
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DEVLOOPS_SESSION_HOLDER_PID", None)
+            with patch("devloops_lib.lock_heartbeat.sys.platform", "win32"), \
+                    patch("devloops_lib.lock_heartbeat._windows_process_map", return_value=procs), \
+                    patch("devloops_lib.tick_gate._pid_alive", return_value=True), \
+                    patch("devloops_lib.lock_heartbeat.os.getppid", return_value=400), \
+                    patch("devloops_lib.lock_heartbeat.sys.executable",
+                          r"C:\venv\Scripts\python.exe"):
+                self.assertEqual(resolve_parent_pid(), 300)
+
     def test_start_detached_none_parent_pid_disables_parent_watch(self):
         captured: dict = {}
 
@@ -434,6 +451,25 @@ class LockHeartbeatTest(unittest.TestCase):
             payload = tick_gate.read_lock_payload(self.lock)
             self.assertEqual(payload.get("token"), token)
         finally:
+            tick_gate.release_lock(self.lock, token=token)
+
+    def test_start_detached_dead_parent_clears_spawn_sidecar(self):
+        # G1.5: start_detached writes a sidecar before the child runs; when the
+        # child exits immediately (dead watched parent), that sidecar must not
+        # remain for stop_heartbeat to target a reused PID.
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait(timeout=10)
+        token = tick_gate.acquire_lock_token(self.lock)
+        try:
+            start_detached(self.lock, token, parent_pid=dead.pid)
+            # Poll briefly for the child exit + parent-side clear.
+            deadline = time.time() + 5
+            while time.time() < deadline and read_sidecar(self.lock) is not None:
+                time.sleep(0.05)
+            self.assertIsNone(read_sidecar(self.lock),
+                              f"spawn sidecar remained after dead-parent exit; log:\n{self._hb_log_tail()}")
+        finally:
+            stop_heartbeat(self.lock)
             tick_gate.release_lock(self.lock, token=token)
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "automatic parent resolution needs /proc")
