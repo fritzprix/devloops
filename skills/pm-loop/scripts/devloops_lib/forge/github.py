@@ -17,6 +17,7 @@ from devloops_lib.forge.models import (
     CI_PENDING,
     CI_SUCCESS,
     AuthStatus,
+    Blocker,
     CiSummary,
     GateSnapshot,
     Issue,
@@ -350,6 +351,82 @@ class GitHubForge:
 
     def post_issue_comment(self, number: int, body: str) -> None:
         self._call("issue", "comment", str(number), "--body", body)
+
+    # -- issue dependencies (issue #65) ------------------------------------
+
+    def _owner_repo(self) -> Tuple[str, str]:
+        """Owner/name for `gh api` calls, which do not accept --repo."""
+        if self._repo:
+            owner, _, name = self._repo.partition("/")
+            if owner and name:
+                return owner, name
+            raise ForgeError(f"GitHubForge: cannot split owner/repo from {self._repo!r}")
+        full = self.repo_ref().full_name
+        owner, _, name = full.partition("/")
+        if not owner or not name:
+            raise ForgeError("GitHubForge: cannot resolve owner/repo for dependency operations")
+        return owner, name
+
+    def blocked_by(self, number: int) -> List[Blocker]:
+        owner, repo = self._owner_repo()
+        out = self._api(
+            "api",
+            f"repos/{owner}/{repo}/issues/{number}/dependencies/blocked_by",
+            "--paginate",
+        )
+        try:
+            items = json.loads(out or "[]")
+        except ValueError as exc:
+            raise ForgeError(f"GitHub blocked_by #{number}: invalid JSON: {exc}") from exc
+        if isinstance(items, dict):
+            items = items.get("blocked_by") or items.get("dependencies") or []
+        blockers: List[Blocker] = []
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict) or item.get("number") is None:
+                continue
+            blockers.append(Blocker(
+                number=int(item["number"]),
+                state=str(item.get("state") or "open").lower(),
+                is_pr="pull_request" in item,
+            ))
+        return blockers
+
+    def _issue_resource(self, number: int) -> dict:
+        """GET repos/.../issues/{n}; GitHub returns PRs here with a pull_request key."""
+        owner, repo = self._owner_repo()
+        raw = self._api("api", f"repos/{owner}/{repo}/issues/{number}") or "{}"
+        try:
+            data = json.loads(raw)
+        except ValueError as exc:
+            raise ForgeError(f"GitHub issue #{number}: invalid JSON: {exc}") from exc
+        if not isinstance(data, dict) or data.get("number") is None:
+            raise ForgeError(f"GitHub issue #{number} not found")
+        return data
+
+    def _reject_pr_dependency(self, number: int, role: str) -> dict:
+        data = self._issue_resource(number)
+        if "pull_request" in data:
+            raise ForgeError(
+                f"GitHub add_blocker: #{number} ({role}) is a pull request; "
+                "GitHub issue dependencies are issue-only"
+            )
+        return data
+
+    def add_blocker(self, number: int, blocker_number: int) -> None:
+        # Owner decision (#91): no PR numbers, no body-line fallback.
+        self._reject_pr_dependency(number, "target")
+        blocker = self._reject_pr_dependency(blocker_number, "blocker")
+        if any(b.number == blocker_number for b in self.blocked_by(number)):
+            return
+        issue_id = blocker.get("id")
+        if issue_id is None:
+            raise ForgeError(f"GitHub issue #{blocker_number} has no numeric id for dependency link")
+        owner, repo = self._owner_repo()
+        self._api(
+            "api",
+            f"repos/{owner}/{repo}/issues/{number}/dependencies/blocked_by",
+            "-X", "POST", "-F", f"issue_id={int(issue_id)}",
+        )
 
     def pr_diff(self, number: int) -> str:
         return self._call("pr", "diff", str(number))

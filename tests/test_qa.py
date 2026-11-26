@@ -12,6 +12,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from devloops_lib import qa  # noqa: E402
+from devloops_lib.forge.models import Blocker  # noqa: E402
 
 ME = "bot"
 HEAD = "a" * 40
@@ -176,21 +177,29 @@ class MergedTrackingTest(unittest.TestCase):
 
 
 class BlockedByTest(unittest.TestCase):
+    """issue #65: dependency linking is routed through the Forge protocol."""
+
+    class FakeDepsForge:
+        def __init__(self):
+            self.deps = {20: [Blocker(5, "open")]}
+            self.added = []
+
+        def blocked_by(self, number):
+            return list(self.deps.get(number, []))
+
+        def add_blocker(self, number, blocker_number):
+            self.added.append((number, blocker_number))
+            self.deps.setdefault(number, []).append(Blocker(blocker_number, "open"))
+
     def test_link_then_verify(self):
-        calls = []
+        forge = self.FakeDepsForge()
+        self.assertEqual(qa.link_blocked_by(forge, 20, 12), [5, 12])
+        self.assertEqual(forge.added, [(20, 12)])
 
-        def run(*args):
-            calls.append(args)
-            if args[-1] == ".id":
-                return "555\n"
-            if args[1] == "--method":
-                return "{}"
-            return json.dumps([12, 5])
-
-        self.assertEqual(qa.link_blocked_by("o/r", 20, 12, run=run), [5, 12])
-        self.assertIn(("api", "--method", "POST", "repos/o/r/issues/20/dependencies/blocked_by",
-                       "-F", "issue_id=555"), calls)
-        self.assertEqual(calls[-1][1], "repos/o/r/issues/20/dependencies/blocked_by")
+    def test_closed_blockers_are_not_reported(self):
+        forge = self.FakeDepsForge()
+        forge.deps[20].append(Blocker(9, "closed"))
+        self.assertEqual(qa.link_blocked_by(forge, 20, 12), [5, 12])
 
 
 class ConfigTest(unittest.TestCase):

@@ -237,18 +237,14 @@ def fetch_merged(base: str, since: Optional[str], limit: int = 50) -> list[dict]
 
 
 # --- issue dependencies (blocked-by) ---------------------------------------
+# Routed through the Forge protocol (issue #65): no loop script talks to a
+# forge dependency API directly.
 
-def link_blocked_by(repo: str, issue: int, blocker: int, run: Callable[..., str] = gh) -> list[int]:
-    """Link `issue` as blocked by `blocker`, then re-query and return the verified list."""
-    blocker_id = run("api", f"repos/{repo}/issues/{blocker}", "--jq", ".id").strip()
-    run("api", "--method", "POST", f"repos/{repo}/issues/{issue}/dependencies/blocked_by",
-        "-F", f"issue_id={blocker_id}")
-    return blocked_by(repo, issue, run)
-
-
-def blocked_by(repo: str, issue: int, run: Callable[..., str] = gh) -> list[int]:
-    out = run("api", f"repos/{repo}/issues/{issue}/dependencies/blocked_by", "--jq", "[.[].number]")
-    return sorted(int(n) for n in json.loads(out or "[]"))
+def link_blocked_by(forge: Any, issue: int, blocker: int) -> list[int]:
+    """Link `issue` as blocked by `blocker` via the forge, then re-query the
+    forge and return the verified sorted list of open blocker numbers."""
+    forge.add_blocker(issue, blocker)
+    return contract.open_blockers(forge, issue)
 
 
 def qa_config(cfg: dict) -> dict[str, Any]:

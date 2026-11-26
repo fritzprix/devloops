@@ -11,8 +11,8 @@ Subcommands (all print JSON unless noted):
   record N --result pass|fail|blocked --build SHA [--issue M ...]
                                     record one post-merge test result
   link-blocked-by --issue N --blocked-by M
-                                    add a GitHub blocked-by dependency, re-query, print the
-                                    verified list; exit 1 if M is not in it
+                                    add a forge blocked-by dependency, re-query, print the
+                                    verified open-blocker list; exit 1 if M is not in it
   status                            print the qa-loop state
 
 Markers and labels: references/comment-format.md.
@@ -30,6 +30,7 @@ if str(_script_dir) not in sys.path:
     sys.path.insert(0, str(_script_dir))
 
 from devloops_lib.config import add_agent_id_argument, get_state_path, load_config, run_main
+from devloops_lib.forge.detect import get_forge
 from devloops_lib.gh import GhError, gh
 from devloops_lib import qa
 
@@ -108,8 +109,7 @@ def main(argv: list[str] | None = None) -> None:
             qa.save_state(state_path, state)
             _out({"pendingTests": list(state.get("pendingTests", {}).values())})
         elif args.cmd == "link-blocked-by":
-            repo = cfg.get("project", {}).get("repo")
-            verified = qa.link_blocked_by(repo, args.issue, args.blocked_by)
+            verified = qa.link_blocked_by(get_forge(cfg), args.issue, args.blocked_by)
             _out({"issue": args.issue, "blockedBy": verified})
             sys.exit(0 if args.blocked_by in verified else 1)
         elif args.cmd == "status":

@@ -32,6 +32,7 @@ from devloops_lib.forge.models import (
     CI_PENDING,
     CI_SUCCESS,
     AuthStatus,
+    Blocker,
     CiSummary,
     GateSnapshot,
     Issue,
@@ -262,6 +263,64 @@ class GiteaForge:
     def _repo_prefix(self) -> str:
         return f"/repos/{self.owner}/{self.name}"
 
+    # -- issue dependencies (issue #65) -----------------------------------
+
+    def blocked_by(self, number: int) -> List[Blocker]:
+        path = f"{self._repo_prefix}/issues/{number}/dependencies"
+        collected: List[Dict[str, Any]] = []
+        page = 1
+        prev_ids: Optional[Tuple[Any, ...]] = None
+        while True:
+            status, data = self._http_call(
+                "GET",
+                path,
+                params={"page": page, "limit": self.page_size},
+                allow_404=True,
+            )
+            if status == 404:
+                raise ForgeError(
+                    f"{self.forge_type} returned 404 for issue dependencies of #{number}. "
+                    "Enable issue dependencies for this repository (repository settings -> "
+                    "issues -> issue dependencies) and retry."
+                )
+            if isinstance(data, dict):
+                items = data.get("blocked_by") or []
+            elif isinstance(data, list):
+                items = data
+            else:
+                items = []
+            if not isinstance(items, list) or not items:
+                break
+            cur_ids = tuple(
+                item.get("id") if isinstance(item, dict) else None for item in items
+            )
+            if prev_ids is not None and any(cur_ids) and cur_ids == prev_ids:
+                break
+            collected.extend(item for item in items if isinstance(item, dict))
+            if len(items) < self.page_size:
+                break
+            prev_ids = cur_ids
+            page += 1
+        blockers: List[Blocker] = []
+        for item in collected:
+            if item.get("number") is None:
+                continue
+            blockers.append(Blocker(
+                number=int(item["number"]),
+                state=str(item.get("state") or "open").lower(),
+                is_pr=item.get("pull_request") is not None,
+            ))
+        return blockers
+
+    def add_blocker(self, number: int, blocker_number: int) -> None:
+        if any(b.number == blocker_number for b in self.blocked_by(number)):
+            return
+        self._http_call(
+            "POST",
+            f"{self._repo_prefix}/issues/{number}/dependencies",
+            body={"index": int(blocker_number), "owner": self.owner, "repo": self.name},
+        )
+
     # -- identity / repository -------------------------------------------
 
     def whoami(self) -> str:
@@ -280,9 +339,32 @@ class GiteaForge:
             return AuthStatus(ok=False, output=f"token env var {self.token_env} is not set")
         try:
             login = self.whoami()
-            return AuthStatus(ok=True, output=f"authenticated as {login}")
         except ForgeError as exc:
             return AuthStatus(ok=False, output=str(exc))
+        # Probe issue dependencies so a disabled repo feature surfaces at auth
+        # time (issue #65 / #91 G1.3), not only on the first blocked_by call.
+        try:
+            status, _data = self._http_call(
+                "GET",
+                f"{self._repo_prefix}/issues/1/dependencies",
+                params={"page": 1, "limit": 1},
+                allow_404=True,
+            )
+        except ForgeError as exc:
+            return AuthStatus(
+                ok=True,
+                output=f"authenticated as {login}; issue-dependencies probe failed: {exc}",
+            )
+        if status == 404:
+            return AuthStatus(
+                ok=True,
+                output=(
+                    f"authenticated as {login}; issue dependencies appear disabled "
+                    f"(GET {self._repo_prefix}/issues/1/dependencies returned 404 — "
+                    "enable them under repository settings → issues → issue dependencies)"
+                ),
+            )
+        return AuthStatus(ok=True, output=f"authenticated as {login}")
 
     # -- labels -----------------------------------------------------------
 

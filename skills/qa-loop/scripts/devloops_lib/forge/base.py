@@ -12,6 +12,7 @@ from typing import List, Optional, Protocol, Sequence, Tuple
 
 from devloops_lib.forge.models import (
     AuthStatus,
+    Blocker,
     CiSummary,
     GateSnapshot,
     Issue,
@@ -30,6 +31,7 @@ __all__ = [
     "Forge",
     "ForgeError",
     "AuthStatus",
+    "Blocker",
     "CiSummary",
     "GateSnapshot",
     "Issue",
@@ -89,6 +91,13 @@ class Forge(Protocol):
     def post_pr_comment(self, number: int, body: str) -> None: ...
 
     def post_issue_comment(self, number: int, body: str) -> None: ...
+
+    # issue dependencies (issue #65). Gitea/Forgejo accept issue and PR numbers.
+    # GitHub's API is issue-only: add_blocker raises ForgeError when either
+    # number is a pull request (owner decision on #91). Unknown numbers raise.
+    def blocked_by(self, number: int) -> List[Blocker]: ...
+
+    def add_blocker(self, number: int, blocker_number: int) -> None: ...
 
     # gate / refs
     def gate_snapshot(self, pr_limit: int = 100, issue_limit: int = 100) -> GateSnapshot: ...

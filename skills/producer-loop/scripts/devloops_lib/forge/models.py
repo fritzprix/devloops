@@ -41,6 +41,19 @@ class Issue:
     updated_at: str = ""
 
 
+@dataclass(frozen=True)
+class Blocker:
+    """One blocking dependency of an issue or PR (issue #65).
+
+    ``state`` is the normalized lowercase forge state (``open`` / ``closed``);
+    ``is_pr`` says whether the blocker is a pull request rather than an issue.
+    """
+
+    number: int
+    state: str = "open"
+    is_pr: bool = False
+
+
 @dataclass
 class PullRequest:
     number: int

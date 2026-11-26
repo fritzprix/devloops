@@ -181,6 +181,12 @@ class FakeForge:
         self.gate = copy.deepcopy(SEED["gate"])
         self._auth_ok = auth_ok
         self._next_issue = 100
+        # issue #65: blocked-by dependencies, raw forge-payload shape.
+        # Issue 1 is blocked by open issue 2; PR 10 is blocked by open PR 11.
+        self.dependencies: Dict[int, List[Dict[str, Any]]] = {
+            1: [dict(self.issues[1])],
+            10: [dict(self.prs[1], pull_request={"url": _url("pull", 11)})],
+        }
 
     def _issue(self, number: int) -> Dict[str, Any]:
         for i in self.issues:
@@ -343,6 +349,36 @@ class FakeForge:
             "body": body, "url": _url("issues", number) + "#issuecomment-new",
         })
 
+    # -- issue dependencies (issue #65) ------------------------------------
+
+    def _get_any(self, number: int) -> Dict[str, Any]:
+        try:
+            return self._issue(number)
+        except ForgeError:
+            return self._pr(number)
+
+    def blocked_by(self, number: int):
+        from devloops_lib.forge.models import Blocker
+        return [
+            Blocker(
+                number=d["number"],
+                state=str(d.get("state", "open")).lower(),
+                is_pr="pull_request" in d,
+            )
+            for d in self.dependencies.get(number, [])
+        ]
+
+    def add_blocker(self, number: int, blocker_number: int) -> None:
+        self._get_any(number)  # unknown target raises ForgeError
+        blocker = self._get_any(blocker_number)  # unknown blocker raises ForgeError
+        deps = self.dependencies.setdefault(number, [])
+        if any(d["number"] == blocker_number for d in deps):
+            return
+        item = dict(blocker)
+        if any(p["number"] == blocker_number for p in self.prs):
+            item.setdefault("pull_request", {"url": _url("pull", blocker_number)})
+        deps.append(item)
+
     def gate_snapshot(self, pr_limit: int = 100, issue_limit: int = 100):
         from devloops_lib.forge.models import GateSnapshot
         data = self.gate["data"]
@@ -368,6 +404,11 @@ class GhStub:
         self.args_log: List[List[str]] = []
         self.graphql_calls: List[List[str]] = []
         self._next_issue = 100
+        # issue #65: blocked-by dependencies, raw GitHub REST shape.
+        self.dependencies: Dict[int, List[Dict[str, Any]]] = {
+            1: [copy.deepcopy(self.issues[1])],
+            10: [dict(copy.deepcopy(self.prs[1]), pull_request={"url": _url("pull", 11)})],
+        }
 
     def run(self, args: List[str]) -> str:
         self.args_log.append(list(args))
@@ -398,6 +439,8 @@ class GhStub:
             return self._pr_comment(argv[2], args)
         if head == ("api", "graphql"):
             return self._graphql(args)
+        if len(argv) > 1 and argv[0] == "api" and argv[1].startswith("repos/"):
+            return self._api_repo(argv[1], args)
         raise ForgeError(f"unexpected gh args: {args}")
 
     # -- helpers ----------------------------------------------------------
@@ -499,6 +542,47 @@ class GhStub:
             if a.startswith("cursor="):
                 return a[len("cursor="):]
         return None
+
+    def _issue_id(self, number: int) -> int:
+        return 10000 + number
+
+    def _find_issue_or_pr(self, number: int) -> Dict[str, Any]:
+        """GitHub issues API returns PRs too, with a pull_request field."""
+        try:
+            return dict(self._find_issue(number))
+        except ForgeError:
+            item = dict(self._find_pr(number))
+            item.setdefault("pull_request", {"url": item["url"]})
+            return item
+
+    def _api_repo(self, path: str, args: List[str]) -> str:
+        parts = path.split("/")
+        if len(parts) >= 5 and parts[0] == "repos" and parts[3] == "issues":
+            number = int(parts[4])
+            if len(parts) == 5:
+                item = self._find_issue_or_pr(number)
+                item.setdefault("id", self._issue_id(number))
+                return json.dumps(item)
+            if parts[5] == "dependencies":
+                if "-X" in args and "POST" in args:
+                    # Match verified GitHub API: PR numbers are refused (422).
+                    if any(p["number"] == number for p in self.prs):
+                        raise ForgeError("HTTP 422: Source issue may only be an issue")
+                    issue_id = None
+                    for a in args:
+                        if a.startswith("issue_id="):
+                            issue_id = int(a[len("issue_id="):])
+                    deps = self.dependencies.setdefault(number, [])
+                    for item in self.issues + self.prs:
+                        if self._issue_id(item["number"]) == issue_id:
+                            if any(p["number"] == item["number"] for p in self.prs):
+                                raise ForgeError("HTTP 422: Target issue may only be an issue")
+                            if item["number"] not in [d["number"] for d in deps]:
+                                deps.append(copy.deepcopy(item))
+                            break
+                    return json.dumps(deps)
+                return json.dumps(self.dependencies.get(number, []))
+        raise ForgeError(f"unexpected gh api path: {path}")
 
 
 class ForgeContract:
@@ -644,3 +728,39 @@ class ForgeContract:
 
     def test_pr_head_ref_mentions_number(self):
         assert "42" in self.forge.pr_head_ref(42)
+
+    # -- issue dependencies (issue #65) -------------------------------------
+    # Self-contained: every binding (in-memory fakes and the live server)
+    # numbers its items differently, so these tests create their own
+    # dependencies instead of reading seeded ones.
+
+    def test_blocked_by_empty_when_no_dependencies(self):
+        assert self.forge.blocked_by(2) == []
+
+    def test_add_blocker_issue_number_and_read_back(self):
+        self.forge.add_blocker(2, 1)  # open issue 1 blocks issue 2
+        assert [(b.number, b.state, b.is_pr) for b in self.forge.blocked_by(2)] == [(1, "open", False)]
+        self.forge.add_blocker(2, 1)  # safe to call twice
+        assert len([b for b in self.forge.blocked_by(2) if b.number == 1]) == 1
+
+    def supports_pr_dependencies(self) -> bool:
+        """GitHub issue dependencies are issue-only (owner decision on #91)."""
+        return self.forge.__class__.__name__ != "GitHubForge"
+
+    def test_add_blocker_pr_number(self):
+        numbers = sorted(p.number for p in self.forge.list_prs())
+        assert len(numbers) >= 2
+        target, blocker = numbers[0], numbers[1]
+        if not self.supports_pr_dependencies():
+            import pytest
+            with pytest.raises(ForgeError, match="pull request|may only be an issue|issue-only"):
+                self.forge.add_blocker(target, blocker)
+            return
+        self.forge.add_blocker(target, blocker)
+        blockers = {b.number: b for b in self.forge.blocked_by(target)}
+        assert blockers[blocker].state == "open"
+        assert blockers[blocker].is_pr is True
+
+    def test_add_blocker_closed_blocker_state(self):
+        self.forge.add_blocker(2, 3)  # closed issue 3 blocks issue 2
+        assert [b.state for b in self.forge.blocked_by(2) if b.number == 3] == ["closed"]
