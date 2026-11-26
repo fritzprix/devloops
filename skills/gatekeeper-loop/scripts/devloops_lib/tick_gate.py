@@ -801,6 +801,10 @@ def find_actionable_backlog(gate_data: dict, me: str, approved_label: str = cont
         labels = {l.get("name") for l in ((issue.get("labels") or {}).get("nodes") or []) if l}
         if approved_label not in labels:
             continue
+        # Issue #67: needs-owner parks every loop; gate has labels only, so
+        # fail closed on the label (no comments in the gate snapshot).
+        if contract.NEEDS_OWNER in labels:
+            continue
         assignees = {a.get("login") for a in ((issue.get("assignees") or {}).get("nodes") or []) if a}
         if assignees - {me}:
             continue
