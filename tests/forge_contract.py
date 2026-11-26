@@ -562,32 +562,6 @@ class GhStub:
         })
         return url + "\n"
 
-    def _api_repo(self, path: str, args: List[str]) -> str:
-        parts = path.split("/")
-        if len(parts) == 6 and parts[0] == "repos" and parts[3] == "issues" and parts[5] == "comments":
-            # gh api repos/.../issues/{n}/comments answers for issues AND pull
-            # requests (issue #67); comments come back in REST shape.
-            number = int(parts[4])
-            item: Dict[str, Any] = {}
-            for i in self.issues:
-                if i["number"] == number:
-                    item = i
-                    break
-            else:
-                item = self._find_pr(number)
-            out = []
-            for c in item.get("comments") or []:
-                author = (c.get("author") or {}).get("login") or ""
-                out.append({
-                    "user": {"login": author},
-                    "created_at": c.get("createdAt", ""),
-                    "body": c.get("body", ""),
-                    "html_url": c.get("url"),
-                    "author_association": "OWNER" if author == SEED["user"] else "NONE",
-                })
-            return json.dumps(out)
-        raise ForgeError(f"unexpected gh api path: {path}")
-
     def _graphql(self, args: List[str]) -> str:
         self.graphql_calls.append(list(args))
         joined = " ".join(args)
@@ -626,6 +600,27 @@ class GhStub:
                 item = self._find_issue_or_pr(number)
                 item.setdefault("id", self._issue_id(number))
                 return json.dumps(item)
+            if len(parts) == 6 and parts[5] == "comments":
+                # gh api repos/.../issues/{n}/comments answers for issues AND pull
+                # requests (issue #67); comments come back in REST shape.
+                item: Dict[str, Any] = {}
+                for i in self.issues:
+                    if i["number"] == number:
+                        item = i
+                        break
+                else:
+                    item = self._find_pr(number)
+                out = []
+                for c in item.get("comments") or []:
+                    author = (c.get("author") or {}).get("login") or ""
+                    out.append({
+                        "user": {"login": author},
+                        "created_at": c.get("createdAt", ""),
+                        "body": c.get("body", ""),
+                        "html_url": c.get("url"),
+                        "author_association": "OWNER" if author == SEED["user"] else "NONE",
+                    })
+                return json.dumps(out)
             if parts[5] == "dependencies":
                 if "-X" in args and "POST" in args:
                     # Match verified GitHub API: PR numbers are refused (422).

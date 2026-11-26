@@ -175,17 +175,6 @@ class GitHubForge:
         """Run a gh api command (gh api does not accept --repo)."""
         return self._run(list(args))
 
-    def _owner_repo(self) -> tuple[str, str]:
-        """Resolve owner/repo for `gh api` paths from --repo or the CWD repo."""
-        if self._repo:
-            owner, _, name = self._repo.partition("/")
-            if owner and name:
-                return owner, name
-        ref = self.repo_ref()
-        if not ref.owner or not ref.name:
-            raise ForgeError("GitHubForge: cannot resolve owner/repo for dependency operations")
-        return ref.owner, ref.name
-
     # -- identity / repository -------------------------------------------
 
     def whoami(self) -> str:
@@ -441,11 +430,10 @@ class GitHubForge:
             if owner and name:
                 return owner, name
             raise ForgeError(f"GitHubForge: cannot split owner/repo from {self._repo!r}")
-        full = self.repo_ref().full_name
-        owner, _, name = full.partition("/")
-        if not owner or not name:
+        ref = self.repo_ref()
+        if not ref.owner or not ref.name:
             raise ForgeError("GitHubForge: cannot resolve owner/repo for dependency operations")
-        return owner, name
+        return ref.owner, ref.name
 
     def list_sub_issues(self, number: int) -> List[int]:
         """Child issue numbers via ``GET .../issues/{n}/sub_issues`` (issue #74)."""
