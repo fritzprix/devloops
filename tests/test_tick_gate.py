@@ -161,6 +161,7 @@ class TickGateTest(unittest.TestCase):
                 issue(103, ["approved"], ["someone"]),         # assigned to other -> skip
                 issue(104, ["enhancement"]),                   # not approved -> skip
                 issue(105, ["approved"], ["me"]),              # assigned to @me only -> actionable
+                issue(106, ["approved", "needs-owner"]),       # parked (#67) -> skip
             ],
         }
         # Without a forge, open blockers are not consulted; approved + assignee

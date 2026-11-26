@@ -198,6 +198,25 @@ def parse_markers(comments: list[dict], me: str, loop: Optional[str] = None) -> 
 # Association values that mark a comment author as acting for the repository.
 OWNER_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 
+# Informational kind=needs-owner markers: merge stays human; they never park.
+# Normalized forms of "changes loop skill files", "changes-loop-skill-files",
+# and qa’s short reason "loop-skill".
+_NEEDS_OWNER_NOTICE_REASONS = frozenset({
+    "changes-loop-skill-files",
+    "loop-skill",
+})
+
+
+def _normalize_reason(reason: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (reason or "").lower()).strip("-")
+
+
+def is_needs_owner_ask(fields: dict) -> bool:
+    """True when marker fields are a real needs-owner ask (not a notice)."""
+    if (fields or {}).get("kind") != NEEDS_OWNER:
+        return False
+    return _normalize_reason(str(fields.get("reason") or "")) not in _NEEDS_OWNER_NOTICE_REASONS
+
 
 def author_login(comment: dict) -> str:
     author = comment.get("author") or {}
@@ -234,19 +253,30 @@ def first_owner_reply(comments: list[dict], me: str, since: str) -> Optional[dic
     return None
 
 
-def needs_owner_parked(comments: list[dict], me: str) -> bool:
+def latest_needs_owner_ask_at(comments: list[dict]) -> Optional[str]:
+    """CreatedAt of the latest real needs-owner ask (any loop), or None.
+
+    Loop-skill notices are ignored so they cannot re-park after an answer.
+    """
+    asks: list[str] = []
+    for c in comments or []:
+        parsed = parse_marker(c.get("body") or "")
+        if parsed is not None and is_needs_owner_ask(parsed[1]):
+            asks.append(c.get("createdAt", ""))
+    return max(asks) if asks else None
+
+
+def needs_owner_parked(comments: list[dict], me: str, *, labeled: bool = True) -> bool:
     """True while a needs-owner ask is unresolved, so no loop may act.
 
-    The ask is the latest marker comment with kind=needs-owner (any loop). It
-    is resolved by `first_owner_reply` after that ask. A needs-owner label
-    with no findable ask stays parked until an owner answers.
+    The ask is the latest real ``kind=needs-owner`` marker (any loop; notices
+    excluded). It is resolved by ``first_owner_reply`` after that ask.
+
+    When there is no findable ask: return ``labeled`` (default True so callers
+    that already checked the ``needs-owner`` label keep fail-closed behaviour).
+    Pass ``labeled=False`` when only markers are in play (e.g. qa classify).
     """
-    comments = comments or []
-    asks: list[str] = []
-    for c in comments:
-        parsed = parse_marker(c.get("body") or "")
-        if parsed is not None and parsed[1].get("kind") == NEEDS_OWNER:
-            asks.append(c.get("createdAt", ""))
-    if not asks:
-        return True
-    return first_owner_reply(comments, me, max(asks)) is None
+    ask_at = latest_needs_owner_ask_at(comments)
+    if ask_at is None:
+        return bool(labeled)
+    return first_owner_reply(comments or [], me, ask_at) is None

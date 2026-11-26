@@ -221,6 +221,37 @@ class NeedsOwnerProtocolTest(unittest.TestCase):
     def test_label_without_ask_stays_parked(self):
         self.assertTrue(contract.needs_owner_parked([], self.ME))
 
+    def test_loop_skill_notice_is_not_an_ask(self):
+        for reason in ("changes-loop-skill-files", "changes loop skill files", "loop-skill"):
+            fields = {"kind": "needs-owner", "reason": reason, "head": "abc"}
+            self.assertFalse(contract.is_needs_owner_ask(fields), reason)
+
+    def test_real_ask_reasons_still_count(self):
+        self.assertTrue(contract.is_needs_owner_ask(
+            {"kind": "needs-owner", "reason": "tool-blocked"}
+        ))
+        self.assertTrue(contract.is_needs_owner_ask({"kind": "needs-owner"}))
+
+    def test_loop_skill_notice_does_not_park_without_label(self):
+        notice = self.comment(
+            "<!-- qa-loop: kind=needs-owner reason=changes-loop-skill-files head=h -->",
+            "2026-01-01T00:00:00Z", author=self.ME,
+        )
+        self.assertFalse(contract.needs_owner_parked([notice], self.ME, labeled=False))
+
+    def test_notice_after_answered_ask_does_not_repark(self):
+        comments = [
+            self.ask("2026-01-01T00:00:00Z"),
+            self.comment("take option 1", "2026-01-02T00:00:00Z",
+                         author="owner", assoc="OWNER"),
+            self.comment(
+                "<!-- gatekeeper-loop: kind=needs-owner reason=changes-loop-skill-files head=h -->",
+                "2026-01-03T00:00:00Z", author=self.ME,
+            ),
+        ]
+        self.assertFalse(contract.needs_owner_parked(comments, self.ME, labeled=False))
+        self.assertFalse(contract.needs_owner_parked(comments, self.ME, labeled=True))
+
     def test_first_owner_reply_returns_the_answer(self):
         comments = [self.ask("2026-01-01T00:00:00Z"),
                     self.comment("take option 1", "2026-01-02T00:00:00Z",

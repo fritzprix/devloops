@@ -45,6 +45,16 @@ def base_args(**over):
 
 
 class DetermineStatusTests(unittest.TestCase):
+    def test_needs_owner_is_wait_owner(self) -> None:
+        # G1.2: parked needs-owner items get no gatekeeper work.
+        status, reason, _prio = classify(**base_args(needs_owner=True))
+        self.assertEqual(status, "wait-owner")
+        self.assertIn("needs-owner", reason)
+
+    def test_loop_skill_notice_flag_false_still_reviews(self) -> None:
+        status = determine_status(**base_args(needs_owner=False))
+        self.assertEqual(status, "review")
+
     def test_conflict_is_wait_worker(self) -> None:
         status = determine_status(
             mergeable="CONFLICTING",
@@ -505,7 +515,7 @@ class Issue14NeedsHumanTests(unittest.TestCase):
         # no longer even looks at status — the status itself is never overridden.
         guidance = needs_human_guidance(own_skill=True,
                                         labels=["gatekeeper:needs-human"], needs_comment_present=True)
-        self.assertEqual(guidance["reason"], "changes loop skill files")
+        self.assertEqual(guidance["reason"], "changes-loop-skill-files")
         self.assertTrue(guidance["labelPresent"])
         self.assertTrue(guidance["commentPresent"])
         self.assertFalse(guidance["staleLabel"])
@@ -513,7 +523,7 @@ class Issue14NeedsHumanTests(unittest.TestCase):
     def test_own_skill_without_label_asks_to_add(self) -> None:
         guidance = needs_human_guidance(own_skill=True,
                                         labels=[], needs_comment_present=False)
-        self.assertEqual(guidance["reason"], "changes loop skill files")
+        self.assertEqual(guidance["reason"], "changes-loop-skill-files")
         self.assertFalse(guidance["labelPresent"])
         self.assertFalse(guidance["commentPresent"])
 
