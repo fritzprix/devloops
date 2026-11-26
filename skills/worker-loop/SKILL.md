@@ -136,7 +136,7 @@ Candidates come pre-ranked. The hint fields (`umbrellaHint`, `blockedHint`, `ref
   - `blocked-on-closure`: a dependency PR merged into a parent branch whose parent then merged into the default branch, so GitHub did not auto-close it. Record a `needsUser` entry naming the exact issue to close (from `plan.needsClosure`), never a silent `skipped`.
 
   `refsOpenPRs` also means using a stacked PR, in the same way. `externalRefs` means waiting on upstream only if body explicitly says so.
-- **Approved if filed by producer**: skip issues carrying `labels.producer` (default `auto:producer`) unless they also carry `labels.approved` (default `approved`).
+- **Approved**: only issues that carry `labels.approved` (default `approved`), have no `rejected` / excluded labels, no other assignee, and no open forge blocker (shared filter with the tick gate; issue #66).
 - **Decided**: owner `Decision` or recommendation present, or requirements are otherwise unambiguous. If options are given with no recommendation and the choice alters implementation, record `needsUser` per [references/escalation-policy.md](references/escalation-policy.md).
 - **Sized for one PR**: reviewable diff (<= 400 changed lines, <= 10 files). Large issues: implement one checklist item and state so in PR body.
 

@@ -40,6 +40,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from typing import Any, Callable
 
 # Support running directly or as module
 try:
@@ -744,15 +745,26 @@ def compute_fingerprint(gate_data: dict | None = None, me: str | None = None) ->
     return hasher.hexdigest()
 
 
-def find_actionable_backlog(gate_data: dict, me: str, approved_label: str = contract.APPROVED) -> list[int]:
-    """Return open, actionable issues with the approved label and no open closing PR.
+def find_actionable_backlog(
+    gate_data: dict,
+    me: str,
+    approved_label: str = contract.APPROVED,
+    *,
+    rejected_label: str = contract.REJECTED,
+    forge: Any = None,
+    skipped: dict | None = None,
+    open_blockers_fn: Callable[..., list[int]] | None = None,
+) -> list[int]:
+    """Return open issues that match the shared worker-candidate filter (issue #66).
 
-    An issue is actionable when it carries approved_label, is not assigned to another
-    user (issues assigned to @me are still actionable: the worker claims by assigning
-    @me, an in-progress claim is covered by state.current, and an open claim is covered
-    by its closing PR), and no open PR closes it (via closing keywords in title/body or
-    a `-<N>` branch suffix, same heuristic as issue_candidates.py).
+    Uses ``worker_candidates.exclusion_reason`` (approved, not rejected/excluded,
+    no other assignee, no open forge blockers). Also skips issues an open PR
+    already closes, and issues in ``skipped`` whose ``updatedAt`` still matches.
+    Blockers are read only for issues that pass the other checks, via
+    ``contract.open_blockers`` (never a direct forge CLI call from this module).
     """
+    from devloops_lib import worker_candidates
+
     closing_prs: set[int] = set()
     for pr in gate_data["prs"]:
         if not pr:
@@ -766,15 +778,45 @@ def find_actionable_backlog(gate_data: dict, me: str, approved_label: str = cont
     for issue in gate_data["issues"]:
         if not issue:
             continue
+        number = issue["number"]
+        if number in closing_prs:
+            continue
+        updated_at = str(issue.get("updatedAt") or "")
+        if worker_candidates.is_skipped(number, updated_at, skipped):
+            continue
         labels = {l.get("name") for l in ((issue.get("labels") or {}).get("nodes") or []) if l}
-        if approved_label not in labels:
+        assignees = [
+            a.get("login")
+            for a in ((issue.get("assignees") or {}).get("nodes") or [])
+            if a and a.get("login")
+        ]
+        # Defer forge blocker reads until labels/assignees pass.
+        prelim = worker_candidates.exclusion_reason(
+            labels,
+            assignees,
+            me,
+            open_blocker_numbers=(),
+            approved_label=approved_label,
+            rejected_label=rejected_label,
+        )
+        if prelim is not None:
             continue
-        assignees = {a.get("login") for a in ((issue.get("assignees") or {}).get("nodes") or []) if a}
-        if assignees - {me}:
+        blockers: list[int] = []
+        if forge is not None:
+            blockers = worker_candidates.open_blocker_numbers(
+                forge, number, open_blockers_fn=open_blockers_fn
+            )
+        reason = worker_candidates.exclusion_reason(
+            labels,
+            assignees,
+            me,
+            open_blocker_numbers=blockers,
+            approved_label=approved_label,
+            rejected_label=rejected_label,
+        )
+        if reason is not None:
             continue
-        if issue["number"] in closing_prs:
-            continue
-        actionable.append(issue["number"])
+        actionable.append(number)
     return sorted(actionable)
 
 
@@ -810,19 +852,43 @@ def preflight_forge(
     return record, changed
 
 
-def preflight_decision(config: dict | None = None) -> tuple[str, list[int]]:
+def preflight_decision(
+    config: dict | None = None,
+    state: dict | None = None,
+    *,
+    forge: Any = None,
+) -> tuple[str, list[int]]:
     """Return (fingerprint, actionable approved backlog) from one GraphQL fetch.
 
     The backlog makes the gate RUN even when the fingerprint is unchanged, so an
-    approved issue with no closing PR is never starved by a quiet repo.
+    approved issue with no closing PR is never starved by a quiet repo. Uses the
+    shared worker-candidate filter (issue #66), including ``state["skipped"]``
+    and open forge blockers when a forge adapter is available.
     """
     gate_data = fetch_gate_data()
     me = gh("api", "user", "--jq", ".login").strip()
     cfg = config or load_config()
     approved_label = contract.issue_label(cfg, "approved")
+    rejected_label = contract.issue_label(cfg, "rejected")
+    skipped = (state or {}).get("skipped") if isinstance(state, dict) else None
+    forge_obj = forge
+    if forge_obj is None:
+        try:
+            from devloops_lib.forge.detect import get_forge
+
+            forge_obj = get_forge(cfg, state=state)
+        except Exception:
+            forge_obj = None
     return (
         compute_fingerprint(gate_data, me),
-        find_actionable_backlog(gate_data, me, approved_label),
+        find_actionable_backlog(
+            gate_data,
+            me,
+            approved_label,
+            rejected_label=rejected_label,
+            forge=forge_obj,
+            skipped=skipped if isinstance(skipped, dict) else None,
+        ),
     )
 
 
@@ -1001,7 +1067,7 @@ def main(argv: list[str] | None = None) -> None:
             _emit_token(tick_token)
             sys.exit(EXIT_RUN)
 
-        fp, backlog = preflight_decision()
+        fp, backlog = preflight_decision(state=state)
         last_fp = state.get("lastFingerprint")
 
         if last_fp and last_fp == fp and not backlog:
