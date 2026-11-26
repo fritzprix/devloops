@@ -21,10 +21,10 @@ class EscalationPolicyTest(unittest.TestCase):
         text = WORKER_SKILL.read_text(encoding="utf-8")
         self.assertNotIn("external services", text.lower())
 
-    def test_open_pr_limit_is_not_needs_user(self):
+    def test_open_pr_limit_is_not_a_needs_owner_ask(self):
         text = WORKER_SKILL.read_text(encoding="utf-8")
-        self.assertNotIn('Record `needsUser` ("Waiting for open PRs', text)
-        self.assertIn("no** `needsUser` entry", text)
+        self.assertNotIn("needsUser", text)
+        self.assertIn("no** needs-owner ask", text)
 
     def test_policy_escalates_ambiguity(self):
         body = POLICY.read_text(encoding="utf-8")

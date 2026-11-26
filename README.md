@@ -99,7 +99,7 @@ decides if there is anything to do:
 3. If the state has no `current` work and the fingerprint is equal to the saved
    `lastFingerprint`, it prints `NOOP`. The scheduler does not start the agent.
 4. At the end of the tick:
-   - idle or needsUser tick: `--update --unlock --token <token>` saves the **tick-start** fingerprint;
+   - idle or needs-owner-ask tick: `--update --unlock --token <token>` saves the **tick-start** fingerprint;
    - tick that did work, or failed: `--unlock --token <token>` only. The next tick runs again.
 
    Under the wrapper, `--unlock` keeps the lock, and the wrapper releases it on exit.
@@ -198,7 +198,7 @@ Edit `<project>/devloops.config.yaml`:
 | `project.default_branch` | Default branch of the repo |
 | `project.base_branch` | Branch that PRs target |
 | `commands.test`, `commands.lint`, `commands.build` | Project commands that the loops use to verify |
-| `environment.capabilities` | Declared agent tools (browser, screen_capture, etc.); worker cites a **missing** name before `needsUser`. See escalation-policy.md. |
+| `environment.capabilities` | Declared agent tools (browser, screen_capture, etc.); worker cites a **missing** name before a needs-owner ask. See escalation-policy.md. |
 | `protected_paths` | High-attention paths. Producer: findings only. Worker: edits when in scope and unambiguous. Gatekeeper: reads them and reviews strictly (never a `gatekeeper:needs-human` from a path match). See `skills/worker-loop/references/escalation-policy.md`. |
 | `cleanup.protected_branches` | Branches that the `cleanup` task never proposes to delete |
 | `state_dir` | Directory for each loop's `state.json` and `tick.lock` (default `.devloops`). `$LOOP_STATE_DIR` overrides it. `--agent-id` scopes the paths to one agent (see `scheduling.md`). |
@@ -212,7 +212,7 @@ Edit `<project>/devloops.config.yaml`:
 | `producer.task_max_new_issues` | Limit of new issues for each task |
 | `gatekeeper.max_issue_validations_per_tick` | Producer issues the gatekeeper validates per tick (default 1) |
 | `worker.max_items_per_tick` | PRs and issues the worker finishes per tick (default 1). The wrapper renews the lock, so a long tick keeps it. |
-| `worker.open_pr_limit` | Throttle: worker stops starting issues (idles, no `needsUser`) while this many unapproved PRs plus live issue claims without a PR are open (default 5) |
+| `worker.open_pr_limit` | Throttle: worker stops starting issues (idles, no needs-owner ask) while this many unapproved PRs plus live issue claims without a PR are open (default 5) |
 | `worker.issue_claim_ttl_minutes` | An issue claim not refreshed for this long can be taken over by another worker slot (default 120) |
 | `worker.candidate_policy` | Project policy for issue candidates (epic #102): `require_approved` (default true), `epic_label` (default `epic`), `excluded_labels` (default `wontfix`, `duplicate`, `invalid`, `question`), `epic_title_patterns` (default empty — no built-in title guess) |
 | `scheduler` | Documentation only: `shell`, `cron`, or a harness-specific adapter |
@@ -232,7 +232,7 @@ Then tell your agent:
 | --- | --- |
 | `/worker-loop` | Run one tick now |
 | `/worker-loop 10m` | Arm a recurring loop every 10 minutes, then run one tick |
-| `/worker-loop status` | Show the state (`current`, `needsUser`, `skipped`) |
+| `/worker-loop status` | Show the state (`current`, `skipped`) |
 | `/worker-loop stop` | Stop the recurring loop |
 
 `/gatekeeper-loop` and `/producer-loop` use the same forms. `/gatekeeper-loop 10m --pr N`
@@ -277,7 +277,7 @@ The skills encode these rules:
   merges the base into a feature branch.
 - The worker works only in its own worktree, never in the user's checkout.
   It does one unit of work per tick and edits only files for that PR or issue.
-- The worker throttles new issues at `worker.open_pr_limit` open unapproved PRs (default 5) without `needsUser`.
+- The worker throttles new issues at `worker.open_pr_limit` open unapproved PRs (default 5) without a needs-owner ask.
   It fixes failing CI from the reproduced cause, runs the full local verification
   before every push, and never reruns a job only to get green.
 - A worker tick that lost its lock or claim cannot push, write PR comments, or run

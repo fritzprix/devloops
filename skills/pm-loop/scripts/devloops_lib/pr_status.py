@@ -247,10 +247,13 @@ def select_next_action(
     failing: list[str],
     pending: list[str],
     escalated: bool = False,
+    needs_owner: bool = False,
 ) -> str:
+    # Issue #67: an item parked with needs-owner and no owner answer gets no
+    # work from any loop, whatever else applies to it.
     # Issue #70: a PR parked with gatekeeper:escalated is the owner's turn.
     # The worker must not rebase, fix CI, triage, or answer reviews on it.
-    if escalated:
+    if needs_owner or escalated:
         return "none"
     if retarget:
         return "retarget"
@@ -300,6 +303,27 @@ def summarize(
             labels.append(str(name))
     labels = sorted(labels)
     escalated = contract.GATEKEEPER_ESCALATED in labels
+    # Issue #67: the needs-owner ask parks the PR until an owner answer. The
+    # issue-comments API carries author_association, so the answer check uses
+    # it when reachable and the pr-view comments otherwise.
+    needs_owner_parked = False
+    if contract.NEEDS_OWNER in labels:
+        try:
+            raw = json.loads(gh(
+                "api", f"repos/{owner}/{name}/issues/{number}/comments", "--paginate"
+            ) or "[]")
+            if isinstance(raw, dict):
+                raw = raw.get("comments") or []
+            ask_comments = [
+                {"author": {"login": c.get("user", {}).get("login") or ""},
+                 "createdAt": c.get("created_at") or "",
+                 "body": c.get("body") or "",
+                 "authorAssociation": c.get("author_association") or ""}
+                for c in raw if isinstance(c, dict)
+            ]
+        except Exception:
+            ask_comments = pr.get("comments") or []
+        needs_owner_parked = contract.needs_owner_parked(ask_comments, me)
 
     threads = []
     cursor = None
@@ -369,6 +393,7 @@ def summarize(
         failing=failing,
         pending=pending,
         escalated=escalated,
+        needs_owner=needs_owner_parked,
     )
 
     return {
@@ -389,6 +414,7 @@ def summarize(
         "gatekeeper": gatekeeper,
         "qa": qa,
         "labels": labels,
+        "needsOwner": needs_owner_parked,
         "duplicateCommits": duplicates,
         "mergedParent": merged_parent,
         "retargetBase": retarget_base,

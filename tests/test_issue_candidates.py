@@ -295,6 +295,102 @@ class OpenPrLimitTest(unittest.TestCase):
         self.assertEqual(result["openPRLimit"], {"unapproved": 5, "limit": 5, "reached": True})
 
 
+class NeedsOwnerParkTest(unittest.TestCase):
+    """Issue #67: a needs-owner parked issue gets no work until an owner answers."""
+
+    me = "test-worker"
+
+    def _issue(self, number, labels):
+        return {
+            "number": number,
+            "title": f"Issue {number}",
+            "body": "body",
+            "labels": [{"name": name} for name in labels],
+            "assignees": [],
+            "updatedAt": "2026-10-31T00:00:00Z",
+        }
+
+    def _ask(self, loop="worker-loop", createdAt="2026-11-01T00:00:00Z"):
+        return {
+            "body": f"<!-- {loop}: needs-owner -->\n\nWhich API should we use?",
+            "createdAt": createdAt,
+            "author": {"login": self.me},
+            "url": "https://example.test/c/ask",
+        }
+
+    def _reply(self, login, createdAt, body="Use API v2.", association=None):
+        comment = {
+            "body": body,
+            "createdAt": createdAt,
+            "author": {"login": login},
+            "url": "https://example.test/c/reply",
+        }
+        if association:
+            comment["authorAssociation"] = association
+        return comment
+
+    def _exclusion_reason(self, number, comments):
+        result = filter_and_rank_issues(
+            [self._issue(number, ["needs-owner"])], [], self.me,
+            config={}, issue_comments={number: comments},
+        )
+        self.assertEqual(result["candidates"], [])
+        excluded = {e["number"]: e for e in result["excluded"]}
+        self.assertIn(number, excluded)
+        return excluded[number]["reason"]
+
+    def test_parked_needs_owner_issue_is_excluded(self):
+        reason = self._exclusion_reason(7, [self._ask()])
+        self.assertIn("needs-owner", reason)
+        self.assertIn("awaiting owner answer", reason)
+
+    def test_ask_by_another_loop_also_parks(self):
+        self._exclusion_reason(7, [self._ask(loop="qa-loop")])
+
+    def test_label_without_findable_ask_stays_parked(self):
+        reason = self._exclusion_reason(7, [])
+        self.assertIn("needs-owner", reason)
+
+    def test_owner_answer_after_ask_makes_it_a_candidate(self):
+        comments = [
+            self._ask(),
+            self._reply("human-owner", "2026-11-02T00:00:00Z", association="OWNER"),
+        ]
+        result = filter_and_rank_issues(
+            [self._issue(7, ["needs-owner"])], [], self.me,
+            config={}, issue_comments={7: comments},
+        )
+        self.assertEqual([c["number"] for c in result["candidates"]], [7])
+        self.assertEqual(result["excluded"], [])
+
+    def test_marker_comment_after_the_ask_does_not_unpark(self):
+        comments = [
+            self._ask(),
+            {
+                "body": "<!-- worker-loop: response round=2 -->\n\nStill waiting on this.",
+                "createdAt": "2026-11-02T00:00:00Z",
+                "author": {"login": self.me},
+                "url": "https://example.test/c/response",
+            },
+        ]
+        self._exclusion_reason(7, comments)
+
+    def test_reply_before_the_ask_does_not_unpark(self):
+        comments = [
+            self._reply("human-owner", "2026-10-31T00:00:00Z", association="OWNER"),
+            self._ask(createdAt="2026-11-01T00:00:00Z"),
+        ]
+        self._exclusion_reason(7, comments)
+
+    def test_newer_ask_re_parks_after_an_earlier_answer(self):
+        comments = [
+            self._ask(createdAt="2026-11-01T00:00:00Z"),
+            self._reply("human-owner", "2026-11-02T00:00:00Z", association="OWNER"),
+            self._ask(createdAt="2026-11-03T00:00:00Z"),
+        ]
+        self._exclusion_reason(7, comments)
+
+
 class BlockedOnClosureTest(unittest.TestCase):
     def test_merged_child_via_parent_surfaces_needs_closure_and_unblocks_wait_status(self):
         issues = [
