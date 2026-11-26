@@ -2,7 +2,11 @@
 """Detached tick-lock renewer for slash-command ticks.
 
 Started by ``tick_gate.py --lock``; renews every TTL/3 until the lock is lost,
-SIGTERM, or the sidecar pid file is removed.
+SIGTERM, the sidecar pid file is removed, or ``--max-lifetime`` elapses.
+
+A finite lifetime is required while parent-exit watching (#75) is not yet on
+main: without it, a tick that dies without ``--unlock`` would renew forever
+once the heartbeat can start in an installed layout (#83).
 """
 from __future__ import annotations
 
@@ -27,6 +31,10 @@ from devloops_lib.proc_util import terminate_process_tree
 
 SIDECAR_IO_WAIT_SECONDS = 0.5
 SIDECAR_RETRY_INTERVAL = 0.01
+# Bound for a heartbeat whose caller vanished without --unlock (issue #83 / G1.1).
+# Override with DEVLOOPS_HEARTBEAT_MAX_LIFETIME (seconds) or --max-lifetime.
+MAX_LIFETIME_ENV = "DEVLOOPS_HEARTBEAT_MAX_LIFETIME"
+DEFAULT_MAX_LIFETIME_TTLS = 4
 
 
 def _tick_gate():
@@ -108,10 +116,26 @@ def stop_heartbeat(lock_file: Path, *, wait_seconds: float = 10.0) -> None:
     terminate_process_tree(pid, wait_seconds=wait_seconds)
 
 
-def start_detached(lock_file: Path, token: str) -> None:
+def resolve_max_lifetime(explicit: float | None = None) -> float:
+    """Seconds the heartbeat may renew before exiting on its own.
+
+    Order: explicit argument, ``DEVLOOPS_HEARTBEAT_MAX_LIFETIME``, then
+    ``DEFAULT_MAX_LIFETIME_TTLS * lock_ttl`` (at least 60s).
+    """
+    if explicit is not None:
+        return max(float(explicit), 1.0)
+    raw = os.environ.get(MAX_LIFETIME_ENV, "").strip()
+    if raw:
+        return max(float(raw), 1.0)
+    ttl = _tick_gate().lock_ttl()
+    return max(ttl * DEFAULT_MAX_LIFETIME_TTLS, 60.0)
+
+
+def start_detached(lock_file: Path, token: str, *, max_lifetime: float | None = None) -> None:
     lock_file = lock_file.resolve()
     stop_heartbeat(lock_file)
     script = Path(__file__).resolve()
+    lifetime = resolve_max_lifetime(max_lifetime)
     popen_kw: dict = {
         "cwd": tempfile.gettempdir(),
         "stdin": subprocess.DEVNULL,
@@ -123,16 +147,26 @@ def start_detached(lock_file: Path, token: str) -> None:
     else:
         popen_kw["start_new_session"] = True
     proc = subprocess.Popen(
-        [sys.executable, str(script), "--lock-file", str(lock_file), "--token", token],
+        [
+            sys.executable,
+            str(script),
+            "--lock-file",
+            str(lock_file),
+            "--token",
+            token,
+            "--max-lifetime",
+            str(lifetime),
+        ],
         **popen_kw,
     )
     write_sidecar(lock_file, proc.pid, token)
 
 
-def _run(lock_file: Path, token: str) -> int:
+def _run(lock_file: Path, token: str, *, max_lifetime: float) -> int:
     tg = _tick_gate()
     interval = max(tg.lock_ttl() / 3, 1.0)
     stopping = False
+    life_deadline = time.monotonic() + max_lifetime
 
     def _stop(*_args: object) -> None:
         nonlocal stopping
@@ -143,6 +177,11 @@ def _run(lock_file: Path, token: str) -> int:
         signal.signal(signal.SIGHUP, _stop)
 
     while not stopping:
+        if time.monotonic() >= life_deadline:
+            sys.stderr.write(
+                f"lock heartbeat: max lifetime {max_lifetime:.1f}s reached; exiting\n"
+            )
+            return 0
         if not tg.token_holds_lock(lock_file, token):
             sys.stderr.write(f"lock heartbeat: lost lock ({tg.describe_lock(lock_file)})\n")
             return 1
@@ -153,6 +192,8 @@ def _run(lock_file: Path, token: str) -> int:
             return 0
         deadline = time.monotonic() + interval
         while time.monotonic() < deadline and not stopping:
+            if time.monotonic() >= life_deadline:
+                break
             time.sleep(min(0.5, interval / 4))
     return 0
 
@@ -161,12 +202,20 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lock-file", type=Path, required=True)
     parser.add_argument("--token", required=True)
+    parser.add_argument(
+        "--max-lifetime",
+        type=float,
+        default=None,
+        help="Stop renewing after this many seconds (default: env or 4*TTL)",
+    )
     args = parser.parse_args(argv)
     if not _tick_gate().token_holds_lock(args.lock_file, args.token):
         return
     write_sidecar(args.lock_file, os.getpid(), args.token)
     try:
-        raise SystemExit(_run(args.lock_file, args.token))
+        raise SystemExit(
+            _run(args.lock_file, args.token, max_lifetime=resolve_max_lifetime(args.max_lifetime))
+        )
     finally:
         clear_sidecar(args.lock_file)
 

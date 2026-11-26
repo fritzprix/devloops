@@ -52,6 +52,7 @@ class LockHeartbeatTest(unittest.TestCase):
         race_state.write_text('{"current": {"kind": "pr", "number": 1}}', encoding="utf-8")
 
     def test_slash_path_lock_survives_past_ttl(self):
+        self.addCleanup(stop_heartbeat, self.lock)
         first = subprocess.run(
             [sys.executable, str(SCRIPTS / "tick_gate.py"), "--lock"],
             cwd=str(self.loop_dir),
@@ -83,6 +84,7 @@ class LockHeartbeatTest(unittest.TestCase):
         # directory is on sys.path, PYTHONPATH unset. The detached heartbeat runs
         # devloops_lib/lock_heartbeat.py as a file, which used to die on
         # ModuleNotFoundError, silently losing the lock after the TTL.
+        self.addCleanup(stop_heartbeat, self.lock)
         env = {k: v for k, v in self.env.items() if k != "PYTHONPATH"}
         first = subprocess.run(
             [sys.executable, str(SCRIPTS / "tick_gate.py"), "--lock"],
@@ -109,7 +111,47 @@ class LockHeartbeatTest(unittest.TestCase):
             timeout=60,
         )
 
+    def test_max_lifetime_lets_dead_caller_lock_expire(self):
+        # G1.1: caller takes the lock and exits without --unlock; after max
+        # lifetime the heartbeat stops renewing so a second --lock can RUN.
+        self.addCleanup(stop_heartbeat, self.lock)
+        env = {
+            k: v for k, v in self.env.items() if k != "PYTHONPATH"
+        }
+        env["DEVLOOPS_HEARTBEAT_MAX_LIFETIME"] = str(self.ttl + 1)
+        first = subprocess.run(
+            [sys.executable, str(SCRIPTS / "tick_gate.py"), "--lock"],
+            cwd=str(self.loop_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(first.returncode, tick_gate.EXIT_RUN, first.stdout + first.stderr)
+        # Dead caller: no --unlock. Wait past max lifetime + TTL so the lock is stale.
+        time.sleep(self.ttl + 1 + self.ttl + 1)
+        second = subprocess.run(
+            [sys.executable, str(SCRIPTS / "tick_gate.py"), "--lock"],
+            cwd=str(self.loop_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(second.returncode, tick_gate.EXIT_RUN, second.stdout + second.stderr)
+        token2 = [ln.split()[1] for ln in second.stdout.splitlines() if ln.startswith("TOKEN ")][0]
+        stop_heartbeat(self.lock)
+        subprocess.run(
+            [sys.executable, str(SCRIPTS / "tick_gate.py"), "--unlock", "--token", token2],
+            cwd=str(self.loop_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
     def test_heartbeat_stops_after_unlock_and_lock_expires(self):
+        self.addCleanup(stop_heartbeat, self.lock)
         token = tick_gate.acquire_lock_token(self.lock)
         start_detached(self.lock, token)
         time.sleep(0.3)
@@ -133,13 +175,15 @@ class LockHeartbeatTest(unittest.TestCase):
             return FakeProc()
 
         with patch("devloops_lib.lock_heartbeat.stop_heartbeat"), \
-                patch("devloops_lib.lock_heartbeat.subprocess.Popen", side_effect=fake_popen):
+                patch("devloops_lib.lock_heartbeat.subprocess.Popen", side_effect=fake_popen), \
+                patch("devloops_lib.lock_heartbeat.resolve_max_lifetime", return_value=12.0):
             start_detached(self.lock, "tok-123")
 
         self.assertEqual(captured["kwargs"]["cwd"], tempfile.gettempdir())
         self.assertNotEqual(Path(captured["kwargs"]["cwd"]).resolve(), self.loop_dir.resolve())
         lock_arg = captured["cmd"][captured["cmd"].index("--lock-file") + 1]
         self.assertEqual(Path(lock_arg), self.lock.resolve())
+        self.assertEqual(captured["cmd"][captured["cmd"].index("--max-lifetime") + 1], "12.0")
         clear_sidecar(self.lock)
 
     def test_sidecar_io_retries_on_windows_permission_error(self):
