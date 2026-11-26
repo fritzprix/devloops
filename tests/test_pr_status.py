@@ -119,6 +119,15 @@ class StackedPrLifecycleTest(unittest.TestCase):
         self.assertIsNone(pr_status.parent_pr_merged("main", "main", merged))
         # Stacked PR whose parent is still open does not retarget yet.
         self.assertIsNone(pr_status.parent_pr_merged("feat/still-open-2", "main", merged))
+        # Branch name reused by a new open PR after an earlier merge: not retarget.
+        self.assertIsNone(
+            pr_status.parent_pr_merged(
+                "feat/parent-1",
+                "main",
+                merged,
+                open_head_refs={"feat/parent-1"},
+            )
+        )
 
     def test_find_merged_via_parent_issues(self):
         open_issues = [{"number": 20}, {"number": 30}]
