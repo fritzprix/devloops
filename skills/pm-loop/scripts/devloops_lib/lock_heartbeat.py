@@ -96,7 +96,9 @@ STARTUP_LOCK_RETRY_INTERVAL = 0.2
 # Ancestor names skipped on Windows: the shells/harnesses that host a tick and
 # exit right after spawning it. Their parent (the agent or terminal host) is the
 # long-lived process worth watching.
-_WINDOWS_TRANSIENT_EXES = frozenset({"cmd.exe", "powershell.exe", "pwsh.exe", "conhost.exe"})
+_WINDOWS_TRANSIENT_EXES = frozenset(
+    {"cmd.exe", "powershell.exe", "pwsh.exe", "conhost.exe", "bash.exe", "sh.exe"}
+)
 
 
 def _windows_process_map() -> "dict[int, tuple[int, str]] | None":
@@ -432,18 +434,17 @@ def main(argv: list[str] | None = None) -> None:
     )
     tg = _tick_gate()
     if args.parent_pid is not None and not tg._pid_alive(args.parent_pid):
-        # A resolved parent that is already gone when the child boots is a
-        # launcher artifact, not a dead session: on Windows the venv
-        # python.exe redirector spawns tick_gate and exits right after it,
-        # and tick_gate resolves that redirector as the watch parent.
-        # Exiting here would kill every heartbeat on Windows; drop the
-        # watch instead — sidecar removal, the TTL and --unlock still stop
-        # the child.
+        # Owner decision (2026-11-26, #78 round 5): the heartbeat must never
+        # renew a lock whose watched parent is gone, and it must not degrade
+        # to "no parent watch" to keep renewing. A watched parent that is
+        # already dead when the child boots means the session that armed the
+        # tick is over (or the resolver picked an ephemeral shell), so exit
+        # before taking any ownership of the lock.
         _log(
             f"heartbeat: parent {args.parent_pid} not alive at startup; "
-            "continuing without parent watch"
+            "exiting (never continue without the watched parent)"
         )
-        args.parent_pid = None
+        return
     holds = False
     for attempt in range(STARTUP_LOCK_RETRY_COUNT):
         if tg.token_holds_lock(args.lock_file, args.token):

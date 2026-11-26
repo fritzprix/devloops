@@ -334,6 +334,8 @@ class LockHeartbeatTest(unittest.TestCase):
         procs = {
             300: (200, "cmd.exe"),
             201: (200, "conhost.exe"),
+            302: (200, "bash.exe"),
+            303: (200, "sh.exe"),
             200: (4, "agent.exe"),
         }
         with patch.dict(os.environ, {}, clear=False):
@@ -344,6 +346,12 @@ class LockHeartbeatTest(unittest.TestCase):
                 with patch("devloops_lib.lock_heartbeat.os.getppid", return_value=300):
                     self.assertEqual(resolve_parent_pid(), 200)
                 with patch("devloops_lib.lock_heartbeat.os.getppid", return_value=201):
+                    self.assertEqual(resolve_parent_pid(), 200)
+                # G4.1: per-call POSIX shells on Windows (bash.exe / sh.exe)
+                # are transient too — never watch them.
+                with patch("devloops_lib.lock_heartbeat.os.getppid", return_value=302):
+                    self.assertEqual(resolve_parent_pid(), 200)
+                with patch("devloops_lib.lock_heartbeat.os.getppid", return_value=303):
                     self.assertEqual(resolve_parent_pid(), 200)
                 # An ancestor that is not visible in the snapshot: no watch.
                 with patch("devloops_lib.lock_heartbeat.os.getppid", return_value=999):
@@ -405,6 +413,106 @@ class LockHeartbeatTest(unittest.TestCase):
             timeout=60,
         )
         self.assertEqual(unlock.returncode, tick_gate.EXIT_RUN, unlock.stdout + unlock.stderr)
+
+
+    def test_watch_parent_dead_at_startup_exits_without_sidecar(self):
+        # Owner decision (2026-11-26, #78): a watched parent that is already
+        # gone when the child boots must exit, never continue without a
+        # parent watch (no sidecar, no renewing).
+        from devloops_lib import lock_heartbeat
+
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait(timeout=10)
+        token = tick_gate.acquire_lock_token(self.lock)
+        try:
+            lock_heartbeat.main([
+                "--lock-file", str(self.lock), "--token", token,
+                "--parent-pid", str(dead.pid),
+            ])
+            self.assertIsNone(read_sidecar(self.lock),
+                              "heartbeat wrote a sidecar despite a dead watched parent")
+            payload = tick_gate.read_lock_payload(self.lock)
+            self.assertEqual(payload.get("token"), token)
+        finally:
+            tick_gate.release_lock(self.lock, token=token)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "automatic parent resolution needs /proc")
+    def test_heartbeat_exits_when_auto_resolved_parent_killed(self):
+        # Owner decision (2026-11-26, #78): exercise automatic parent
+        # resolution (Linux /proc walk from os.getppid()) without pinning
+        # DEVLOOPS_SESSION_HOLDER_PID.
+        env = {k: v for k, v in self.env.items() if k != "DEVLOOPS_SESSION_HOLDER_PID"}
+        parent_code = (
+            "import os, subprocess, sys, time; "
+            "print(f'HOLDER {os.getpid()}', flush=True); "
+            f"r = subprocess.run([sys.executable, {str(SCRIPTS / 'tick_gate.py')!r}, '--lock'], "
+            "capture_output=True, text=True); "
+            "print(r.stdout, flush=True); "
+            "time.sleep(60)"
+        )
+        parent = subprocess.Popen(
+            [sys.executable, "-c", parent_code],
+            cwd=str(self.loop_dir),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.addCleanup(lambda: (parent.kill(), parent.wait()) if parent.poll() is None else None)
+        self.addCleanup(lambda: stop_heartbeat(self.lock))
+
+        token = None
+        holder = None
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline and (token is None or holder is None):
+            line = parent.stdout.readline()
+            if not line:
+                break
+            if line.startswith("TOKEN "):
+                token = line.split()[1].strip()
+            elif line.startswith("HOLDER "):
+                holder = int(line.split()[1].strip())
+        self.assertIsNotNone(token, "parent did not emit TOKEN")
+        self.assertIsNotNone(holder, "parent did not emit HOLDER")
+
+        # The parent Popen'd tick_gate directly, so the auto resolver must
+        # watch exactly the holder pid — no env pinning involved.
+        hb_info = None
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            hb_info = read_sidecar(self.lock)
+            if hb_info and read_sidecar_parent_pid(self.lock) == holder:
+                break
+            time.sleep(0.1)
+        self.assertIsNotNone(hb_info, "heartbeat sidecar never appeared")
+        self.assertEqual(read_sidecar_parent_pid(self.lock), holder,
+                         "auto resolver did not watch the direct parent")
+        hb_pid = hb_info[0]
+
+        initial_time = tick_gate.read_lock_payload(self.lock)["time"]
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            payload = tick_gate.read_lock_payload(self.lock)
+            if payload and payload["time"] > initial_time:
+                break
+            time.sleep(0.1)
+        self.assertGreater(tick_gate.read_lock_payload(self.lock)["time"], initial_time,
+                           "heartbeat never renewed the lock")
+
+        try:
+            os.kill(holder, signal.SIGTERM)
+        except OSError:
+            pass
+        parent.kill()
+        parent.wait(timeout=5)
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and tick_gate._pid_alive(hb_pid):
+            time.sleep(0.1)
+        self.assertFalse(tick_gate._pid_alive(hb_pid), "heartbeat did not exit after the auto-watched parent died")
+        self.assertIsNone(read_sidecar(self.lock))
+        time.sleep(self.ttl + 0.5)
+        self.assertFalse(tick_gate.check_lock(self.lock, ttl_seconds=self.ttl))
 
 
 class LockTtlConfigTest(unittest.TestCase):
