@@ -57,6 +57,7 @@ producer:
 
 gatekeeper:
   max_issue_validations_per_tick: 1   # producer issues to validate per tick
+  ci_stall_minutes: 45                # queued CI checks not started this long are reported with cause
   rubric_paths: []                    # extra REVIEW_RUBRIC.md paths (see gatekeeper-loop SKILL)
   issue_rules_paths: []               # ISSUE_RULES.md paths for acceptance criteria
 

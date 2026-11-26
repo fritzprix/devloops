@@ -55,7 +55,7 @@ When blocked on (a), quote the ambiguous lines in `question` and stop work that 
 
 ## Gatekeeper: `escalate` and `gatekeeper:needs-human`
 
-- **`gatekeeper:needs-human`**: Human attention for ambiguous review criteria or loop-skill edits. Never applied from a path-name match; real permission/secret/policy/sandbox changes get stricter gatekeeper review instead. Worker may still implement.
+- **`gatekeeper:needs-human`**: "Human merges this" signal for loop-skill edits only. Never applied from a path-name match; real permission/secret/policy/sandbox changes get stricter gatekeeper review instead. It never blocks review or approval. Worker may still implement.
 - **`verdict=escalate`**: Round limit (5); second dispute on the same `G` item; or an unresolved **product/security/data owner decision** the worker flagged and the thread does not settle—hand to maintainer with both positions.
 
 ## Producer

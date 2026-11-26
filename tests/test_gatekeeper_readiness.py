@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for gatekeeper readiness / autonomous bootstrap assessment."""
+"""Tests for gatekeeper readiness: CI/rubric gap assessment (issue #81)."""
 from __future__ import annotations
 
 import tempfile
@@ -32,7 +32,7 @@ class GatekeeperReadinessTest(unittest.TestCase):
     def test_missing_rubric(self):
         out = gr.assess_rubric(self.root, {})
         self.assertEqual(out["status"], "missing")
-        self.assertEqual(out["action"], "open_pr")
+        self.assertEqual(out["action"], "open_issue")
 
     def test_present_rubric(self):
         text = (
@@ -46,22 +46,27 @@ class GatekeeperReadinessTest(unittest.TestCase):
         out = gr.assess_rubric(self.root, {})
         self.assertEqual(out["status"], "present")
 
-    def test_ambiguous_rubric_requires_co_create(self):
+    def test_ambiguous_rubric_files_needs_owner_issue(self):
         (self.root / "REVIEW_RUBRIC.md").write_text(
             "# Rubric\nCriteria TBD — owner must decide what counts as done.\n" * 5,
             encoding="utf-8",
         )
         out = gr.assess_rubric(self.root, {})
         self.assertEqual(out["status"], "ambiguous")
-        self.assertEqual(out["action"], "co_create")
+        self.assertEqual(out["action"], "open_issue")
+        self.assertIn("needs-owner", out["goal"])
 
-    def test_assess_readiness_lists_autonomous_work(self):
+    def test_assess_readiness_lists_gaps_without_autonomous_prs(self):
         cfg = {"commands": {"test": "pytest", "lint": "ruff check"}}
         ready = gr.assess_readiness(start_dir=self.root, config=cfg)
         self.assertFalse(ready["ci"]["present"])
-        kinds = [w["kind"] for w in ready["autonomousWork"]]
+        kinds = [g["kind"] for g in ready["gaps"]]
         self.assertIn("ci", kinds)
         self.assertIn("rubric", kinds)
+        # Issue #81: no bootstrap-PR work list — gaps become issues, not PRs.
+        self.assertNotIn("autonomousWork", ready)
+        for gap in ready["gaps"]:
+            self.assertEqual(gap["action"], "open_issue")
 
 
 if __name__ == "__main__":

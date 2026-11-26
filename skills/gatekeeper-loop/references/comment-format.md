@@ -6,12 +6,30 @@ Worker and gatekeeper share one GitHub account, and GitHub rejects Approve / Req
 
 `head` = full SHA of the PR head that was reviewed. `base` = the PR's base branch at review time (a later change forces re-review). `round` starts at 1 and increments per verdict (`clean` markers do not count).
 
+### Score (required on every verdict and every `clean` marker)
+
+Every review posts a **Score** before Required/Suggestions/Checked. Scale is integer **1–5**:
+
+| Score | Meaning |
+| --- | --- |
+| **5** | Ready to approve once CI (when it applies) is green; no open required findings. |
+| **4** | Solid; only non-blocking suggestions remain. |
+| **3** | Clear path forward; at least one required finding or missing proof. |
+| **2** | Major gaps (wrong approach, missing tests, unsafe path) — not mergeable soon. |
+| **1** | Out of scope, unsafe, or does not match the linked issue. |
+
+One line of justification after the number. Score is judgment for humans and later rounds; it does not replace the verdict or labels.
+
 ```markdown
 <!-- gatekeeper-loop: round=2 verdict=changes-requested head=<sha> base=<branch> -->
 
 ## Gatekeeper · round 2 · Changes requested
 
 Scope: <one line — what the PR claims and whether the diff matches it>
+
+### Score
+
+**3/5** — <one line: why this score>
 
 ### Required
 
@@ -34,6 +52,10 @@ Approve:
 <!-- gatekeeper-loop: round=3 verdict=approve head=<sha> base=<branch> -->
 
 ## Gatekeeper · round 3 · ✅ Approve
+
+### Score
+
+**5/5** — <one line: why this score>
 
 <2–3 lines: what was verified (diff, tests, CI green at <short-sha>), residual risks, suggestions left open>
 
@@ -59,6 +81,10 @@ Clean, waiting for CI (no label change, not a round; lets any tick or machine se
 
 ## Gatekeeper · reviewed clean · waiting for CI
 
+### Score
+
+**5/5** — <one line: why this score>
+
 <1–2 lines: what was reviewed, zero open required findings>
 ```
 
@@ -72,7 +98,7 @@ Needs owner (not a verdict, does not count as a round; post once per reason+head
 <Concrete draft rubric or checklist the owner must confirm or edit — not open-ended questions.>
 ```
 
-Reasons: `ambiguous review criteria`, `changes loop skill files`. A path-name match is never a reason. Missing repo CI is not a needs-owner reason: the gatekeeper opens a bootstrap CI PR instead. `changes loop skill files` does not block review or approval — loop-skill PRs are reviewed normally and can be approved; the marker and the `gatekeeper:needs-human` label only signal that the merge itself stays with a human. There is no `kind=needs-human` marker; `kind=needs-owner` is the only human-attention marker kind for this loop.
+Reasons: `changes loop skill files` only. A path-name match is never a reason. Missing repo CI is not a needs-owner reason: the gatekeeper files a gap issue instead and keeps reviewing. `changes loop skill files` does not block review or approval — loop-skill PRs are reviewed normally and can be approved; the marker and the `gatekeeper:needs-human` label only signal that the merge itself stays with a human. There is no `kind=needs-human` marker; `kind=needs-owner` is the only human-attention marker kind for this loop.
 
 Escalate (round limit or second dispute on the same `G` item):
 
@@ -107,7 +133,7 @@ Every `G` item must be answered as **fixed** or **declined**. Suggestions may be
 | `gatekeeper:changes-requested` | gatekeeper | Latest verdict requests changes                                                          |
 | `gatekeeper:approved`          | gatekeeper | Approved at the current head; ready for a human merge (with `qa:accepted` too when qa-loop runs) |
 | `gatekeeper:escalated`         | gatekeeper | Round limit or repeated dispute on the same finding; maintainer picks direction          |
-| `gatekeeper:needs-human`       | gatekeeper | Human attention: ambiguous review criteria or loop-skill change—not a worker stop, and it never stops review or approval (for loop-skill PRs it means "human merges this"). Never set from a path-name match. Kept alongside the verdict label; removed when its reason no longer applies |
+| `gatekeeper:needs-human`       | gatekeeper | "Human merges this" signal (loop-skill change only). It never stops review or approval, and is never set from a path-name match. Kept alongside the verdict label; removed when its reason no longer applies |
 
 Unmarked comments from the repo owner (or `@me`) posted after the last marker are read as required items and trigger a review.
 
