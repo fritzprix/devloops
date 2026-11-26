@@ -74,14 +74,14 @@ Needs owner (not a verdict, does not count as a round; post once per reason+head
 
 Reasons: `ambiguous review criteria`, `changes loop skill files`. A path-name match is never a reason. Missing repo CI is not a needs-owner reason: the gatekeeper opens a bootstrap CI PR instead. `changes loop skill files` does not block review or approval — loop-skill PRs are reviewed normally and can be approved; the marker and the `gatekeeper:needs-human` label only signal that the merge itself stays with a human. There is no `kind=needs-human` marker; `kind=needs-owner` is the only human-attention marker kind for this loop.
 
-Escalate (round limit or second dispute on the same `G` item):
+Escalate (round limit of 5, or an unresolved product/security/data owner decision). A second dispute on the same `G` item is **not** an escalate: decide with `file:line` evidence in the next verdict. Protocol: add `gatekeeper:escalated` first, then post this marker. The only exit is the owner removing the label.
 
 ```markdown
 <!-- gatekeeper-loop: round=5 verdict=escalate head=<sha> -->
 
 ## Gatekeeper · round 5 · Needs maintainer decision
 
-<the repeated disagreement on the same finding, both positions, and the decision needed>
+<why the round limit or owner decision cannot be settled here>
 ```
 
 ## Worker response
@@ -106,7 +106,7 @@ Every `G` item must be answered as **fixed** or **declined**. Suggestions may be
 | ------------------------------ | ---------- | ---------------------------------------------------------------------------------------- |
 | `gatekeeper:changes-requested` | gatekeeper | Latest verdict requests changes                                                          |
 | `gatekeeper:approved`          | gatekeeper | Approved at the current head; ready for a human merge (with `qa:accepted` too when qa-loop runs) |
-| `gatekeeper:escalated`         | gatekeeper | Round limit or repeated dispute on the same finding; maintainer picks direction          |
+| `gatekeeper:escalated`         | gatekeeper | Round limit or unresolved product/security/data owner decision; only the owner removing the label resumes review |
 | `gatekeeper:needs-human`       | gatekeeper | Human attention: ambiguous review criteria or loop-skill change—not a worker stop, and it never stops review or approval (for loop-skill PRs it means "human merges this"). Never set from a path-name match. Kept alongside the verdict label; removed when its reason no longer applies |
 
 Unmarked comments from the repo owner (or `@me`) posted after the last marker are read as required items and trigger a review.
