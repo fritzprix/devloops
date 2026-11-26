@@ -14,7 +14,6 @@ from typing import Any
 from devloops_lib import contract
 from devloops_lib.config import get_state_path, load_config
 from devloops_lib.gh import GhError, gh
-from devloops_lib.tick_gate import load_state, save_state
 
 VALID_VERDICTS = {"validated", "rejected"}
 TASK_LABEL_PATTERN = re.compile(r"^auto:(?!producer$)(.+)$")
@@ -198,12 +197,6 @@ def apply_verdict(
         if edit_res.returncode != 0:
             raise GhError(f"gh issue edit failed (code {edit_res.returncode}): {edit_res.stderr.strip()}")
 
-        # Record validated/rejected counts per producer task in gatekeeper state
-        state = load_state(st_path)
-        stats = state.setdefault("producerStats", {})
-        task_stats = stats.setdefault(inferred_task, {"validated": 0, "rejected": 0})
-        task_stats[v_norm] = task_stats.get(v_norm, 0) + 1
-        save_state(st_path, state)
-        result["state_updated"] = True
+        result["state_updated"] = False
 
     return result

@@ -61,7 +61,7 @@ human ───────────► merge
 
 - The worker services its open PRs first (conflicts, gatekeeper findings, comments,
   failing CI). It picks a new issue only when no PR needs action.
-- The worker skips producer issues that do not have the `approved` label.
+- The worker takes only issues that have the `approved` label and no open forge blocker (same filter as the tick gate).
 - The worker and the gatekeeper can share one GitHub account. So verdicts are PR
   comments with a hidden marker, plus a `gatekeeper:*` label.
 - With `qa-loop`, a second reviewer checks that each change can be tested with the
