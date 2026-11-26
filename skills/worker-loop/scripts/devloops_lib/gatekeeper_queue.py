@@ -268,6 +268,7 @@ def classify(
     stalled: list[str] | None = None,
     needs_owner: bool = False,
     open_blocker_numbers: list[int] | None = None,
+    forge_error: str | None = None,
 ) -> tuple[str, str, int]:
     """Return (status, one-line reason, priority). Lower priority number is handled first."""
     ci_applies = is_dev_base(base, config=config)
@@ -276,6 +277,10 @@ def classify(
     # Issue #67: a parked needs-owner ask gets no work from any loop.
     if needs_owner:
         return "wait-owner", "needs-owner ask awaiting owner answer", 9
+
+    # Fail closed (#68 G1.2): cannot read blockers → park, never "no blockers".
+    if forge_error:
+        return "blocked", f"forge unavailable for blocker check: {forge_error}", 9
 
     # Issue #68 / overlap: open-blocker parks before merge-conflict and verdicts.
     blockers = sorted({int(n) for n in (open_blocker_numbers or [])})
@@ -455,14 +460,15 @@ def summarize(
     )
 
     open_blocker_nums: list[int] = []
+    forge_error: str | None = None
     if not parked:
         try:
             from devloops_lib.forge.detect import get_forge
 
             forge_obj = get_forge(cfg, state=state)
             open_blocker_nums = contract.open_blockers(forge_obj, number)
-        except Exception:
-            open_blocker_nums = []
+        except Exception as exc:
+            forge_error = str(exc) or exc.__class__.__name__
 
     status, reason, priority = classify(
         mergeable=pr.get("mergeable"),
@@ -486,6 +492,7 @@ def summarize(
         stalled=stalled,
         needs_owner=parked,
         open_blocker_numbers=open_blocker_nums,
+        forge_error=forge_error,
     )
     # Loop-skill PRs keep their normal status; own_skill only drives needsHuman below.
     needs_at_head = next((m for m in reversed(needs) if m.get("head") == head), None)

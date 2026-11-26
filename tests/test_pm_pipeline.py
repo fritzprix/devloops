@@ -92,7 +92,8 @@ class ComputeCountersTest(unittest.TestCase):
             worker_prs=[{"number": 4, "nextAction": "rebase", "openBlockers": [66],
                          "labels": [contract.NEEDS_OWNER]}],
         )
-        self.assertEqual(rebase["prsNeedingWorker"], 0)  # rebase not yet in WORKER_PR_ACTIONS
+        # #68: rebase is in WORKER_PR_ACTIONS and is not parked, so it counts.
+        self.assertEqual(rebase["prsNeedingWorker"], 1)
         self.assertFalse(pm_pipeline.pr_is_parked(
             {"number": 4, "nextAction": "rebase", "openBlockers": [66]}
         ))

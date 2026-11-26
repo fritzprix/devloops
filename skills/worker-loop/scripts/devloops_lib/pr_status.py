@@ -388,8 +388,11 @@ def summarize(
     retarget_base = resolved_default if merged_parent else None
 
     # Issue #68: blocker links park the PR (wait-blocker) or clear into rebase.
+    # Fail closed (#66/#68 G1.2): forge/blocker read errors park the PR; never
+    # treat "could not read blockers" as "no blockers".
     open_blocker_nums: list[int] = []
     all_blocker_nums: list[int] = []
+    forge_error: str | None = None
     clean_marker = latest_clean_marker(pr.get("comments") or [], me)
     if not needs_owner_parked:
         try:
@@ -398,14 +401,17 @@ def summarize(
             forge_obj = get_forge(load_config())
             all_blocker_nums = contract.blocker_numbers(forge_obj, number)
             open_blocker_nums = contract.open_blockers(forge_obj, number)
-        except Exception:
-            all_blocker_nums = []
-            open_blocker_nums = []
-    rebase_after = contract.needs_blocker_rebase(
-        blocker_links=all_blocker_nums,
-        open_blocker_numbers=open_blocker_nums,
-        head=pr["headRefOid"],
-        clean_head=(clean_marker or {}).get("head"),
+        except Exception as exc:
+            forge_error = str(exc) or exc.__class__.__name__
+    rebase_after = (
+        False
+        if forge_error
+        else contract.needs_blocker_rebase(
+            blocker_links=all_blocker_nums,
+            open_blocker_numbers=open_blocker_nums,
+            head=pr["headRefOid"],
+            clean_head=(clean_marker or {}).get("head"),
+        )
     )
 
     next_action = select_next_action(
@@ -418,7 +424,7 @@ def summarize(
         failing=failing,
         pending=pending,
         needs_owner=needs_owner_parked,
-        open_blockers=bool(open_blocker_nums),
+        open_blockers=bool(open_blocker_nums) or bool(forge_error),
         rebase_after_blockers=rebase_after,
     )
 
@@ -442,6 +448,7 @@ def summarize(
         "labels": labels,
         "needsOwner": needs_owner_parked,
         "openBlockers": open_blocker_nums,
+        "forgeError": forge_error,
         "duplicateCommits": duplicates,
         "mergedParent": merged_parent,
         "retargetBase": retarget_base,

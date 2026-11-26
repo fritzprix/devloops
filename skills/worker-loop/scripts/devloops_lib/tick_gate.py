@@ -860,12 +860,11 @@ def find_rebase_prs(
     """
     forge_obj = forge
     if forge_obj is None:
-        try:
-            from devloops_lib.forge.detect import get_forge
+        # Fail closed (#68 G1.2): without a forge, blocker state is unknown, so
+        # never claim a rebase-ready PR.
+        from devloops_lib.forge.detect import get_forge
 
-            forge_obj = get_forge(load_config())
-        except Exception:
-            return []
+        forge_obj = get_forge(load_config())
 
     def _comments(number: int) -> list[dict]:
         if comments_fn is not None:

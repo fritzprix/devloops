@@ -58,6 +58,15 @@ class DetermineStatusTests(unittest.TestCase):
         self.assertIn("#12", reason)
         self.assertEqual(prio, 9)
 
+
+    def test_forge_error_is_blocked(self) -> None:
+        status, reason, prio = classify(**base_args(forge_error="boom"))
+        self.assertEqual(status, "blocked")
+        self.assertIn("forge unavailable", reason)
+        self.assertIn("boom", reason)
+        self.assertEqual(prio, 9)
+
+
     def test_needs_owner_outranks_open_blocker(self) -> None:
         status, _, _ = classify(**base_args(needs_owner=True, open_blocker_numbers=[12]))
         self.assertEqual(status, "wait-owner")
