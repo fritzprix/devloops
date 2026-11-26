@@ -367,6 +367,33 @@ class GitHubForge:
             raise ForgeError("GitHubForge: cannot resolve owner/repo for dependency operations")
         return owner, name
 
+    def list_sub_issues(self, number: int) -> List[int]:
+        """Child issue numbers via ``GET .../issues/{n}/sub_issues`` (issue #74)."""
+        owner, repo = self._owner_repo()
+        try:
+            out = self._api(
+                "api",
+                f"repos/{owner}/{repo}/issues/{number}/sub_issues",
+                "--paginate",
+            )
+        except GhError as exc:
+            # 404: no sub-issues feature or unknown issue — treat as none.
+            msg = str(exc).lower()
+            if "404" in msg or "not found" in msg:
+                return []
+            raise ForgeError(f"GitHub list_sub_issues #{number}: {exc}") from exc
+        try:
+            items = json.loads(out or "[]")
+        except ValueError as exc:
+            raise ForgeError(f"GitHub list_sub_issues #{number}: invalid JSON: {exc}") from exc
+        if not isinstance(items, list):
+            return []
+        nums: List[int] = []
+        for item in items:
+            if isinstance(item, dict) and item.get("number") is not None:
+                nums.append(int(item["number"]))
+        return sorted(set(nums))
+
     def blocked_by(self, number: int) -> List[Blocker]:
         owner, repo = self._owner_repo()
         out = self._api(

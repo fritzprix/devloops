@@ -185,12 +185,14 @@ def filter_and_rank_issues(
         elif number in pending_closure:
             reason = pending_closure[number]["reason"]
         else:
-            # Labels/assignees first; blockers only when those pass (issue #66).
+            # Labels/assignees/title first; forge reads only when those pass.
             prelim = worker_candidates.exclusion_reason(
                 labels,
                 assignees,
                 me,
                 open_blocker_numbers=(),
+                sub_issue_numbers=(),
+                title=issue.get("title") or "",
                 approved_label=approved_label,
                 rejected_label=rejected_label,
             )
@@ -200,17 +202,22 @@ def filter_and_rank_issues(
                 reason = f"forge unavailable for blocker check: {forge_error}"
             else:
                 blockers: list[int] = []
+                subs: list[int] = []
                 if open_blockers_fn is not None:
                     blockers = list(open_blockers_fn(number))
                 elif forge_obj is not None:
                     blockers = worker_candidates.open_blocker_numbers(
                         forge_obj, number
                     )
+                if forge_obj is not None:
+                    subs = worker_candidates.list_sub_issue_numbers(forge_obj, number)
                 reason = worker_candidates.exclusion_reason(
                     labels,
                     assignees,
                     me,
                     open_blocker_numbers=blockers,
+                    sub_issue_numbers=subs,
+                    title=issue.get("title") or "",
                     approved_label=approved_label,
                     rejected_label=rejected_label,
                 )

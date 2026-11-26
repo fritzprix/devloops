@@ -99,6 +99,10 @@ class Forge(Protocol):
 
     def add_blocker(self, number: int, blocker_number: int) -> None: ...
 
+    # Sub-issues (issue #74). Returns child issue numbers; empty when none or
+    # the forge has no sub-issue support.
+    def list_sub_issues(self, number: int) -> List[int]: ...
+
     # gate / refs
     def gate_snapshot(self, pr_limit: int = 100, issue_limit: int = 100) -> GateSnapshot: ...
 

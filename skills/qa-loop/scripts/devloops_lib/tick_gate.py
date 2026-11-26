@@ -786,14 +786,15 @@ def find_actionable_backlog(
     forge: Any = None,
     skipped: dict | None = None,
     open_blockers_fn: Callable[..., list[int]] | None = None,
+    list_sub_issues_fn: Callable[..., list[int]] | None = None,
 ) -> list[int]:
-    """Return open issues that match the shared worker-candidate filter (issue #66).
+    """Return open issues that match the shared worker-candidate filter (#66/#74).
 
     Uses ``worker_candidates.exclusion_reason`` (approved, not rejected/excluded,
-    no other assignee, no open forge blockers). Also skips issues an open PR
-    already closes, and issues in ``skipped`` whose ``updatedAt`` still matches.
-    Blockers are read only for issues that pass the other checks, via
-    ``contract.open_blockers`` (never a direct forge CLI call from this module).
+    no other assignee, no open forge blockers, not a parent/epic). Also skips
+    issues an open PR already closes, and issues in ``skipped`` whose
+    ``updatedAt`` still matches. Forge reads (blockers, sub-issues) run only
+    after label/assignee/title checks pass.
     """
     from devloops_lib import worker_candidates
 
@@ -816,33 +817,42 @@ def find_actionable_backlog(
         updated_at = str(issue.get("updatedAt") or "")
         if worker_candidates.is_skipped(number, updated_at, skipped):
             continue
+        title = str(issue.get("title") or "")
         labels = {l.get("name") for l in ((issue.get("labels") or {}).get("nodes") or []) if l}
         assignees = [
             a.get("login")
             for a in ((issue.get("assignees") or {}).get("nodes") or [])
             if a and a.get("login")
         ]
-        # Defer forge blocker reads until labels/assignees pass.
+        # Labels/assignees/title first; defer forge reads.
         prelim = worker_candidates.exclusion_reason(
             labels,
             assignees,
             me,
             open_blocker_numbers=(),
+            sub_issue_numbers=(),
+            title=title,
             approved_label=approved_label,
             rejected_label=rejected_label,
         )
         if prelim is not None:
             continue
         blockers: list[int] = []
+        subs: list[int] = []
         if forge is not None:
             blockers = worker_candidates.open_blocker_numbers(
                 forge, number, open_blockers_fn=open_blockers_fn
+            )
+            subs = worker_candidates.list_sub_issue_numbers(
+                forge, number, list_fn=list_sub_issues_fn
             )
         reason = worker_candidates.exclusion_reason(
             labels,
             assignees,
             me,
             open_blocker_numbers=blockers,
+            sub_issue_numbers=subs,
+            title=title,
             approved_label=approved_label,
             rejected_label=rejected_label,
         )

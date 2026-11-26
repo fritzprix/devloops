@@ -368,6 +368,11 @@ class FakeForge:
             for d in self.dependencies.get(number, [])
         ]
 
+    def list_sub_issues(self, number: int):
+        # Seed: issue 1 is a parent of issue 2 when present in SEED.
+        children = getattr(self, "sub_issues", None) or {}
+        return list(children.get(number, []))
+
     def add_blocker(self, number: int, blocker_number: int) -> None:
         self._get_any(number)  # unknown target raises ForgeError
         blocker = self._get_any(blocker_number)  # unknown blocker raises ForgeError

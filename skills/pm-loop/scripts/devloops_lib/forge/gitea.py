@@ -321,6 +321,10 @@ class GiteaForge:
             body={"index": int(blocker_number), "owner": self.owner, "repo": self.name},
         )
 
+    def list_sub_issues(self, number: int) -> List[int]:
+        """Gitea/Forgejo have no GitHub-style sub-issues API; always empty (issue #74)."""
+        return []
+
     # -- identity / repository -------------------------------------------
 
     def whoami(self) -> str:

@@ -42,6 +42,24 @@ class WorkerCandidatesTest(unittest.TestCase):
         )
         self.assertEqual(reason, "open blocker #3, #12")
 
+    def test_rejects_parent_with_sub_issues(self):
+        reason = worker_candidates.exclusion_reason(
+            {"approved"}, [], "me", sub_issue_numbers=[2, 5], title="Parent"
+        )
+        self.assertEqual(reason, "parent of #2, #5")
+
+    def test_rejects_epic_label(self):
+        reason = worker_candidates.exclusion_reason(
+            {"approved", "epic"}, [], "me", title="Anything"
+        )
+        self.assertEqual(reason, "label: epic")
+
+    def test_rejects_umbrella_title(self):
+        reason = worker_candidates.exclusion_reason(
+            {"approved"}, [], "me", title="Epic: park blocked loop cases"
+        )
+        self.assertEqual(reason, "title names epic/umbrella")
+
     def test_is_skipped_matches_updated_at(self):
         skipped = {"10": {"updatedAt": "2026-01-01T00:00:00Z", "reason": "x"}}
         self.assertTrue(
@@ -85,12 +103,19 @@ class WorkerCandidatesTest(unittest.TestCase):
         def blockers(_forge, number):
             return [9] if number == 106 else []
 
+        def subs(_forge, number):
+            return [1, 2] if number == 108 else []
+
+        gate_data["issues"].append(
+            issue(108, ["approved"], updated="2026-01-01T00:00:00Z")  # parent
+        )
         got = find_actionable_backlog(
             gate_data,
             me="me",
             forge=object(),
             skipped=skipped,
             open_blockers_fn=blockers,
+            list_sub_issues_fn=subs,
         )
         self.assertEqual(got, [100, 105])
 
