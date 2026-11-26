@@ -128,6 +128,7 @@ def filter_and_rank_issues(
     me: str,
     config: dict | None = None,
     merged_prs: list[dict] | None = None,
+    issue_comments: dict[int, list] | None = None,
     *,
     forge: object | None = None,
     skipped: dict | None = None,
@@ -183,6 +184,11 @@ def filter_and_rank_issues(
         reason = None
         if worker_candidates.is_skipped(number, updated_at, skipped):
             reason = "skipped (unchanged updatedAt)"
+        elif contract.NEEDS_OWNER in labels and contract.needs_owner_parked(
+            (issue_comments or {}).get(number) or [], me
+        ):
+            # Issue #67: parked needs-owner gets no work until an owner answers.
+            reason = "needs-owner (awaiting owner answer)"
         elif number in closing_pr:
             reason = f"closed by open PR #{', #'.join(map(str, closing_pr[number]))}"
         elif number in pending_closure:
@@ -301,7 +307,37 @@ def fetch_candidates(limit: int = 100, skipped: dict | None = None) -> dict:
     if skipped is None:
         state = load_state(get_state_path("worker-loop"))
         skipped = state.get("skipped") if isinstance(state, dict) else {}
-    return filter_and_rank_issues(issues, open_prs, me, merged_prs=merged_prs, skipped=skipped)
+    # Issue #67: needs-owner issues need comments to tell parked from answered.
+    issue_comments: dict[int, list] = {}
+    repo = json.loads(gh("repo", "view", "--json", "owner,name"))
+    owner, name = repo["owner"]["login"], repo["name"]
+    for issue in issues:
+        labels = {
+            label["name"] if isinstance(label, dict) else label
+            for label in issue.get("labels") or []
+        }
+        if contract.NEEDS_OWNER not in labels:
+            continue
+        try:
+            raw = json.loads(gh(
+                "api", f"repos/{owner}/{name}/issues/{issue['number']}/comments", "--paginate"
+            ) or "[]")
+        except GhError:
+            raw = []
+        if isinstance(raw, dict):
+            raw = raw.get("comments") or []
+        issue_comments[issue["number"]] = [
+            {
+                "author": {"login": (c.get("user") or {}).get("login") or ""},
+                "createdAt": c.get("created_at") or "",
+                "body": c.get("body") or "",
+                "authorAssociation": c.get("author_association") or "",
+            }
+            for c in raw if isinstance(c, dict)
+        ]
+    return filter_and_rank_issues(
+        issues, open_prs, me, merged_prs=merged_prs, issue_comments=issue_comments, skipped=skipped,
+    )
 
 
 def main() -> None:
