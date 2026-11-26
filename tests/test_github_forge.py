@@ -89,3 +89,20 @@ class TestGitHubForgeTransport:
         assert GitHubForge.__module__.endswith("forge.github")
         assert THREADS_QUERY == pr_status.THREADS_QUERY
         assert GRAPHQL_GATE_QUERY == tick_gate.GRAPHQL_GATE_QUERY
+
+    def test_gate_query_selects_issue_title(self):
+        # G1.1: issue title must be selected so epic/umbrella filters work.
+        assert "issues(first: $issueLimit" in GRAPHQL_GATE_QUERY
+        # After the issues(...) args, nodes must select title (not only PR title).
+        after_issues = GRAPHQL_GATE_QUERY.split("issues(first: $issueLimit", 1)[1]
+        nodes_block = after_issues.split("nodes {", 1)[1]
+        assert "title" in nodes_block.split("labels(", 1)[0]
+
+    def test_list_sub_issues_returns_sorted_numbers(self):
+        # G1.2: GhStub answers GET .../sub_issues for GitHubForge.
+        self.stub.sub_issues[1] = [
+            {"number": 5, "title": "child b", "state": "CLOSED"},
+            {"number": 3, "title": "child a", "state": "OPEN"},
+        ]
+        assert self.forge.list_sub_issues(1) == [3, 5]
+        assert self.forge.list_sub_issues(2) == []

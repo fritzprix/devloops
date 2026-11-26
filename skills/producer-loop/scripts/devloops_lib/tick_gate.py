@@ -168,6 +168,7 @@ query($prQuery: String!, $prLimit: Int!, $owner: String!, $name: String!, $issue
     issues(first: $issueLimit, states: [OPEN], orderBy: {field: UPDATED_AT, direction: DESC}) {
       nodes {
         number
+        title
         updatedAt
         labels(first: 20) { nodes { name } }
         assignees(first: 10) { nodes { login } }
