@@ -136,7 +136,7 @@ Candidates come pre-ranked. The hint fields (`umbrellaHint`, `blockedHint`, `ref
   - `blocked-on-closure`: a dependency PR merged into a parent branch whose parent then merged into the default branch, so GitHub did not auto-close it. Record a `needsUser` entry naming the exact issue to close (from `plan.needsClosure`), never a silent `skipped`.
 
   `refsOpenPRs` also means using a stacked PR, in the same way. `externalRefs` means waiting on upstream only if body explicitly says so.
-- **Approved**: only issues that carry `labels.approved` (default `approved`), have no `rejected` / excluded labels, no other assignee, no open forge blocker, and are not a parent/epic/umbrella (`worker_candidates.exclusion_reason`; issues #66/#74).
+- **Approved**: only issues that carry `labels.approved` (default `approved`), have no `rejected` / excluded labels, no other assignee, no open forge blocker, and are not a parent/epic (`worker_candidates.exclusion_reason`; issues #66/#74). The candidate rules are project policy: `require_approved`, `epic_label`, `excluded_labels` and `epic_title_patterns` come from `worker.candidate_policy` in `devloops.config.yaml` (defaults keep the current behavior; there is no built-in title guess).
 - **Decided**: owner `Decision` or recommendation present, or requirements are otherwise unambiguous. If options are given with no recommendation and the choice alters implementation, record `needsUser` per [references/escalation-policy.md](references/escalation-policy.md).
 - **Sized for one PR**: reviewable diff (<= 400 changed lines, <= 10 files). Large issues: implement one checklist item and state so in PR body.
 

@@ -58,6 +58,7 @@ try:
     from devloops_lib.config import (
         AGENT_ID_ENV,
         add_agent_id_argument,
+        candidate_policy,
         get_agent_id,
         get_checkins_path,
         get_state_path,
@@ -81,6 +82,7 @@ except ImportError:
     from devloops_lib.config import (
         AGENT_ID_ENV,
         add_agent_id_argument,
+        candidate_policy,
         get_agent_id,
         get_checkins_path,
         get_state_path,
@@ -786,6 +788,7 @@ def find_actionable_backlog(
     rejected_label: str = contract.REJECTED,
     forge: Any = None,
     skipped: dict | None = None,
+    policy: dict | None = None,
     open_blockers_fn: Callable[..., list[int]] | None = None,
     list_sub_issues_fn: Callable[..., list[int]] | None = None,
 ) -> list[int]:
@@ -795,7 +798,8 @@ def find_actionable_backlog(
     no other assignee, no open forge blockers, not a parent/epic). Also skips
     issues an open PR already closes, and issues in ``skipped`` whose
     ``updatedAt`` still matches. Forge reads (blockers, sub-issues) run only
-    after label/assignee/title checks pass.
+    after label/assignee/title checks pass. ``policy`` carries the scaffolding
+    candidate policy (epic #102).
     """
     from devloops_lib import worker_candidates
 
@@ -835,6 +839,7 @@ def find_actionable_backlog(
             title=title,
             approved_label=approved_label,
             rejected_label=rejected_label,
+            policy=policy,
         )
         if prelim is not None:
             continue
@@ -856,6 +861,7 @@ def find_actionable_backlog(
             title=title,
             approved_label=approved_label,
             rejected_label=rejected_label,
+            policy=policy,
         )
         if reason is not None:
             continue
@@ -931,6 +937,7 @@ def preflight_decision(
             rejected_label=rejected_label,
             forge=forge_obj,
             skipped=skipped if isinstance(skipped, dict) else None,
+            policy=candidate_policy(cfg),
         ),
     )
 

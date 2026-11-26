@@ -214,6 +214,7 @@ Edit `<project>/devloops.config.yaml`:
 | `worker.max_items_per_tick` | PRs and issues the worker finishes per tick (default 1). The wrapper renews the lock, so a long tick keeps it. |
 | `worker.open_pr_limit` | Throttle: worker stops starting issues (idles, no `needsUser`) while this many unapproved PRs plus live issue claims without a PR are open (default 5) |
 | `worker.issue_claim_ttl_minutes` | An issue claim not refreshed for this long can be taken over by another worker slot (default 120) |
+| `worker.candidate_policy` | Project policy for issue candidates (epic #102): `require_approved` (default true), `epic_label` (default `epic`), `excluded_labels` (default `wontfix`, `duplicate`, `invalid`, `question`), `epic_title_patterns` (default empty — no built-in title guess) |
 | `scheduler` | Documentation only: `shell`, `cron`, or a harness-specific adapter |
 
 ## Run

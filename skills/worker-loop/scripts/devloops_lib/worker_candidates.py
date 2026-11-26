@@ -11,11 +11,21 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from devloops_lib import contract
 
+# Defaults for the candidate policy. The filled project scaffolding policy
+# (epic #102) overrides these; the loops keep no project policy of their own.
 # Soft-exclude labels (plus ``rejected``, which is always excluded by name).
 EXCLUDED_LABELS = frozenset({"wontfix", "duplicate", "invalid", "question"})
 EPIC_LABEL = "epic"
-# Title-only epic/umbrella when there are no sub-issues yet (issue #74 / #43).
-UMBRELLA_TITLE = re.compile(r"\b(umbrella|tracking issue|epic)\b", re.I)
+DEFAULT_CANDIDATE_POLICY: Mapping[str, Any] = {
+    # Issues need ``approved`` to be worker candidates (project-policy rule).
+    "require_approved": True,
+    # Label meaning epic/parent, on top of the forge sub-issue check.
+    "epic_label": EPIC_LABEL,
+    "excluded_labels": EXCLUDED_LABELS,
+    # Title patterns meaning epic/umbrella. There is NO built-in default: a
+    # title guess is a project policy, set via scaffolding (issue #95).
+    "epic_title_patterns": (),
+}
 
 
 def parent_or_epic_reason(
@@ -24,16 +34,28 @@ def parent_or_epic_reason(
     sub_issue_numbers: Sequence[int] = (),
     *,
     epic_label: str = EPIC_LABEL,
+    epic_title_patterns: Sequence[str] = (),
 ) -> Optional[str]:
-    """Exclude parent issues (have sub-issues) and epic/umbrella issues (issue #74)."""
+    """Exclude parent issues (have sub-issues) and epic/umbrella issues (issue #74).
+
+    Title matching is policy-driven only (``epic_title_patterns``): there is no
+    built-in title regex. An invalid regex is matched as a case-insensitive
+    substring.
+    """
     children = sorted({int(n) for n in sub_issue_numbers})
     if children:
         return f"parent of #{', #'.join(str(n) for n in children)}"
     label_set = {str(x) for x in labels if x}
-    if epic_label in label_set:
+    if epic_label and epic_label in label_set:
         return f"label: {epic_label}"
-    if UMBRELLA_TITLE.search(title or ""):
-        return "title names epic/umbrella"
+    for pattern in epic_title_patterns or ():
+        pattern = str(pattern)
+        try:
+            matched = re.search(pattern, title or "", re.I)
+        except re.error:
+            matched = pattern.lower() in (title or "").lower()
+        if matched:
+            return f"title matches epic pattern {pattern!r}"
     return None
 
 
@@ -47,20 +69,29 @@ def exclusion_reason(
     title: str = "",
     approved_label: str = contract.APPROVED,
     rejected_label: str = contract.REJECTED,
-    excluded_labels: frozenset[str] = EXCLUDED_LABELS,
+    excluded_labels: Optional[frozenset[str]] = None,
+    policy: Optional[Mapping[str, Any]] = None,
 ) -> Optional[str]:
     """Return a human-readable exclusion reason, or None when the issue is a candidate.
 
-    Required: ``approved_label`` present; ``rejected_label`` and ``excluded_labels``
-    absent; no assignee other than ``me``; no open forge blockers; not a parent
-    or epic/umbrella issue (issue #74).
+    The scaffolding candidate policy (``policy``, epic #102) overrides the built-in
+    defaults: ``require_approved``, ``epic_label``, ``excluded_labels`` and
+    ``epic_title_patterns``. An explicit ``excluded_labels`` argument wins over the
+    policy. Defaults: ``approved_label`` present; ``rejected_label`` and
+    ``excluded_labels`` absent; no assignee other than ``me``; no open forge
+    blockers; not a parent or epic (issue #74).
     """
+    resolved: dict[str, Any] = dict(DEFAULT_CANDIDATE_POLICY)
+    if policy:
+        resolved.update({k: v for k, v in policy.items() if k in resolved and v is not None})
+    if excluded_labels is not None:
+        resolved["excluded_labels"] = frozenset(excluded_labels)
     label_set = {str(x) for x in labels if x}
-    if approved_label not in label_set:
+    if resolved["require_approved"] and approved_label not in label_set:
         return f"missing {approved_label}"
     if rejected_label in label_set:
         return f"label: {rejected_label}"
-    hit = label_set & set(excluded_labels)
+    hit = label_set & set(resolved["excluded_labels"])
     if hit:
         return f"label: {', '.join(sorted(hit))}"
     others = sorted({str(a) for a in assignees if a and a != me})
@@ -69,7 +100,13 @@ def exclusion_reason(
     blockers = sorted({int(n) for n in open_blocker_numbers})
     if blockers:
         return f"open blocker #{', #'.join(str(n) for n in blockers)}"
-    return parent_or_epic_reason(title, label_set, sub_issue_numbers)
+    return parent_or_epic_reason(
+        title,
+        label_set,
+        sub_issue_numbers,
+        epic_label=resolved["epic_label"],
+        epic_title_patterns=resolved["epic_title_patterns"],
+    )
 
 
 def list_sub_issue_numbers(

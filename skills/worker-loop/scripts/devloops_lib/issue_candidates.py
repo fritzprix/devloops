@@ -21,6 +21,7 @@ from devloops_lib import contract
 from devloops_lib import worker_candidates
 from devloops_lib.claims import pr_is_approved
 from devloops_lib.config import load_config, open_pr_limit as configured_open_pr_limit
+from devloops_lib.config import candidate_policy as configured_candidate_policy
 from devloops_lib.gh import GhError, gh
 from devloops_lib.pr_status import find_merged_via_parent_issues
 from devloops_lib.config import run_main
@@ -134,6 +135,7 @@ def filter_and_rank_issues(
     cfg = config or load_config()
     approved_label = contract.issue_label(cfg, "approved")
     rejected_label = contract.issue_label(cfg, "rejected")
+    candidate_policy = configured_candidate_policy(cfg)
 
     open_issue_numbers = {i["number"] for i in issues}
     open_pr_numbers = {p["number"] for p in open_prs}
@@ -195,6 +197,7 @@ def filter_and_rank_issues(
                 title=issue.get("title") or "",
                 approved_label=approved_label,
                 rejected_label=rejected_label,
+                policy=candidate_policy,
             )
             if prelim is not None:
                 reason = prelim
@@ -220,6 +223,7 @@ def filter_and_rank_issues(
                     title=issue.get("title") or "",
                     approved_label=approved_label,
                     rejected_label=rejected_label,
+                    policy=candidate_policy,
                 )
 
         entry = {

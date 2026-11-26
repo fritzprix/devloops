@@ -61,11 +61,36 @@ class WorkerCandidatesTest(unittest.TestCase):
         )
         self.assertEqual(reason, "label: epic")
 
-    def test_rejects_umbrella_title(self):
+    def test_umbrella_title_needs_policy(self):
+        # No built-in title guess (issue #95 owner rescope): policy-only.
         reason = worker_candidates.exclusion_reason(
             {"approved"}, [], "me", title="Epic: park blocked loop cases"
         )
-        self.assertEqual(reason, "title names epic/umbrella")
+        self.assertIsNone(reason)
+        reason = worker_candidates.exclusion_reason(
+            {"approved"}, [], "me", title="Epic: park blocked loop cases",
+            policy={"epic_title_patterns": [r"\bepic\b"]},
+        )
+        self.assertEqual(reason, "title matches epic pattern '\\\\bepic\\\\b'")
+
+    def test_policy_require_approved_false_admits_unapproved(self):
+        reason = worker_candidates.exclusion_reason(
+            {"bug"}, [], "me", title="Fix x",
+            policy={"require_approved": False},
+        )
+        self.assertIsNone(reason)
+
+    def test_policy_custom_epic_label_and_excluded_labels(self):
+        reason = worker_candidates.exclusion_reason(
+            {"approved", "umbrella"}, [], "me", title="Anything",
+            policy={"epic_label": "umbrella"},
+        )
+        self.assertEqual(reason, "label: umbrella")
+        reason = worker_candidates.exclusion_reason(
+            {"approved", "badlabel"}, [], "me", title="Anything",
+            policy={"excluded_labels": ["badlabel"]},
+        )
+        self.assertEqual(reason, "label: badlabel")
 
     def test_is_skipped_matches_updated_at(self):
         skipped = {"10": {"updatedAt": "2026-01-01T00:00:00Z", "reason": "x"}}
@@ -128,7 +153,8 @@ class WorkerCandidatesTest(unittest.TestCase):
         self.assertEqual(got, [100, 105])
 
     def test_gate_shaped_title_only_epic_excluded(self):
-        # G1.1: gate GraphQL nodes carry title; title-only epics must not RUN.
+        # G1.1: gate GraphQL nodes carry title; title-only epics must not RUN
+        # when the scaffolding policy lists title patterns (issue #95 rescope).
         issue = {
             "number": 74,
             "title": "Epic: park blocked loop cases",
@@ -140,10 +166,20 @@ class WorkerCandidatesTest(unittest.TestCase):
             {"prs": [], "issues": [issue]},
             me="me",
             forge=object(),
+            policy={"epic_title_patterns": [r"\bepic\b"]},
             open_blockers_fn=lambda *_a, **_k: [],
             list_sub_issues_fn=lambda *_a, **_k: [],
         )
         self.assertEqual(got, [])
+        # Without the policy, the title alone does not exclude (no built-in guess).
+        got = find_actionable_backlog(
+            {"prs": [], "issues": [issue]},
+            me="me",
+            forge=object(),
+            open_blockers_fn=lambda *_a, **_k: [],
+            list_sub_issues_fn=lambda *_a, **_k: [],
+        )
+        self.assertEqual(got, [74])
 
     def test_noop_when_only_parent_or_epic_remain(self):
         # G1.2 / criterion 4: backlog empty → gate would NOOP.
@@ -173,6 +209,7 @@ class WorkerCandidatesTest(unittest.TestCase):
             {"prs": [], "issues": issues},
             me="me",
             forge=object(),
+            policy={"epic_title_patterns": [r"\bumbrella\b", r"\btracking issue\b", r"\bepic\b"]},
             open_blockers_fn=lambda *_a, **_k: [],
             list_sub_issues_fn=subs,
         )
