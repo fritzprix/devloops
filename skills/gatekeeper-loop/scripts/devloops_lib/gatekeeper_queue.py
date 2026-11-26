@@ -307,7 +307,9 @@ def classify(
     if reviewed_clean:
         if failing_checks and ci_applies:
             return "review", "clean at head but CI failing; diagnose the cause — only a failure this diff caused earns changes-requested", 1
-        if stalled:
+        # G1.2: stall status only where CI applies; stacked/non-dev bases still
+        # reach "issue the verdict" instead of waiting on inapplicable checks.
+        if stalled and ci_applies:
             return "await-ci", f"clean at head; CI queued and not started ({', '.join(stalled)}) — report the stall on the PR with cause", 1
         if ci_applies and pending_checks:
             return "await-ci", "reviewed clean; waiting for pending CI", 9
