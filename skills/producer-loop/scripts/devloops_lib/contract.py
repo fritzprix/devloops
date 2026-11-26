@@ -96,7 +96,7 @@ def first_state(
 
 
 def open_blockers(forge: Any, number: int) -> List[int]:
-    """Sorted numbers of the still-open blockers of issue/PR `number`.
+    """Sorted numbers of the still-open blockers of issue `number`.
 
     `forge` is any object with the `Forge.blocked_by` operation.
     """
@@ -104,8 +104,36 @@ def open_blockers(forge: Any, number: int) -> List[int]:
 
 
 def blocker_numbers(forge: Any, number: int) -> List[int]:
-    """Sorted numbers of every blocker link on issue/PR `number` (open or closed)."""
+    """Sorted numbers of every blocker link on issue `number` (open or closed)."""
     return sorted(int(b.number) for b in forge.blocked_by(number))
+
+
+CLOSES_ISSUE_RE = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b", re.I)
+
+
+def closed_issue_numbers(text: str) -> List[int]:
+    """Return sorted unique issue numbers referenced by closing keywords in a PR title/body."""
+    return sorted({int(m.group(1)) for m in CLOSES_ISSUE_RE.finditer(text or "")})
+
+
+def pr_blocker_numbers(forge: Any, pr_text: str) -> List[int]:
+    """Sorted blocker numbers (open or closed) across all issues closed by a PR.
+
+    Dependencies exist only between issues (owner decision G1.3 / #68); never
+    query PR-level dependencies.
+    """
+    seen: set[int] = set()
+    for issue_num in closed_issue_numbers(pr_text):
+        seen.update(blocker_numbers(forge, issue_num))
+    return sorted(seen)
+
+
+def pr_open_blockers(forge: Any, pr_text: str) -> List[int]:
+    """Sorted still-open blocker numbers across all issues closed by a PR."""
+    seen: set[int] = set()
+    for issue_num in closed_issue_numbers(pr_text):
+        seen.update(open_blockers(forge, issue_num))
+    return sorted(seen)
 
 
 def needs_blocker_rebase(
@@ -141,8 +169,6 @@ GATEKEEPER_KINDS = ("needs-owner",)
 WORKER_KINDS = ("response", "qa-response", "note", "needs-owner")
 QA_KINDS = ("verdict", "post-merge", "needs-owner")
 QA_VERDICTS = ("accepted", "changes-requested")
-# `clean` accepts one optional field: blocked-by=#N.
-BLOCKED_BY = re.compile(r"#\d+\Z")
 
 
 def is_marker(body: str) -> bool:
@@ -181,7 +207,7 @@ def parse_marker(body: str) -> Optional[tuple[str, dict]]:
                 return None
         elif verdict not in GATEKEEPER_VERDICTS:
             return None
-        if verdict == "clean" and not BLOCKED_BY.match(fields.get("blocked-by", "#0")):
+        if verdict == "clean" and "blocked-by" in fields:
             return None
     elif loop == "worker-loop":
         if kind not in WORKER_KINDS:

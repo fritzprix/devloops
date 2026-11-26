@@ -940,15 +940,16 @@ if __name__ == "__main__":
 
 class FindRebasePrsTest(unittest.TestCase):
     def test_counts_only_clean_at_head_with_closed_blockers(self):
-        from types import SimpleNamespace
+        from devloops_lib.forge.models import Blocker
+        queried = []
         class Forge:
             def blocked_by(self, number):
-                from devloops_lib.forge.models import Blocker
-                return [Blocker(9, "closed")]
+                queried.append(number)
+                return [Blocker(9, "closed")] if number == 10 else []
         gate = {"prs": [
-            {"number": 1, "headRefOid": "aaa", "isDraft": False, "author": {"login": "me"}},
-            {"number": 2, "headRefOid": "bbb", "isDraft": False, "author": {"login": "me"}},
-            {"number": 3, "headRefOid": "ccc", "isDraft": False, "author": {"login": "other"}},
+            {"number": 1, "headRefOid": "aaa", "isDraft": False, "author": {"login": "me"}, "bodyText": "Fixes #10"},
+            {"number": 2, "headRefOid": "bbb", "isDraft": False, "author": {"login": "me"}, "bodyText": "Fixes #10"},
+            {"number": 3, "headRefOid": "ccc", "isDraft": False, "author": {"login": "other"}, "bodyText": "Fixes #10"},
         ]}
         def comments(number):
             if number == 1:
@@ -960,3 +961,16 @@ class FindRebasePrsTest(unittest.TestCase):
             return []
         found = tick_gate.find_rebase_prs(gate, "me", forge=Forge(), comments_fn=comments)
         self.assertEqual(found, [1])
+        self.assertTrue(all(n == 10 for n in queried))
+
+    def test_find_rebase_prs_fails_closed_on_forge_error(self):
+        # G2.1: forge error while reading blockers must fail closed (never wake rebase).
+        class BrokenForge:
+            def blocked_by(self, number):
+                raise RuntimeError("forge unavailable")
+        gate = {"prs": [
+            {"number": 1, "headRefOid": "aaa", "isDraft": False, "author": {"login": "me"}, "bodyText": "Fixes #10"},
+        ]}
+        comments = lambda _n: [{"author": {"login": "me"}, "createdAt": "t",
+                                "body": "<!-- gatekeeper-loop: verdict=clean head=aaa base=main -->"}]
+        self.assertEqual(tick_gate.find_rebase_prs(gate, "me", forge=BrokenForge(), comments_fn=comments), [])
