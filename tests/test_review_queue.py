@@ -593,7 +593,7 @@ class Issue81AlwaysReviewTests(unittest.TestCase):
         for status in ("review", "await-ci", "approved", "wait-worker"):
             guidance = needs_human_guidance(own_skill=True, labels=["gatekeeper:needs-human"],
                                             needs_comment_present=True)
-            self.assertEqual(guidance["reason"], "changes loop skill files", status)
+            self.assertEqual(guidance["reason"], "changes-loop-skill-files", status)
             self.assertFalse(guidance["staleLabel"], status)
 
     def test_queued_not_started_excludes_in_progress(self) -> None:
