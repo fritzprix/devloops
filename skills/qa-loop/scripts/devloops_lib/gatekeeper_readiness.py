@@ -1,10 +1,10 @@
 """Repo readiness for gatekeeper review: CI, rubrics, and judgment criteria.
 
-The gatekeeper is expected to autonomously close gaps it discovers (missing CI,
-missing rubrics, fixtures, etc.) by opening PRs or issues, rather than blocking
-with ``needs-human``. Human collaboration is reserved for ambiguous judgment
-criteria, where the gatekeeper must post a concrete draft for the owner to
-confirm.
+Issue #81: the gatekeeper never opens PRs. A gap it discovers (missing CI,
+missing or ambiguous rubric) becomes one issue, and each affected PR is
+linked/reported against it. Ambiguous judgment criteria get a concrete draft
+in that issue and the `needs-owner` label for the owner to confirm; a gap
+never holds back a review verdict.
 """
 from __future__ import annotations
 
@@ -118,14 +118,14 @@ def assess_rubric(root: Path, config: dict[str, Any]) -> dict[str, Any]:
             "path": None,
             "paths_found": [],
             "issue_rules": [str(p.relative_to(root)) for p in issue_paths],
-            "action": "open_pr",
-            "goal": "Add a REVIEW_RUBRIC.md with checkable criteria and judgment procedure.",
+            "action": "open_issue",
+            "goal": "File one issue: add a REVIEW_RUBRIC.md with checkable criteria and judgment procedure.",
         }
 
     try:
         body = primary.read_text(encoding="utf-8")
     except OSError:
-        return {"status": "missing", "path": str(primary), "action": "open_pr", "goal": "Restore readable rubric file."}
+        return {"status": "missing", "path": str(primary), "action": "open_issue", "goal": "File one issue: restore readable rubric file."}
 
     quality = _rubric_quality(body)
     rel = str(primary.relative_to(root))
@@ -141,14 +141,15 @@ def assess_rubric(root: Path, config: dict[str, Any]) -> dict[str, Any]:
         return {
             "status": "ambiguous",
             "path": rel,
-            "action": "co_create",
-            "goal": "Post a concrete draft rubric for the owner to confirm or edit.",
+            "action": "open_issue",
+            "goal": ("File one issue holding a concrete draft rubric for the owner to confirm or edit; "
+                     "label it needs-owner. Review continues meanwhile."),
         }
     return {
         "status": "insufficient",
         "path": rel,
-        "action": "open_pr",
-        "goal": "Expand the rubric with explicit pass/fail criteria and judgment procedure.",
+        "action": "open_issue",
+        "goal": "File one issue: expand the rubric with explicit pass/fail criteria and judgment procedure.",
     }
 
 
@@ -167,14 +168,18 @@ def assess_ci(root: Path, config: dict[str, Any]) -> dict[str, Any]:
     return {
         "present": False,
         "workflows": workflows,
-        "action": "open_pr",
-        "goal": "Add a GitHub Actions workflow running on pull_request "
-        f"(lint/test/build: {', '.join(hints) or 'detect from repo'}).",
+        "action": "open_issue",
+        "goal": "File one issue: add a pull_request workflow "
+        f"(lint/test/build: {', '.join(hints) or 'detect from repo'}); affected PRs wait clean, never changes-requested for this cause.",
     }
 
 
 def assess_readiness(start_dir: Path | str | None = None, config: dict | None = None) -> dict[str, Any]:
-    """Return CI/rubric gap assessment and autonomous work items for this tick."""
+    """Return CI/rubric gap assessment for this tick (issue #81).
+
+    Gaps are reported for the gatekeeper to file one issue per gap; they never
+    gate review verdicts. The gatekeeper never opens PRs itself.
+    """
     cfg = config or load_config(start_dir=start_dir)
     root = find_project_root(start_dir)
     ci = assess_ci(root, cfg)
@@ -191,25 +196,15 @@ def assess_readiness(start_dir: Path | str | None = None, config: dict | None = 
                      "path": rubric.get("path"), **{k: rubric[k] for k in ("action", "goal")}})
 
     gaps.sort(key=lambda g: g["priority"])
-    autonomous = [
-        {
-            "kind": g["kind"],
-            "action": g["action"],
-            "summary": g["goal"],
-        }
-        for g in gaps
-        if g.get("action") in ("open_pr", "co_create")
-    ]
 
     return {
         "principle": (
-            "The gatekeeper autonomously expands whatever it needs to judge PRs "
-            "(CI, rubrics, fixtures, verification). Human involvement only when "
-            "judgment criteria are ambiguous — co-create from a concrete draft."
+            "Always review: gaps outside the PR (CI, rubrics) are filed as "
+            "issues, never verdicts held back. The gatekeeper files issues and "
+            "comments; it never opens PRs. Ambiguous criteria co-create from a "
+            "concrete draft via a needs-owner issue."
         ),
         "ci": ci,
         "rubric": rubric,
         "gaps": gaps,
-        "autonomousWork": autonomous,
-        "readyForVerdicts": not gaps or all(g.get("action") == "co_create" for g in gaps),
     }
