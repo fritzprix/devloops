@@ -395,6 +395,7 @@ class TickGateTest(unittest.TestCase):
         saved = tick_gate.load_state(self.state_file)
         self.assertEqual(saved.get("idleFingerprint"), "fp_a")
         self.assertEqual(saved.get("lastFingerprint"), "fp_a")
+        self.assertIsInstance(saved.get("idleFingerprintAt"), (int, float))
 
         # Tick 2: same fingerprint, backlog still lists #42 -> NOOP (idle memo).
         with patch.object(tick_gate, "preflight_decision", return_value=("fp_a", [42])), \
@@ -415,7 +416,12 @@ class TickGateTest(unittest.TestCase):
     def test_work_unlock_clears_idle_memo(self):
         # #76: a non-idle tick (--unlock without --update) clears the idle memo, so the
         # next --lock is not stuck in NOOP.
-        state = {"lastFingerprint": "fp_x", "idleFingerprint": "fp_x", "tickStartFingerprint": "fp_x"}
+        state = {
+            "lastFingerprint": "fp_x",
+            "idleFingerprint": "fp_x",
+            "idleFingerprintAt": 1.0,
+            "tickStartFingerprint": "fp_x",
+        }
         tick_gate.save_state(self.state_file, state)
         token = tick_gate.acquire_lock_token(self.lock_file)
 
@@ -425,6 +431,7 @@ class TickGateTest(unittest.TestCase):
         self.assertEqual(cm.exception.code, tick_gate.EXIT_RUN)
         saved = tick_gate.load_state(self.state_file)
         self.assertNotIn("idleFingerprint", saved)
+        self.assertNotIn("idleFingerprintAt", saved)
         self.assertEqual(saved.get("lastFingerprint"), "fp_x")
 
         # Next --lock: same fingerprint and a backlog -> RUN (memo was cleared).
@@ -434,10 +441,64 @@ class TickGateTest(unittest.TestCase):
             tick_gate.main()
         self.assertEqual(cm.exception.code, tick_gate.EXIT_RUN)
 
+    def test_idle_memo_expires_after_claim_ttl(self):
+        # G1.2 / #76: fingerprint omits issue claims; after the claim TTL the idle
+        # memo must expire so a takeable wip/issue-N claim can wake the gate.
+        now = 1_000_000.0
+        ttl = 120 * 60
+        state = {
+            "lastFingerprint": "fp_a",
+            "idleFingerprint": "fp_a",
+            "idleFingerprintAt": now - ttl,
+        }
+        tick_gate.save_state(self.state_file, state)
+
+        with patch.object(tick_gate, "preflight_decision", return_value=("fp_a", [42])), \
+             patch.object(tick_gate, "idle_memo_expired", wraps=tick_gate.idle_memo_expired) as expired, \
+             patch("devloops_lib.tick_gate.time.time", return_value=now), \
+             patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--lock"]), \
+             self.assertRaises(SystemExit) as cm:
+            tick_gate.main()
+        self.assertEqual(cm.exception.code, tick_gate.EXIT_RUN)
+        saved = tick_gate.load_state(self.state_file)
+        self.assertNotIn("idleFingerprint", saved)
+        self.assertNotIn("idleFingerprintAt", saved)
+        self.assertTrue(expired.called)
+        # Drop the lock written under the frozen clock so later checks use real time.
+        self.lock_file.unlink(missing_ok=True)
+
+        # Fresh memo within the TTL still NOOPs.
+        tick_gate.save_state(self.state_file, {
+            "lastFingerprint": "fp_a",
+            "idleFingerprint": "fp_a",
+            "idleFingerprintAt": now - 60,
+        })
+        with patch.object(tick_gate, "preflight_decision", return_value=("fp_a", [42])), \
+             patch("devloops_lib.tick_gate.time.time", return_value=now), \
+             patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--lock"]), \
+             self.assertRaises(SystemExit) as cm:
+            tick_gate.main()
+        self.assertEqual(cm.exception.code, tick_gate.EXIT_NOOP)
+        self.lock_file.unlink(missing_ok=True)
+
+    def test_idle_memo_without_timestamp_treated_as_expired(self):
+        # Pre-TTL memos lack idleFingerprintAt; treat them as expired so they
+        # cannot stick NOOP forever after a foreign claim becomes takeable.
+        state = {"lastFingerprint": "fp_a", "idleFingerprint": "fp_a"}
+        tick_gate.save_state(self.state_file, state)
+
+        with patch.object(tick_gate, "preflight_decision", return_value=("fp_a", [7])), \
+             patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--lock"]), \
+             self.assertRaises(SystemExit) as cm:
+            tick_gate.main()
+        self.assertEqual(cm.exception.code, tick_gate.EXIT_RUN)
+        saved = tick_gate.load_state(self.state_file)
+        self.assertNotIn("idleFingerprint", saved)
+
     def test_update_without_tick_start_clears_stale_memo(self):
         # A tick that recorded no fingerprint (e.g. a current-work tick) cannot be
         # memoized; a stale memo is dropped instead of risking a stuck NOOP.
-        state = {"lastFingerprint": "fp_x", "idleFingerprint": "fp_stale"}
+        state = {"lastFingerprint": "fp_x", "idleFingerprint": "fp_stale", "idleFingerprintAt": 1.0}
         tick_gate.save_state(self.state_file, state)
 
         with patch("sys.argv", ["tick_gate.py", "--state-file", str(self.state_file), "--update"]), \
@@ -446,6 +507,7 @@ class TickGateTest(unittest.TestCase):
         self.assertEqual(cm.exception.code, tick_gate.EXIT_RUN)
         saved = tick_gate.load_state(self.state_file)
         self.assertNotIn("idleFingerprint", saved)
+        self.assertNotIn("idleFingerprintAt", saved)
         self.assertEqual(saved.get("lastFingerprint"), "fp_x")
 
     def _issue_gate_data(self, labels, comment_created_at=None):

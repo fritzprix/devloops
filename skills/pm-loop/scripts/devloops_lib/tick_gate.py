@@ -18,8 +18,11 @@ schedulers (e.g., `python3 tick_gate.py && ...`) do not invoke the LLM.
 A backlog candidate alone still wakes the gate once, but an idle tick ends by
 recording 'idleFingerprint' (via --update); while the candidate state keeps
 matching it, the gate returns NOOP even with a backlog, so a quiet queue with a
-starved approved issue does not wake a full tick on every schedule. A non-idle
-tick (--unlock without --update) clears the memo.
+starved approved issue does not wake a full tick on every schedule. The memo also
+records 'idleFingerprintAt' and expires after ``worker.issue_claim_ttl_minutes``:
+issue claims live on ``wip/issue-N`` branches and are not part of the fingerprint,
+so an expired foreign claim would otherwise leave the gate stuck at NOOP. A
+non-idle tick (--unlock without --update) clears the memo.
 
 The tick lock belongs to one loop slot (loop + agent id). `--lock` prints the
 ownership token as `TOKEN <token>`; `--renew`, `--unlock`, the claims, and the
@@ -57,6 +60,7 @@ try:
         get_agent_id,
         get_checkins_path,
         get_state_path,
+        issue_claim_ttl_seconds,
         load_config,
         lock_ttl_seconds,
     )
@@ -79,6 +83,7 @@ except ImportError:
         get_agent_id,
         get_checkins_path,
         get_state_path,
+        issue_claim_ttl_seconds,
         load_config,
         lock_ttl_seconds,
     )
@@ -835,6 +840,35 @@ def preflight_decision(config: dict | None = None) -> tuple[str, list[int]]:
     )
 
 
+def _clear_idle_memo(state: dict) -> None:
+    """Drop idle-memo fields so the next --lock is not pinned to NOOP."""
+    state.pop("idleFingerprint", None)
+    state.pop("idleFingerprintAt", None)
+
+
+def idle_memo_expired(
+    state: dict,
+    *,
+    now: float | None = None,
+    ttl_seconds: int | None = None,
+    config: dict | None = None,
+) -> bool:
+    """True when the idle memo is older than the issue-claim TTL (or has no timestamp).
+
+    Issue claims are not part of ``compute_fingerprint``; without an expiry the
+    memo would keep NOOPing after a foreign ``wip/issue-N`` claim becomes takeable.
+    A missing ``idleFingerprintAt`` is treated as expired so pre-TTL memos cannot
+    stick forever.
+    """
+    if not state.get("idleFingerprint"):
+        return False
+    recorded = state.get("idleFingerprintAt")
+    if not isinstance(recorded, (int, float)):
+        return True
+    ttl = ttl_seconds if ttl_seconds is not None else issue_claim_ttl_seconds(config or load_config())
+    return (now if now is not None else time.time()) - float(recorded) >= ttl
+
+
 def _maybe_auto_checkin(args: argparse.Namespace, loop: str) -> tuple[bool, Path | None, str | None]:
     """When no agent id is set, claim a free slot before taking the tick lock."""
     if os.environ.get(AGENT_ID_ENV) or getattr(args, "agent_id", None):
@@ -957,19 +991,22 @@ def main(argv: list[str] | None = None) -> None:
                     # Idle end: memoize the fingerprint of the candidate state so the
                     # next --lock gives NOOP even when an approved backlog is still
                     # listed (#76). The next --lock re-checks the fingerprint against
-                    # GitHub, so any change still wakes the gate.
+                    # GitHub, so any change still wakes the gate. idleFingerprintAt
+                    # bounds the memo to the issue-claim TTL so an expired foreign
+                    # claim can wake the gate even when PR/issue fingerprint is stable.
                     state["lastFingerprint"] = tick_start_fp
                     state["idleFingerprint"] = tick_start_fp
+                    state["idleFingerprintAt"] = time.time()
                     print(f"UPDATED: {tick_start_fp[:12]}")
                 elif tick_start_fp is None:
                     # No fingerprint was recorded for this tick (e.g. a current-work
                     # tick, or --update without a preceding --lock): it cannot be
                     # memoized, so drop any stale memo rather than risk a stuck NOOP.
-                    state.pop("idleFingerprint", None)
+                    _clear_idle_memo(state)
                 else:
                     # Non-idle end (--unlock without --update): clear the idle memo so
                     # the next --lock is not pinned to NOOP after real work.
-                    state.pop("idleFingerprint", None)
+                    _clear_idle_memo(state)
                 if tick_start_fp is not None or state_path.is_file():
                     save_state(state_path, state)
             finally:
@@ -1022,12 +1059,17 @@ def main(argv: list[str] | None = None) -> None:
         # A previous idle tick memoized this fingerprint: the backlog still lists
         # candidates, but their state has not changed since, so waking the tick
         # again would only re-read the same issues (#76). Any fingerprint change
-        # falls through and wakes the gate.
+        # falls through and wakes the gate. An expired memo (past issue-claim TTL,
+        # or missing idleFingerprintAt) is cleared so a takeable claim can RUN.
         idle_fp = state.get("idleFingerprint")
         if idle_fp and idle_fp == fp:
-            _finish_checkin()
-            print("NOOP (idle memo: candidate state unchanged)")
-            sys.exit(EXIT_NOOP)
+            if idle_memo_expired(state):
+                _clear_idle_memo(state)
+                save_state(state_path, state)
+            else:
+                _finish_checkin()
+                print("NOOP (idle memo: candidate state unchanged)")
+                sys.exit(EXIT_NOOP)
 
         # State changed (or approved backlog waiting): acquire lock if requested, but DO NOT save lastFingerprint yet.
         # lastFingerprint must be saved only after a successful tick via --update.
