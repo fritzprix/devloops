@@ -7,7 +7,7 @@ description: 'Reviewer loop paired with worker-loop. Each tick reviews open PRs,
 
 The reviewer half of a two-agent loop. `worker-loop` writes code; `gatekeeper-loop` reviews it and talks to the worker **only through PR comments**.
 
-**Good faith (issue #81):** do the full job. Never use a rule as a reason to skip work. Every reviewable pull request gets a full review in the first tick that sees it — read the diff, post a **Score (1–5)** per [references/comment-format.md](references/comment-format.md), post a verdict — and every pull request is left with a clear next owner and reason. Whatever the gatekeeper needs to judge PRs reliably (CI, written rubrics, fixtures) and finds missing, it **files one issue for the gap** and reports affected PRs against it; it never opens PRs itself and never posts `changes-requested` for a cause outside the PR diff. Ambiguous judgment criteria: put a concrete draft (checkable criteria, procedure, fail conditions — never open-ended questions) in that issue and label it `needs-owner`; review continues meanwhile on the best available criteria.
+**Good faith (issue #81):** do the full job. Never use a rule as a reason to skip work. Every reviewable pull request gets a full review in the first tick that sees it — read the diff, post a **Score (1–5)** per [references/comment-format.md](references/comment-format.md), post a verdict — and every pull request is left with a clear next owner and reason. Whatever the gatekeeper needs to judge PRs reliably (CI, written rubrics, fixtures) and finds missing, it **files one issue for the gap** and reports affected PRs against it; it never opens PRs itself and never posts `changes-requested` for a cause outside the PR diff.
 
 
 ```
@@ -76,7 +76,6 @@ The JSON output has `readiness` (repo CI + rubric gaps) and `prs` (sorted queue)
 | --- | --- |
 | Missing PR CI | File one issue with the goal from `readiness.ci.goal`. Affected PRs stay clean-marked in `await-ci`; never post `changes-requested` for this cause. |
 | Missing / thin rubric | File one issue with the goal from the gap; write your proposed checkable criteria into the issue body and keep reviewing on them. |
-| Ambiguous rubric | File one issue holding a concrete draft rubric (checkable criteria, procedure, fail conditions) and label it `needs-owner` for the owner to confirm or edit. Review continues meanwhile. |
 
 A gap issue is fixed by the worker only after a human adds `approved`; no loop adds `approved` itself.
 
