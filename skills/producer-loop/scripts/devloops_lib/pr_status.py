@@ -274,7 +274,7 @@ def summarize(
         gh(
             "pr", "view", str(number), "--json",
             "number,title,url,headRefName,headRefOid,baseRefName,isDraft,mergeable,"
-            "mergeStateStatus,reviewDecision,statusCheckRollup,commits,comments",
+            "mergeStateStatus,reviewDecision,statusCheckRollup,commits,comments,labels",
         )
     )
     gatekeeper = gatekeeper_state(pr.get("comments") or [], me, pr["headRefOid"])
@@ -282,6 +282,12 @@ def summarize(
     checks = pr.get("statusCheckRollup") or []
     failing = [c.get("name") or c.get("context") for c in checks if check_state(c) in FAILED]
     pending = [c.get("name") or c.get("context") for c in checks if check_state(c) in PENDING]
+    labels: list[str] = []
+    for item in pr.get("labels") or []:
+        name = item.get("name") if isinstance(item, dict) else item
+        if name:
+            labels.append(str(name))
+    labels = sorted(labels)
 
     threads = []
     cursor = None
@@ -364,6 +370,7 @@ def summarize(
         "newComments": new_comments,
         "gatekeeper": gatekeeper,
         "qa": qa,
+        "labels": labels,
         "duplicateCommits": duplicates,
         "mergedParent": merged_parent,
         "retargetBase": retarget_base,

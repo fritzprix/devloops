@@ -104,6 +104,14 @@ class PmScheduleTest(unittest.TestCase):
         report = pm_schedule.exclusivity_report(pm_scheduler, state_root=self.root)
         self.assertIn("qa-loop", report["peerLoops"])
 
+    def test_exclusivity_reports_armed_qa_schedule_as_conflict(self):
+        # G1.3: an armed qa-loop schedule while PM is armed must appear in peerConflicts.
+        pm_scheduler = {"scheduler": {"kind": "shell", "intervalSeconds": 600}}
+        save_state(self.root / "qa-loop" / "state.json", {"scheduler": {"kind": "process", "id": 7}})
+        report = pm_schedule.exclusivity_report(pm_scheduler, state_root=self.root)
+        self.assertIn("qa-loop", report["peerConflicts"])
+        self.assertFalse(report["exclusiveOk"])
+
     def test_cascade_worker_slot_from_pr_work_alone(self):
         plan = pm_schedule.cascade_plan(slots=1, pipeline={"prsNeedingWorker": 2})
         self.assertEqual([p["role"] for p in plan], ["worker-loop"])

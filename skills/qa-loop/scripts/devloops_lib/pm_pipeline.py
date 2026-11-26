@@ -11,15 +11,18 @@ never depends on counters a caller forgot to pass:
   boardFull        - my unapproved open PRs have reached the configured limit
 
 Each counter reuses the classifier the owning loop itself uses, so loops and
-PM never disagree about who is next. Parked PRs (escalate, needs-human,
-wait-worker, wait-ci, approved) are counted nowhere: they need a human or the
-other side, not another loop tick.
+PM never disagree about who is next. Parked PRs (``gatekeeper:escalated``,
+``needs-owner``, an open blocker, or gatekeeper/qa statuses escalate /
+needs-human) are counted nowhere — except a PR whose nextAction is ``rebase``
+(#68). Classifier statuses alone are not enough: an escalated PR can still
+look like ``fix-ci`` or qa ``review``.
 """
 from __future__ import annotations
 
 import json
 from typing import Any
 
+from devloops_lib import contract
 from devloops_lib import qa as qa_lib
 from devloops_lib.config import load_config
 from devloops_lib.gatekeeper_queue import get_default_state_file, load_state
@@ -31,6 +34,43 @@ from devloops_lib.pr_status import WORKER_PR_ACTIONS, summarize_prs
 
 # Same fields qa-loop's own CLI reads (skills/qa-loop/scripts/qa_queue.py).
 QA_PR_FIELDS = "number,title,url,headRefOid,baseRefName,isDraft,mergeable,createdAt,comments,labels,state"
+
+# Issue #71 parked states. open_blockers (#65 follow-up) is consulted when present
+# on the entry; label and status checks cover the rest without that helper.
+PARKED_LABELS = frozenset({contract.GATEKEEPER_ESCALATED, contract.NEEDS_OWNER})
+PARKED_STATUSES = frozenset({"escalate", "needs-human"})
+REBASE_ACTION = "rebase"
+
+
+def _label_names(entry: dict) -> set[str]:
+    raw = entry.get("labels") or []
+    names: set[str] = set()
+    for item in raw:
+        if isinstance(item, str):
+            names.add(item)
+        elif isinstance(item, dict) and item.get("name"):
+            names.add(str(item["name"]))
+    return names
+
+
+def pr_is_parked(entry: dict) -> bool:
+    """True when a PR must not claim a cascade slot (issue #71 deliverable 2).
+
+    The ``rebase`` nextAction is the #68 exception: a parked-on-blocker PR that
+    is ready to rebase still needs a worker slot.
+    """
+    if entry.get("nextAction") == REBASE_ACTION:
+        return False
+    if _label_names(entry) & PARKED_LABELS:
+        return True
+    if entry.get("status") in PARKED_STATUSES:
+        return True
+    if entry.get("openBlocker") or entry.get("open_blocker"):
+        return True
+    blockers = entry.get("openBlockers") or entry.get("open_blockers")
+    if isinstance(blockers, (list, tuple)) and blockers:
+        return True
+    return False
 
 
 def compute_counters(
@@ -47,11 +87,14 @@ def compute_counters(
         if (c.get("dependency") or {}).get("status") not in ("wait", "blocked-on-closure")
     ]
     limit = candidates.get("openPRLimit") or {}
+    worker = [pr for pr in (worker_prs or []) if not pr_is_parked(pr)]
+    gatekeeper = [e for e in (gatekeeper_entries or []) if not pr_is_parked(e)]
+    qa = [e for e in (qa_entries or []) if not pr_is_parked(e)]
     return {
         "approvedIssues": len(selectable),
-        "prsNeedingWorker": sum(1 for pr in (worker_prs or []) if pr.get("nextAction") in WORKER_PR_ACTIONS),
-        "prsNeedingReview": sum(1 for entry in (gatekeeper_entries or []) if entry.get("status") == "review"),
-        "prsNeedingQa": sum(1 for entry in (qa_entries or []) if entry.get("status") == "review"),
+        "prsNeedingWorker": sum(1 for pr in worker if pr.get("nextAction") in WORKER_PR_ACTIONS),
+        "prsNeedingReview": sum(1 for entry in gatekeeper if entry.get("status") == "review"),
+        "prsNeedingQa": sum(1 for entry in qa if entry.get("status") == "review"),
         "boardFull": bool(limit.get("reached")),
     }
 
