@@ -68,9 +68,22 @@ class ClassifyTest(unittest.TestCase):
                     c(f"<!-- worker-loop: response round=1 head={HEAD} -->", "2026-01-01T01:00:00Z")]
         self.assertEqual(qa.classify_pr(pr(comments), ME)["status"], "wait-worker")
 
-    def test_owner_comment_reopens_needs_human(self):
-        comments = [c(qa_marker("needs-human"), "2026-01-01T00:00:00Z"),
+    def test_needs_owner_ask_parks_until_answered(self):
+        # Issue #67: the qa needs-human verdict is gone; an ask parks the PR.
+        ask = "<!-- qa-loop: kind=needs-owner reason=tool-blocked head=%s -->\n## QA" % HEAD
+        comments = [c(ask, "2026-01-01T00:00:00Z")]
+        self.assertEqual(qa.classify_pr(pr(comments), ME)["status"], "wait-owner")
+
+    def test_owner_comment_reopens_after_needs_owner_ask(self):
+        ask = "<!-- qa-loop: kind=needs-owner reason=tool-blocked head=%s -->\n## QA" % HEAD
+        comments = [c(ask, "2026-01-01T00:00:00Z"),
                     c("accept without test", "2026-01-01T02:00:00Z", author="owner")]
+        self.assertEqual(qa.classify_pr(pr(comments), ME)["status"], "review")
+
+    def test_old_needs_human_verdict_is_not_a_verdict(self):
+        # The needs-human verdict value is no longer in the vocabulary: the
+        # marker is ignored entirely (never reviewed).
+        comments = [c(qa_marker("needs-human"), "2026-01-01T00:00:00Z")]
         self.assertEqual(qa.classify_pr(pr(comments), ME)["status"], "review")
 
     def test_markers_from_other_authors_are_ignored(self):

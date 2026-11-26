@@ -105,6 +105,10 @@ class Forge(Protocol):
     # the forge has no sub-issue support.
     def list_sub_issues(self, number: int) -> List[int]: ...
 
+    # Comments of an issue OR a pull request (issue #67). One read must work
+    # for both item kinds on every binding.
+    def list_comments(self, number: int) -> List[PrComment]: ...
+
     # gate / refs
     def gate_snapshot(self, pr_limit: int = 100, issue_limit: int = 100) -> GateSnapshot: ...
 

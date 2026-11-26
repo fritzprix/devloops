@@ -166,5 +166,69 @@ class SingleDefinitionTest(unittest.TestCase):
         self.assertEqual(contract.issue_label({}, "producer"), contract.PRODUCER)
 
 
+class NeedsOwnerProtocolTest(unittest.TestCase):
+    """Issue #67: set, wait, answer, clear for the needs-owner ask."""
+
+    ME = "ci-bot"
+
+    def comment(self, body, at, author="someone", assoc="NONE"):
+        return {"author": {"login": author}, "body": body, "createdAt": at,
+                "authorAssociation": assoc, "url": "https://x/c/1"}
+
+    def ask(self, at):
+        return self.comment("<!-- worker-loop: kind=needs-owner ref=issue-42 -->\nQ?", at)
+
+    def test_vocabulary_has_no_needs_human_qa_verdict(self):
+        self.assertNotIn("needs-human", contract.QA_VERDICTS)
+        self.assertNotIn("needs-human", getattr(contract, "QA_VERDICT_LABELS", ()))
+
+    def test_wait_while_no_answer(self):
+        # Set: one needs-owner marker parks the item.
+        comments = [self.ask("2026-01-01T00:00:00Z")]
+        self.assertTrue(contract.needs_owner_parked(comments, self.ME))
+
+    def test_marker_comments_never_answer(self):
+        comments = [self.ask("2026-01-01T00:00:00Z"),
+                    self.comment("<!-- gatekeeper-loop: round=1 verdict=clean head=h -->",
+                                 "2026-01-02T00:00:00Z", author=self.ME, assoc="OWNER")]
+        self.assertTrue(contract.needs_owner_parked(comments, self.ME))
+
+    def test_third_party_comment_never_answers(self):
+        comments = [self.ask("2026-01-01T00:00:00Z"),
+                    self.comment("I think option 2", "2026-01-02T00:00:00Z",
+                                 author="random", assoc="NONE")]
+        self.assertTrue(contract.needs_owner_parked(comments, self.ME))
+
+    def test_answer_by_owner_member_or_collaborator_clears(self):
+        for assoc in ("OWNER", "MEMBER", "COLLABORATOR"):
+            comments = [self.ask("2026-01-01T00:00:00Z"),
+                        self.comment("take option 1", "2026-01-02T00:00:00Z",
+                                     author="owner", assoc=assoc)]
+            self.assertFalse(contract.needs_owner_parked(comments, self.ME), assoc)
+
+    def test_answer_by_shared_account_clears(self):
+        comments = [self.ask("2026-01-01T00:00:00Z"),
+                    self.comment("answer via shared account", "2026-01-02T00:00:00Z",
+                                 author=self.ME, assoc="")]
+        self.assertFalse(contract.needs_owner_parked(comments, self.ME))
+
+    def test_comment_before_the_ask_is_not_an_answer(self):
+        comments = [self.comment("unrelated", "2026-01-01T00:00:00Z",
+                                 author="owner", assoc="OWNER"),
+                    self.ask("2026-01-02T00:00:00Z")]
+        self.assertTrue(contract.needs_owner_parked(comments, self.ME))
+
+    def test_label_without_ask_stays_parked(self):
+        self.assertTrue(contract.needs_owner_parked([], self.ME))
+
+    def test_first_owner_reply_returns_the_answer(self):
+        comments = [self.ask("2026-01-01T00:00:00Z"),
+                    self.comment("take option 1", "2026-01-02T00:00:00Z",
+                                 author="owner", assoc="MEMBER")]
+        reply = contract.first_owner_reply(comments, self.ME, "2026-01-01T12:00:00Z")
+        self.assertEqual(reply["author"], "owner")
+        self.assertEqual(reply["createdAt"], "2026-01-02T00:00:00Z")
+
+
 if __name__ == "__main__":
     unittest.main()
