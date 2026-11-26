@@ -345,8 +345,13 @@ def summarize(
     labels = sorted(label["name"] for label in pr.get("labels") or [])
     escalated = contract.GATEKEEPER_ESCALATED in labels
     # An escalate verdict restarts the round count once the owner removes the
-    # label; while the label is on, the PR stays parked (issue #70).
-    verdicts, _restart_at = round_restart(verdicts, escalated)
+    # label; while the label is on, the PR stays parked (issue #70). Markers and
+    # saved clean state from before that escalate must not survive the restart
+    # (otherwise an older clean at the same head skips re-review).
+    verdicts, restart_at = round_restart(verdicts, escalated)
+    if restart_at:
+        cleans = [c for c in cleans if c.get("createdAt", "") > restart_at]
+        responses = [r for r in responses if r.get("createdAt", "") > restart_at]
 
     head = pr["headRefOid"]
     last = verdicts[-1] if verdicts else None
@@ -363,6 +368,11 @@ def summarize(
     pr_state = (state or {}).get("prs", {}).get(str(number), {})
     state_reviewed_head = pr_state.get("reviewedHead")
     state_pending_ci = pr_state.get("pendingApproveWaitCi", False)
+    if restart_at:
+        # Saved clean/pending-ci state has no timestamp; drop it across a restart
+        # so a pre-escalation clean cannot skip the post-restart review.
+        state_reviewed_head = None
+        state_pending_ci = False
     findings = pr_state.get("findings", {})
     has_open_findings = any(v == "open" for v in findings.values()) if isinstance(findings, dict) else bool(findings)
 

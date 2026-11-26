@@ -107,6 +107,18 @@ class SelectNextActionTest(unittest.TestCase):
             everything[key] = self.base[key]
         self.assertEqual(self.action(**everything), "none")
 
+    def test_escalated_pr_yields_no_worker_action(self):
+        # Issue #70 / G1.3: gatekeeper:escalated parks the PR for the owner.
+        for overrides in (
+            {"escalated": True, "conflicting": True},
+            {"escalated": True, "duplicates": ["abc"]},
+            {"escalated": True, "qa": {"awaitingWorker": True}},
+            {"escalated": True, "has_comments": True},
+            {"escalated": True, "failing": ["ci"]},
+            {"escalated": True, "retarget": True},
+        ):
+            self.assertEqual(self.action(**overrides), "none", overrides)
+
 
 class StackedPrLifecycleTest(unittest.TestCase):
     def test_parent_pr_merged_triggers_retarget(self):

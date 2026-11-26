@@ -241,7 +241,12 @@ def select_next_action(
     has_comments: bool,
     failing: list[str],
     pending: list[str],
+    escalated: bool = False,
 ) -> str:
+    # Issue #70: a PR parked with gatekeeper:escalated is the owner's turn.
+    # The worker must not rebase, fix CI, triage, or answer reviews on it.
+    if escalated:
+        return "none"
     if retarget:
         return "retarget"
     if conflicting:
@@ -288,6 +293,7 @@ def summarize(
         if name:
             labels.append(str(name))
     labels = sorted(labels)
+    escalated = contract.GATEKEEPER_ESCALATED in labels
 
     threads = []
     cursor = None
@@ -351,6 +357,7 @@ def summarize(
         has_comments=bool(threads or new_comments),
         failing=failing,
         pending=pending,
+        escalated=escalated,
     )
 
     return {
