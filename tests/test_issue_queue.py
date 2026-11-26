@@ -145,12 +145,6 @@ class IssueQueueTest(unittest.TestCase):
                 self.assertIn("validated", args)
                 self.assertNotIn("approved", args)
 
-        # Verify state recording
-        self.assertTrue(self.state_file.exists())
-        saved_state = json.loads(self.state_file.read_text(encoding="utf-8"))
-        self.assertEqual(saved_state["producerStats"]["security"]["validated"], 1)
-        self.assertEqual(saved_state["producerStats"]["security"]["rejected"], 0)
-
         # Apply another verdict 'rejected' on another security issue
         fake_issue_2 = {
             "number": 102,
@@ -158,7 +152,7 @@ class IssueQueueTest(unittest.TestCase):
             "body": "Not a vulnerability.",
             "labels": [{"name": "auto:producer"}, {"name": "auto:security"}],
         }
-        apply_verdict(
+        result2 = apply_verdict(
             issue_number=102,
             verdict="rejected",
             reason="Input is properly sanitized by middleware",
@@ -168,10 +162,10 @@ class IssueQueueTest(unittest.TestCase):
             apply=True,
             existing_issue=fake_issue_2,
         )
-
-        saved_state2 = json.loads(self.state_file.read_text(encoding="utf-8"))
-        self.assertEqual(saved_state2["producerStats"]["security"]["validated"], 1)
-        self.assertEqual(saved_state2["producerStats"]["security"]["rejected"], 1)
+        self.assertEqual(result2["verdict"], "rejected")
+        if self.state_file.exists():
+            saved = json.loads(self.state_file.read_text(encoding="utf-8"))
+            self.assertNotIn("producerStats", saved)
 
 
 if __name__ == "__main__":

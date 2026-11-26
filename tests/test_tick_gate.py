@@ -163,7 +163,12 @@ class TickGateTest(unittest.TestCase):
                 issue(105, ["approved"], ["me"]),              # assigned to @me only -> actionable
             ],
         }
-        self.assertEqual(tick_gate.find_actionable_backlog(gate_data, me="me"), [100, 105])
+        # Without a forge, open blockers are not consulted; approved + assignee
+        # + closing-PR rules still apply (issue #66 shared filter).
+        self.assertEqual(
+            tick_gate.find_actionable_backlog(gate_data, me="me", forge=None),
+            [100, 105],
+        )
 
     def test_update_takes_precedence_over_current(self):
         state = {"current": "some-feature-branch", "lastFingerprint": "old", "tickStartFingerprint": "new_fp_1234567890"}

@@ -187,7 +187,6 @@ After completing PR reviews, validate up to `gatekeeper.max_issue_validations_pe
    ```
    - Adds label `labels.validated` or `labels.rejected`.
    - Appends verdict, reason, and evidence to the issue body.
-   - Records validated/rejected counts per producer task in `state.json` under `producerStats`.
    - **Never add `labels.approved`**.
    - **Never close issues**.
    - **Never change code**.
