@@ -30,6 +30,7 @@ status values:
                round limit of 5 is reached. Only the owner removing the label
                resumes review, and the round count then restarts at 1; a bare
                owner comment does not end an escalation (issue #70).
+  wait-owner - needs-owner ask (label or real ask marker) with no owner answer.
 
 No status skips review (issue #81): every reviewable PR gets a full review at
 the first tick that sees it, whatever CI or repo-readiness looks like. Gaps
@@ -38,7 +39,7 @@ issues the gatekeeper files; they never hold back a review verdict.
 
 PRs that change loop skill files get the same statuses as any other PR; they are
 reviewed and can be approved. They additionally carry `gatekeeper:needs-human`
-(reason `changes loop skill files`) to signal that the merge itself stays with a
+(reason `changes-loop-skill-files`) to signal that the merge itself stays with a
 human; the label never blocks review or approval.
 
 The list is sorted by priority (worker response / new head / owner comment
@@ -368,6 +369,7 @@ def classify(
     repo_has_ci: bool = True,
     stalled: list[str] | None = None,
     missing_required_checks: list[str] | None = None,
+    needs_owner: bool = False,
 ) -> tuple[str, str, int]:
     """Return (status, one-line reason, priority). Lower priority number is handled first."""
     ci_applies = is_dev_base(base, config=config)
@@ -375,6 +377,9 @@ def classify(
 
     if escalated:
         return "escalate", "parked by gatekeeper:escalated; only the owner removing the label resumes review", 9
+    # Issue #67: a parked needs-owner ask gets no work from any loop.
+    if needs_owner:
+        return "wait-owner", "needs-owner ask awaiting owner answer", 9
 
     if mergeable == "CONFLICTING":
         return "wait-worker", "merge conflict; worker must rebase", 9
@@ -456,23 +461,26 @@ def needs_human_guidance(
     own_skill: bool,
     labels: list[str],
     needs_comment_present: bool,
+    status: str | None = None,
 ) -> dict | None:
     """What the gatekeeper should post/keep for human attention, or None.
 
-    Issue #81: the merge decision is the only gate reserved to a human. Loop-skill PRs
-    are reviewed and approved like any other PR; `changes loop skill files`
-    signals only that the merge stays with a human. There is no status-based
-    reason: ambiguous review criteria is filed as an issue (carrying
-    `needs-owner`), never a review skip.
+    Issue #67/#81: the merge decision is the only gate reserved to a human.
+    Loop-skill PRs are reviewed and approved like any other PR;
+    ``changes-loop-skill-files`` signals only that the merge stays with a human.
+    Ambiguous review criteria is filed as an issue (carrying ``needs-owner``),
+    never a review skip.
 
     Idempotency lives here: `commentPresent`/`labelPresent` tell the tick to skip
     work it already did. `staleLabel` marks a `gatekeeper:needs-human` label whose
     reason no longer applies; labels this loop did not add are never removed.
     Path-name matches (`sensitiveCandidates`) are deliberately not a reason: the
     gatekeeper reads those files and applies stricter review itself.
+    ``status`` is accepted for call-site compatibility and ignored.
     """
+    del status  # unused; kept for callers that still pass it
     label_present = "gatekeeper:needs-human" in labels
-    reason = "changes loop skill files" if own_skill else None
+    reason = "changes-loop-skill-files" if own_skill else None
     if reason is None:
         if not label_present:
             return None
@@ -562,6 +570,9 @@ def summarize(
     own_skill = any(p.startswith(PROTECTED_SKILL_PREFIXES) for p in paths)
     protected_config_paths = tuple(cfg.get("protected_paths", []))
     candidates = sensitive_candidates(paths, protected_config_paths)
+    parked = contract.needs_owner_parked(
+        comments, me, labeled=contract.NEEDS_OWNER in labels,
+    )
 
     missing_req = missing_required_checks(checks, cfg)
     stale_review_clean = bool(
@@ -605,6 +616,7 @@ def summarize(
         repo_has_ci=repo_has_ci,
         stalled=stalled,
         missing_required_checks=missing_req,
+        needs_owner=parked,
     )
     # Loop-skill PRs keep their normal status; own_skill only drives needsHuman below.
     needs_at_head = next((m for m in reversed(needs) if m.get("head") == head), None)
