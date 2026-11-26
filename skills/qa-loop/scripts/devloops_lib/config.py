@@ -109,7 +109,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "default_interval": "10m",
         "default_slots": 1,
         "default_delegation": "cursor",
-        "peer_loops": ["worker-loop", "gatekeeper-loop", "producer-loop"],
+        "peer_loops": ["worker-loop", "gatekeeper-loop", "qa-loop", "producer-loop"],
         "definition_of_done": {},
     },
     "board": {

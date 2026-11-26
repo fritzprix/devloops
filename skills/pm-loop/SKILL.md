@@ -1,6 +1,6 @@
 ---
 name: pm-loop
-description: 'PM orchestrator for GitHub or Jira kanban projects. Owns the board schedule, cascades ticks to worker-loop, gatekeeper-loop, and producer-loop, and stops at merge-ready. Use when the user types "/pm-loop", "/pm-loop 10m", "/pm-loop 10m slots: 3 delegation: claude", "pm loop", or asks to orchestrate devloops loops on a project.'
+description: 'PM orchestrator for GitHub or Jira kanban projects. Owns the board schedule, cascades ticks to worker-loop, gatekeeper-loop, qa-loop, and producer-loop, and stops at merge-ready. Use when the user types "/pm-loop", "/pm-loop 10m", "/pm-loop 10m slots: 3 delegation: claude", "pm loop", or asks to orchestrate devloops loops on a project.'
 ---
 
 # PM Loop
@@ -75,7 +75,7 @@ See [references/induction.md](references/induction.md) and [references/delegatio
 
 ## Schedule exclusivity
 
-While the PM scheduler is armed, **worker-loop**, **gatekeeper-loop**, and **producer-loop** must not run their own cron or shell loops. The PM cascades ticks through each skill's `scripts/tick.py` (or `devloops tick <loop>`).
+While the PM scheduler is armed, **worker-loop**, **gatekeeper-loop**, **qa-loop**, and **producer-loop** must not run their own cron or shell loops. The PM cascades ticks through each skill's `scripts/tick.py` (or `devloops tick <loop>`).
 
 ```bash
 python3 "$SKILL_DIR/scripts/plan_tick.py"
@@ -119,6 +119,8 @@ python3 "$SKILL_DIR/scripts/pm_profile.py" --write [--signals-json '{...}'] [--c
 ```bash
 python3 "$SKILL_DIR/scripts/plan_tick.py" [--pipeline-json '{...}']
 ```
+
+Pipeline counters (`approvedIssues`, `prsNeedingWorker`, `prsNeedingReview`, `prsNeedingQa`, `boardFull`) are computed by the PM itself from GitHub, reusing each loop's own classifier; parked PRs (escalate, needs-human, wait-worker, wait-ci) are counted nowhere. `--pipeline-json` only overrides individual counters (e.g. `producerDue`).
 
 Read the plan:
 

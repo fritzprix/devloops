@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Tests for gatekeeper-loop review_queue status determination."""
+"""Tests for gatekeeper-loop review_queue status determination.
+
+The implementation was promoted to devloops_lib.gatekeeper_queue (issue #71);
+the skill script is a CLI shim, so tests import the canonical module directly
+(module-global patches must hit the code that runs).
+"""
 from __future__ import annotations
 
-import importlib.util
 import sys
 import unittest
 from pathlib import Path
@@ -11,10 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-_script_path = REPO_ROOT / "skills" / "gatekeeper-loop" / "scripts" / "review_queue.py"
-_spec = importlib.util.spec_from_file_location("gatekeeper_review_queue", _script_path)
-_module = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_module)
+from devloops_lib import gatekeeper_queue as _module
 
 PROTECTED_SKILL_PREFIXES = _module.PROTECTED_SKILL_PREFIXES
 START_MARKER = _module.START_MARKER

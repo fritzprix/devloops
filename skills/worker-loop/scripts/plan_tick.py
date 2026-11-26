@@ -29,12 +29,13 @@ from issue_candidates import fetch_candidates
 
 from devloops_lib.config import get_state_path, load_config
 from devloops_lib.gh import GhError
-from devloops_lib.pr_status import summarize_prs
+from devloops_lib.pr_status import WORKER_PR_ACTIONS, summarize_prs
 from devloops_lib.tick_gate import EXIT_ERROR, EXIT_NOOP, EXIT_RUN, load_state
 from devloops_lib.config import run_main
 
-# The pr_status priority order. wait-ci and none need no work now.
-PR_ACTIONS = ["retarget", "resolve-conflict", "restack", "address-gatekeeper", "address-qa", "triage-comments", "fix-ci"]
+# The pr_status priority order (canonical in devloops_lib.pr_status).
+# wait-ci and none need no work now.
+PR_ACTIONS = WORKER_PR_ACTIONS
 
 
 def max_items_per_tick(config: dict) -> int:

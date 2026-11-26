@@ -225,6 +225,12 @@ def find_merged_via_parent_issues(
     return [found[n] for n in sorted(found)]
 
 
+# The pr_status priority order. wait-ci and none need no work now.
+# Canonical list shared by the worker plan (skills/worker-loop/scripts/plan_tick.py)
+# and the PM pipeline counter prsNeedingWorker (devloops_lib.pm_pipeline, issue #71).
+WORKER_PR_ACTIONS = ["retarget", "resolve-conflict", "restack", "address-gatekeeper", "address-qa", "triage-comments", "fix-ci"]
+
+
 def select_next_action(
     *,
     retarget: bool = False,
@@ -268,7 +274,7 @@ def summarize(
         gh(
             "pr", "view", str(number), "--json",
             "number,title,url,headRefName,headRefOid,baseRefName,isDraft,mergeable,"
-            "mergeStateStatus,reviewDecision,statusCheckRollup,commits,comments",
+            "mergeStateStatus,reviewDecision,statusCheckRollup,commits,comments,labels",
         )
     )
     gatekeeper = gatekeeper_state(pr.get("comments") or [], me, pr["headRefOid"])
@@ -276,6 +282,12 @@ def summarize(
     checks = pr.get("statusCheckRollup") or []
     failing = [c.get("name") or c.get("context") for c in checks if check_state(c) in FAILED]
     pending = [c.get("name") or c.get("context") for c in checks if check_state(c) in PENDING]
+    labels: list[str] = []
+    for item in pr.get("labels") or []:
+        name = item.get("name") if isinstance(item, dict) else item
+        if name:
+            labels.append(str(name))
+    labels = sorted(labels)
 
     threads = []
     cursor = None
@@ -358,6 +370,7 @@ def summarize(
         "newComments": new_comments,
         "gatekeeper": gatekeeper,
         "qa": qa,
+        "labels": labels,
         "duplicateCommits": duplicates,
         "mergedParent": merged_parent,
         "retargetBase": retarget_base,

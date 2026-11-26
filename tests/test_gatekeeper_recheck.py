@@ -14,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from devloops_lib import config
+from devloops_lib import gatekeeper_queue as review_queue
 from devloops_lib.gh import GhError
 
 
@@ -25,7 +26,6 @@ def _load(name):
     return module
 
 
-review_queue = _load("review_queue")
 issue_queue = _load("issue_queue")
 
 PR = {"state": "OPEN", "headRefOid": "abc", "baseRefName": "main"}
