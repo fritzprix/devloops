@@ -15,6 +15,7 @@ Exit codes:
   0 - owned (`run`: the exit code of CMD)
   3 - error
   4 - LOST: this tick no longer owns the lock or the claim; nothing was changed
+  6 - DUPLICATE PR: an open closing PR for --issue already exists; claim released, CMD not run
 """
 from __future__ import annotations
 
@@ -31,6 +32,8 @@ from devloops_lib.claims import ClaimError, owns_pr, pr_claim_holder, read_issue
 from devloops_lib.config import add_agent_id_argument, get_agent_id, get_claims_dir, get_lock_path, load_config
 from devloops_lib.gh import GhError
 from devloops_lib.tick_gate import DEFAULT_AGENT, EXIT_ERROR, EXIT_LOST, EXIT_RUN, TOKEN_ENV, describe_lock, renew_lock
+
+EXIT_DUPLICATE = 6
 
 # Same closing-PR pattern as devloops_lib.issue_candidates (issue #117).
 _CLOSING_PATTERN = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b", re.I)
@@ -218,7 +221,7 @@ def main(argv: list[str] | None = None, *, forge: Any | None = None) -> int:
                     release_issue(args.repo, issue_num, agent)
                     pr_list = ", ".join(f"#{n}" for n in existing)
                     print(f"DUPLICATE PR: issue #{issue_num} already has open PR {pr_list}; released claim and skipped PR creation")
-                    return EXIT_LOST
+                    return EXIT_DUPLICATE
             return subprocess.run(cmd).returncode
         agent = get_agent_id() or DEFAULT_AGENT
         label = f"agent {agent}, tick {token[:8]}, {time.strftime('%Y-%m-%dT%H:%M:%S%z')}"

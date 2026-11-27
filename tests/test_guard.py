@@ -214,7 +214,7 @@ class DuplicatePrGuardTest(GuardTestCase):
         marker = self.root / "created"
         fake = _FakeForge([{"number": 201, "state": "open", "title": "Fix dup", "body": "Fixes #117", "headRefName": "fix/dup"}])
         code, text = self._run_pr_create(repo, token, 117, fake, marker)
-        self.assertEqual(code, EXIT_LOST)
+        self.assertEqual(code, guard.EXIT_DUPLICATE)
         self.assertIn("#201", text)
         self.assertFalse(marker.exists())
         self.assertEqual(claims.read_issue_claim(repo, 117).state, "released")
@@ -249,7 +249,7 @@ class DuplicatePrGuardTest(GuardTestCase):
         marker = self.root / "created"
         fake = _FakeForge([{"number": 205, "state": "open", "title": "My PR", "body": "Refs #117", "headRefName": "fix/dup-117"}])
         code, text = self._run_pr_create(repo, token, 117, fake, marker)
-        self.assertEqual(code, EXIT_LOST)
+        self.assertEqual(code, guard.EXIT_DUPLICATE)
         self.assertIn("#205", text)
         self.assertFalse(marker.exists())
         self.assertEqual(claims.read_issue_claim(repo, 117).state, "released")
