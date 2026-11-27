@@ -313,8 +313,9 @@ def summarize(
     gatekeeper = gatekeeper_state(pr.get("comments") or [], me, pr["headRefOid"])
     qa = qa_state(pr.get("comments") or [], me, pr["headRefOid"])
     checks = pr.get("statusCheckRollup") or []
-    failing = [c.get("name") or c.get("context") for c in checks if check_state(c) in FAILED]
-    pending = [c.get("name") or c.get("context") for c in checks if check_state(c) in PENDING]
+    from devloops_lib.ci_checks import summarize_checks
+
+    failing, pending = summarize_checks(checks)
     labels: list[str] = []
     for item in pr.get("labels") or []:
         name = item.get("name") if isinstance(item, dict) else item
