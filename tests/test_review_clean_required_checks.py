@@ -455,5 +455,71 @@ class RequiredChecksTests(unittest.TestCase):
             self.assertEqual(loaded["gatekeeper"]["required_checks"], ["ubuntu", "macos"])
 
 
+class ApproveRequiresGreenChecksTest(unittest.TestCase):
+    """Issue #111: gatekeeper classify and qa signoff require green required_checks at current head."""
+
+    CFG = {"gatekeeper": {"required_checks": ["macos"]}}
+
+    def _classify_approved(self, checks, head="sha2"):
+        missing = gq.missing_required_checks(checks, self.CFG, head=head)
+        return gq.classify(
+            mergeable="MERGEABLE",
+            head=head,
+            base="main",
+            last_verdict={"verdict": "approve", "head": head, "base": "main", "round": 1},
+            worker_response=None,
+            total_verdicts=1,
+            state_reviewed_head=head,
+            state_pending_ci=False,
+            has_open_findings=False,
+            pending_checks=[],
+            failing_checks=[],
+            reviewed_base="main",
+            missing_required_checks=missing,
+            total_checks=len(checks),
+        )
+
+    def _signoff_pr(self, checks, head="sha2"):
+        from devloops_lib import qa
+
+        pr = {
+            "number": 10,
+            "headRefOid": head,
+            "isDraft": False,
+            "mergeable": "MERGEABLE",
+            "labels": [{"name": "gatekeeper:approved"}, {"name": "qa:accepted"}],
+            "comments": [
+                {"author": {"login": "me"}, "createdAt": "2026-11-27T01:00:00Z",
+                 "body": f"<!-- gatekeeper-loop: round=1 verdict=approve head={head} base=main -->"},
+                {"author": {"login": "me"}, "createdAt": "2026-11-27T01:01:00Z",
+                 "body": f"<!-- qa-loop: kind=verdict verdict=accepted head={head} base=main -->"},
+            ],
+            "statusCheckRollup": checks,
+        }
+        return qa.signoff(pr, "me", config=self.CFG)
+
+    def test_skipped_required_check_blocks_approved_and_signoff(self):
+        checks = [{"name": "macos", "status": "COMPLETED", "conclusion": "SKIPPED", "headSha": "sha2"}]
+        self.assertNotEqual(self._classify_approved(checks)[0], "approved")
+        self.assertEqual(self._classify_approved(checks)[0], "await-ci")
+        self.assertFalse(self._signoff_pr(checks)["mergeReady"])
+
+    def test_absent_required_check_blocks_approved_and_signoff(self):
+        checks = [{"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS", "headSha": "sha2"}]
+        self.assertNotEqual(self._classify_approved(checks)[0], "approved")
+        self.assertEqual(self._classify_approved(checks)[0], "await-ci")
+        self.assertFalse(self._signoff_pr(checks)["mergeReady"])
+
+    def test_green_required_check_at_current_head_allows_approved_and_signoff(self):
+        checks = [{"name": "macos", "status": "COMPLETED", "conclusion": "SUCCESS", "headSha": "sha2"}]
+        self.assertEqual(self._classify_approved(checks)[0], "approved")
+        self.assertTrue(self._signoff_pr(checks)["mergeReady"])
+
+    def test_green_required_check_at_older_head_blocks_approved_and_signoff(self):
+        checks = [{"name": "macos", "status": "COMPLETED", "conclusion": "SUCCESS", "headSha": "sha1"}]
+        self.assertNotEqual(self._classify_approved(checks, head="sha2")[0], "approved")
+        self.assertFalse(self._signoff_pr(checks, head="sha2")["mergeReady"])
+
+
 if __name__ == "__main__":
     unittest.main()

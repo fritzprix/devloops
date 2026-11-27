@@ -127,11 +127,13 @@ def classify_pr(pr: dict, me: str) -> dict:
     }
 
 
-def signoff(pr: dict, me: str) -> dict:
+def signoff(pr: dict, me: str, config: dict | None = None) -> dict:
     """Two-party sign-off: gatekeeper approve AND qa accepted, both at the current head.
 
     Labels alone are not enough: a label can survive a push. Each party must
-    also have a marker comment for the current head.
+    also have a marker comment for the current head. When `config` lists
+    `gatekeeper.required_checks`, every required check must also be green at
+    the current head (issue #111).
     """
     head = pr["headRefOid"]
     comments = pr.get("comments") or []
@@ -153,6 +155,14 @@ def signoff(pr: dict, me: str) -> dict:
         blockers.append("qa: latest verdict is not accepted")
     elif qa.get("head") != head:
         blockers.append("qa: accepted is for an older head")
+
+    if config:
+        from devloops_lib import gatekeeper_queue
+
+        checks = pr.get("statusCheckRollup") or []
+        missing_req = gatekeeper_queue.missing_required_checks(checks, config, head=head)
+        if missing_req:
+            blockers.append(f"ci: required checks not green at current head ({', '.join(missing_req)})")
 
     if pr.get("isDraft"):
         blockers.append("PR is a draft")
