@@ -376,15 +376,22 @@ def summarize(
 
     commits = pr.get("commits") or []
     last_commit_at = commits[-1]["committedDate"] if commits else ""
-    # Filter comments: keep non-bot comments posted after the latest commit that do NOT
-    # carry loop markers. This includes human owner comments even when the owner shares login @me.
+    worker_replies = [
+        m.get("createdAt", "")
+        for m in contract.parse_markers(pr.get("comments") or [], me, loop="worker-loop")
+        if m.get("kind") in ("response", "note")
+    ]
+    comment_cutoff = max([last_commit_at, *worker_replies])
+    # Filter comments: keep non-bot comments posted after the latest commit and
+    # after the latest worker response/note marker that do NOT carry loop markers.
+    # This includes human owner comments even when the owner shares login @me.
     new_comments = []
     for c in pr.get("comments") or []:
         author_login = (c.get("author") or {}).get("login") or ""
         body = c.get("body") or ""
         if author_login.endswith("[bot]") or contract.is_marker(body):
             continue
-        if c.get("createdAt", "") > last_commit_at:
+        if c.get("createdAt", "") > comment_cutoff:
             new_comments.append({
                 "author": author_login,
                 "createdAt": c["createdAt"],
