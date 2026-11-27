@@ -583,18 +583,24 @@ class GiteaForge:
 
         failing: List[str] = []
         pending: List[str] = []
-        present: set[str] = set()
+        states_by_ctx: Dict[str, List[str]] = {}
         for st in statuses:
             ctx = str(st.get("context") or st.get("description") or "status")
-            present.add(ctx)
             val = str(st.get("status") or st.get("state") or "").lower()
+            states_by_ctx.setdefault(ctx, []).append(val)
             if val in ("failure", "error"):
                 failing.append(ctx)
             elif val == "pending":
                 pending.append(ctx)
             # "success" and "warning" count as non-failing/non-pending.
 
-        missing = [name for name in required_checks if name not in present]
+        missing = [
+            name
+            for name in required_checks
+            if (name not in states_by_ctx or any(v != "success" for v in states_by_ctx[name]))
+            and name not in failing
+            and name not in pending
+        ]
         if missing:
             pending.extend(missing)
 

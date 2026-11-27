@@ -286,8 +286,18 @@ class GitHubForge:
         checks = pr.raw.get("statusCheckRollup") or []
         failing = [c.get("name") or c.get("context") for c in checks if _check_state(c) in FAILED]
         pending = [c.get("name") or c.get("context") for c in checks if _check_state(c) in PENDING]
-        present = {c.get("name") or c.get("context") for c in checks if (c.get("name") or c.get("context"))}
-        missing = [name for name in required_checks if name not in present]
+        states_by_name: Dict[str, List[str]] = {}
+        for c in checks:
+            name = c.get("name") or c.get("context")
+            if name:
+                states_by_name.setdefault(name, []).append(_check_state(c))
+        missing = [
+            name
+            for name in required_checks
+            if (name not in states_by_name or any(s != "SUCCESS" for s in states_by_name[name]))
+            and name not in failing
+            and name not in pending
+        ]
         if missing:
             pending = [*pending, *missing]
         if failing:

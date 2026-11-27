@@ -218,6 +218,71 @@ class RequiredChecksTests(unittest.TestCase):
         self.assertEqual(status, "await-ci")
         self.assertIn("macos", reason)
 
+    def test_github_ci_status_skipped_required_check_stays_pending(self):
+        gh_forge = GitHubForge()
+        # Skipped required check -> pending (not success)
+        pr_skipped = self._pr([
+            {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "SKIPPED"},
+        ])
+        res = gh_forge.ci_status(pr_skipped, required_checks=["ubuntu", "macos"])
+        self.assertEqual(res.state, CI_PENDING)
+        self.assertIn("macos", res.pending)
+        # Mixed SUCCESS + SKIPPED runs of the same required check -> still pending
+        pr_mixed = self._pr([
+            {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "SKIPPED"},
+        ])
+        res_mixed = gh_forge.ci_status(pr_mixed, required_checks=["ubuntu", "macos"])
+        self.assertEqual(res_mixed.state, CI_PENDING)
+        self.assertIn("macos", res_mixed.pending)
+        # Failing required check stays failure (not downgraded to pending)
+        pr_fail = self._pr([
+            {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "FAILURE"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "SKIPPED"},
+        ])
+        res_fail = gh_forge.ci_status(pr_fail, required_checks=["ubuntu", "macos"])
+        self.assertEqual(res_fail.state, CI_FAILURE)
+        self.assertIn("macos", res_fail.failing)
+
+    def test_gitea_ci_status_non_success_required_check_stays_pending(self):
+        g = GiteaForge(base_url="https://gitea.example", owner="o", name="r")
+        pr = PullRequest(
+            number=1, title="t", url="u", head_ref="b", head_sha="sha1", base_ref="main",
+            is_draft=False, author="me",
+        )
+        with mock.patch.object(
+            g, "_http_call",
+            return_value=(200, {"statuses": [
+                {"context": "ubuntu", "status": "success"},
+                {"context": "macos", "status": "warning"},
+            ]}),
+        ):
+            res = g.ci_status(pr, required_checks=["ubuntu", "macos"])
+            self.assertEqual(res.state, CI_PENDING)
+            self.assertIn("macos", res.pending)
+
+    def test_missing_required_checks_rejects_skipped_and_mixed_runs(self):
+        cfg = {"gatekeeper": {"required_checks": ["ubuntu", "macos"]}}
+        checks_skipped = [
+            {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "SKIPPED"},
+        ]
+        self.assertEqual(gq.missing_required_checks(checks_skipped, cfg), ["macos"])
+        checks_mixed = [
+            {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "SKIPPED"},
+        ]
+        self.assertEqual(gq.missing_required_checks(checks_mixed, cfg), ["macos"])
+        checks_failed = [
+            {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "FAILURE"},
+        ]
+        self.assertEqual(gq.missing_required_checks(checks_failed, cfg), [])
+
     def test_config_validation_rejects_invalid_required_checks(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "devloops.config.json"

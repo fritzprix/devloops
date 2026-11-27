@@ -243,16 +243,21 @@ def stalled_checks(
 
 
 def missing_required_checks(checks: list[dict], config: dict | None = None) -> list[str]:
-    """Return required check names from gatekeeper.required_checks that are absent from `checks`."""
+    """Return required check names from gatekeeper.required_checks that have not all succeeded in `checks`."""
     required = ((config or {}).get("gatekeeper") or {}).get("required_checks") or []
     if not required:
         return []
-    present = {
-        c.get("name") or c.get("context")
-        for c in checks
-        if (c.get("name") or c.get("context"))
-    }
-    return [name for name in required if name not in present]
+    states_by_name: dict[str, list[str]] = {}
+    for c in checks:
+        name = c.get("name") or c.get("context")
+        if name:
+            states_by_name.setdefault(name, []).append(check_state(c))
+    return [
+        name
+        for name in required
+        if (name not in states_by_name or any(s != "SUCCESS" for s in states_by_name[name]))
+        and not any(s in FAILED for s in states_by_name.get(name, ()))
+    ]
 
 
 def clear_review_clean_on_head_change(
