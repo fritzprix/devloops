@@ -106,3 +106,30 @@ class TestGitHubForgeTransport:
         ]
         assert self.forge.list_sub_issues(1) == [3, 5]
         assert self.forge.list_sub_issues(2) == []
+
+    def test_merge_pr_passes_repo_default_merge_method(self):
+        self.stub.default_merge_method = "SQUASH"
+        pr = self.forge.get_pr(10)
+        self.forge.merge_pr(pr.number, pr.head_sha)
+        merge_cmds = [a for a in self.stub.args_log if a[:2] == ["pr", "merge"]]
+        assert len(merge_cmds) == 1
+        assert "--squash" in merge_cmds[0]
+
+    def test_merge_pr_raises_when_queued_instead_of_merged(self):
+        import pytest
+        from devloops_lib.forge import ForgeError
+
+        self.stub.queue_merges = True
+        pr = self.forge.get_pr(10)
+        with pytest.raises(ForgeError, match="did not merge"):
+            self.forge.merge_pr(pr.number, pr.head_sha)
+
+    def test_merge_pr_raises_when_already_merged_at_different_head(self):
+        import pytest
+        from devloops_lib.forge import ForgeError
+
+        pr_raw = self.stub._find_pr(10)
+        pr_raw["state"] = "MERGED"
+        pr_raw["headRefOid"] = "deadbeef"
+        with pytest.raises(ForgeError, match="did not merge"):
+            self.forge.merge_pr(10, "different-sha")

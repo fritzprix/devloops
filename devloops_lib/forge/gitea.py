@@ -510,10 +510,12 @@ class GiteaForge:
                 f"{self.forge_type} merge_pr head mismatch on PR #{number}: "
                 f"expected {expected_head_sha}, got {pr.head_sha}"
             )
+        _, repo_data = self._http_call("GET", self._repo_prefix)
+        merge_style = str((repo_data or {}).get("default_merge_style") or "merge")
         self._http_call(
             "POST",
             f"{self._repo_prefix}/pulls/{number}/merge",
-            body={"Do": "merge", "head_commit_id": expected_head_sha},
+            body={"Do": merge_style, "head_commit_id": expected_head_sha},
         )
 
     def _review_decision(self, number: int) -> str:

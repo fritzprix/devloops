@@ -430,6 +430,9 @@ class GhStub:
         }
         # issue #74: parent/sub-issue relationships (GET .../sub_issues).
         self.sub_issues: Dict[int, List[Dict[str, Any]]] = {}
+        # issue #109: repo merge method and merge-queue simulation.
+        self.default_merge_method = "MERGE"
+        self.queue_merges = False
 
     def run(self, args: List[str]) -> str:
         self.args_log.append(list(args))
@@ -438,7 +441,9 @@ class GhStub:
         if head == ("api", "user"):
             return SEED["user"] + "\n"
         if head == ("repo", "view"):
-            return json.dumps(copy.deepcopy(SEED["repo"]))
+            repo = copy.deepcopy(SEED["repo"])
+            repo["viewerDefaultMergeMethod"] = self.default_merge_method
+            return json.dumps(repo)
         if head == ("label", "list"):
             return json.dumps([{"name": n} for n in sorted(self.repo_labels)])
         if head == ("label", "create"):
@@ -556,12 +561,18 @@ class GhStub:
         return url + "\n"
 
     def _pr_merge(self, number_s: str, args: List[str]) -> str:
+        if not any(flag in args for flag in ("--merge", "--squash", "--rebase")):
+            raise ForgeError("--merge, --rebase, or --squash required when not running interactively")
         pr = self._find_pr(int(number_s))
+        if pr["state"] == "MERGED":
+            return ""
         expected = self._opt(args, "--match-head-commit")
         if expected and pr["headRefOid"] != expected:
             raise ForgeError(
                 f"head commit {pr['headRefOid']} does not match --match-head-commit {expected}"
             )
+        if self.queue_merges:
+            return ""
         pr["state"] = "MERGED"
         return ""
 

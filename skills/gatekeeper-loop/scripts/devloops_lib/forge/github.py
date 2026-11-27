@@ -276,11 +276,36 @@ class GitHubForge:
         data = json.loads(self._call("pr", "view", str(number), "--json", _PR_VIEW_JSON))
         return self._parse_pr(data)
 
+    _MERGE_METHOD_FLAGS = {
+        "MERGE": "--merge",
+        "SQUASH": "--squash",
+        "REBASE": "--rebase",
+    }
+
+    def _default_merge_flag(self) -> str:
+        data = json.loads(self._call("repo", "view", "--json", "viewerDefaultMergeMethod") or "{}")
+        method = str(data.get("viewerDefaultMergeMethod") or "").upper()
+        flag = self._MERGE_METHOD_FLAGS.get(method)
+        if not flag:
+            raise ForgeError(
+                f"github merge_pr: unsupported or missing viewerDefaultMergeMethod ({method!r})"
+            )
+        return flag
+
     def merge_pr(self, number: int, expected_head_sha: str) -> None:
         """Merge PR #number only if its head commit matches expected_head_sha (#109)."""
         if not expected_head_sha or not expected_head_sha.strip():
             raise ForgeError("merge_pr requires a non-empty expected_head_sha")
-        self._call("pr", "merge", str(number), "--match-head-commit", expected_head_sha)
+        merge_flag = self._default_merge_flag()
+        self._call("pr", "merge", str(number), merge_flag, "--match-head-commit", expected_head_sha)
+        after = json.loads(self._call("pr", "view", str(number), "--json", "state,headRefOid") or "{}")
+        state = str(after.get("state") or "").upper()
+        head_oid = str(after.get("headRefOid") or "")
+        if state != "MERGED" or head_oid != expected_head_sha:
+            raise ForgeError(
+                f"github merge_pr did not merge PR #{number} at {expected_head_sha} "
+                f"(state={state!r}, head={head_oid!r})"
+            )
 
     @staticmethod
     def _parse_pr(p: Dict[str, Any]) -> PullRequest:
