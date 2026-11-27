@@ -85,17 +85,38 @@ def _unsupported(operation: str, reason: str, target_url: str = "") -> int:
 
 
 def set_verdict_labels(forge: Forge, number: int, verdict: str) -> Dict[str, Any]:
-    """Ensure exactly one gatekeeper verdict label (or none on clean), leaving other labels untouched."""
+    """Ensure exactly one gatekeeper verdict label (or none on clean), leaving other labels untouched.
+
+    Issue #101 (R1/R4): ``gatekeeper:review-clean`` is an extra state label:
+    - ``clean`` ensures the label exists, adds it, and removes ``gatekeeper:changes-requested``.
+    - ``changes-requested`` and ``escalated`` remove ``gatekeeper:review-clean``.
+    - ``approved`` keeps ``gatekeeper:review-clean``.
+    """
     norm = verdict.strip().lower()
+    ensure_fn = getattr(forge, "ensure_label", None)
     if norm == "clean":
-        forge.remove_labels(number, ["gatekeeper:changes-requested"])
-        return {"number": number, "verdict": "clean", "added": [], "removed": ["gatekeeper:changes-requested"]}
+        if callable(ensure_fn):
+            ensure_fn(
+                contract.GATEKEEPER_REVIEW_CLEAN,
+                color="0e8a16",
+                description="Gatekeeper review is clean; waiting for CI",
+            )
+        forge.add_labels(number, [contract.GATEKEEPER_REVIEW_CLEAN])
+        forge.remove_labels(number, [contract.GATEKEEPER_CHANGES_REQUESTED])
+        return {
+            "number": number,
+            "verdict": "clean",
+            "added": [contract.GATEKEEPER_REVIEW_CLEAN],
+            "removed": [contract.GATEKEEPER_CHANGES_REQUESTED],
+        }
 
     target = f"gatekeeper:{norm}"
     if target not in VERDICT_LABELS:
         raise ForgeError(f"Unknown verdict '{verdict}'; expected approved, changes-requested, escalated, or clean")
 
     to_remove = [lbl for lbl in VERDICT_LABELS if lbl != target]
+    if target in (contract.GATEKEEPER_CHANGES_REQUESTED, contract.GATEKEEPER_ESCALATED):
+        to_remove.append(contract.GATEKEEPER_REVIEW_CLEAN)
     forge.add_labels(number, [target])
     forge.remove_labels(number, to_remove)
     return {"number": number, "verdict": norm, "added": [target], "removed": to_remove}

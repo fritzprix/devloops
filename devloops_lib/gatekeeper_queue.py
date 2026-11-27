@@ -242,6 +242,36 @@ def stalled_checks(
     return sorted(stalled)
 
 
+def missing_required_checks(checks: list[dict], config: dict | None = None) -> list[str]:
+    """Return required check names from gatekeeper.required_checks that are absent from `checks`."""
+    required = ((config or {}).get("gatekeeper") or {}).get("required_checks") or []
+    if not required:
+        return []
+    present = {
+        c.get("name") or c.get("context")
+        for c in checks
+        if (c.get("name") or c.get("context"))
+    }
+    return [name for name in required if name not in present]
+
+
+def clear_review_clean_on_head_change(
+    forge: Any,
+    number: int,
+    labels: list[str],
+    *,
+    reviewed_head: str | None,
+    head: str,
+) -> bool:
+    """Remove gatekeeper:review-clean when the PR head changed before review starts (issue #101 R1)."""
+    if not reviewed_head or reviewed_head == head:
+        return False
+    if contract.GATEKEEPER_REVIEW_CLEAN not in labels:
+        return False
+    forge.remove_labels(number, [contract.GATEKEEPER_REVIEW_CLEAN])
+    return True
+
+
 def classify(
     *,
     mergeable: str | None,
@@ -263,6 +293,7 @@ def classify(
     config: dict | None = None,
     repo_has_ci: bool = True,
     stalled: list[str] | None = None,
+    missing_required_checks: list[str] | None = None,
 ) -> tuple[str, str, int]:
     """Return (status, one-line reason, priority). Lower priority number is handled first."""
     ci_applies = is_dev_base(base, config=config)
@@ -313,6 +344,8 @@ def classify(
             return "await-ci", f"clean at head; CI queued and not started ({', '.join(stalled)}) — report the stall on the PR with cause", 1
         if ci_applies and pending_checks:
             return "await-ci", "reviewed clean; waiting for pending CI", 9
+        if ci_applies and missing_required_checks:
+            return "await-ci", f"reviewed clean; waiting for required checks ({', '.join(missing_required_checks)})", 9
         if ci_applies and total_checks == 0:
             if not repo_has_ci:
                 return "await-ci", "reviewed clean; repo has no PR CI — the gatekeeper files the gap issue; never a changes-requested for this cause", 8
@@ -434,6 +467,22 @@ def summarize(
     protected_config_paths = tuple(cfg.get("protected_paths", []))
     candidates = sensitive_candidates(paths, protected_config_paths)
 
+    missing_req = missing_required_checks(checks, cfg)
+    if reviewed_head and reviewed_head != head and contract.GATEKEEPER_REVIEW_CLEAN in labels:
+        try:
+            from devloops_lib.forge.detect import get_forge
+
+            if clear_review_clean_on_head_change(
+                get_forge(cfg, state=state),
+                number,
+                labels,
+                reviewed_head=reviewed_head,
+                head=head,
+            ):
+                labels = [l for l in labels if l != contract.GATEKEEPER_REVIEW_CLEAN]
+        except Exception:
+            pass
+
     status, reason, priority = classify(
         mergeable=pr.get("mergeable"),
         head=head,
@@ -454,6 +503,7 @@ def summarize(
         config=cfg,
         repo_has_ci=repo_has_ci,
         stalled=stalled,
+        missing_required_checks=missing_req,
     )
     # Loop-skill PRs keep their normal status; own_skill only drives needsHuman below.
     needs_at_head = next((m for m in reversed(needs) if m.get("head") == head), None)

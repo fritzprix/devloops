@@ -282,10 +282,14 @@ class GitHubForge:
             raw=p,
         )
 
-    def ci_status(self, pr: PullRequest) -> CiSummary:
+    def ci_status(self, pr: PullRequest, *, required_checks: Sequence[str] = ()) -> CiSummary:
         checks = pr.raw.get("statusCheckRollup") or []
         failing = [c.get("name") or c.get("context") for c in checks if _check_state(c) in FAILED]
         pending = [c.get("name") or c.get("context") for c in checks if _check_state(c) in PENDING]
+        present = {c.get("name") or c.get("context") for c in checks if (c.get("name") or c.get("context"))}
+        missing = [name for name in required_checks if name not in present]
+        if missing:
+            pending = [*pending, *missing]
         if failing:
             state = CI_FAILURE
         elif pending:

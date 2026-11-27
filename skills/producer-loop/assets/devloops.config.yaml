@@ -60,6 +60,7 @@ gatekeeper:
   ci_stall_minutes: 45                # queued CI checks not started this long are reported with cause
   rubric_paths: []                    # extra REVIEW_RUBRIC.md paths (see gatekeeper-loop SKILL)
   issue_rules_paths: []               # ISSUE_RULES.md paths for acceptance criteria
+  required_checks: []                 # check names / status contexts that must pass before approve
 
 qa:
   max_prs_per_tick: 5                 # open PRs judged for testability per tick

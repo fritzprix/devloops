@@ -461,6 +461,21 @@ class GiteaForge:
         # Additive POST only — never PUT (which replaces the full label set).
         self._http_call("POST", f"{self._repo_prefix}/issues/{number}/labels", body={"labels": ids})
 
+    def ensure_label(self, name: str, *, color: str = "ededed", description: str = "") -> None:
+        """Create label if missing; no-op if it already exists (issue #101 R4)."""
+        existing = self._resolve_label_ids([name], create_missing=False)
+        if existing:
+            return
+        self._http_call(
+            "POST",
+            f"{self._repo_prefix}/labels",
+            body={
+                "name": name,
+                "color": "#" + color.lstrip("#"),
+                "description": description,
+            },
+        )
+
     def remove_labels(self, number: int, names: Sequence[str]) -> None:
         if not names:
             return
@@ -552,26 +567,36 @@ class GiteaForge:
         decision = self._review_decision(number)
         return self._parse_pr(raw, review_decision=decision)
 
-    def ci_status(self, pr: PullRequest) -> CiSummary:
+    def ci_status(self, pr: PullRequest, *, required_checks: Sequence[str] = ()) -> CiSummary:
         if not pr.head_sha:
+            if required_checks:
+                return CiSummary(state=CI_PENDING, failing=[], pending=list(required_checks))
             return CiSummary(state=CI_NONE)
         _, data = self._http_call(
             "GET", f"{self._repo_prefix}/commits/{pr.head_sha}/status", allow_404=True
         )
         statuses = (data or {}).get("statuses") or []
         if not statuses:
+            if required_checks:
+                return CiSummary(state=CI_PENDING, failing=[], pending=list(required_checks))
             return CiSummary(state=CI_NONE)
 
         failing: List[str] = []
         pending: List[str] = []
+        present: set[str] = set()
         for st in statuses:
             ctx = str(st.get("context") or st.get("description") or "status")
+            present.add(ctx)
             val = str(st.get("status") or st.get("state") or "").lower()
             if val in ("failure", "error"):
                 failing.append(ctx)
             elif val == "pending":
                 pending.append(ctx)
             # "success" and "warning" count as non-failing/non-pending.
+
+        missing = [name for name in required_checks if name not in present]
+        if missing:
+            pending.extend(missing)
 
         if failing:
             state = CI_FAILURE
