@@ -272,6 +272,79 @@ def stalled_checks(
     return sorted(stalled)
 
 
+def _check_run_ts(c: dict) -> str:
+    for field in ("startedAt", "createdAt", "completedAt"):
+        val = str(c.get(field) or "")
+        if val and not val.startswith("0001-01-01"):
+            return val
+    return ""
+
+
+def effective_checks(checks: list[dict], config: dict | None = None) -> list[dict]:
+    """For required check names, keep only the latest run; keep all runs for other checks."""
+    required = ((config or {}).get("gatekeeper") or {}).get("required_checks") or []
+    req_set = set(required)
+    if not req_set:
+        return list(checks)
+    latest_req: dict[str, tuple[str, int, dict]] = {}
+    for idx, c in enumerate(checks):
+        name = c.get("name") or c.get("context")
+        if not name or name not in req_set:
+            continue
+        ts = _check_run_ts(c)
+        key = (ts, idx)
+        prev = latest_req.get(name)
+        if prev is None or key >= (prev[0], prev[1]):
+            latest_req[name] = (ts, idx, c)
+    out: list[dict] = []
+    seen_req: set[str] = set()
+    for c in checks:
+        name = c.get("name") or c.get("context")
+        if name and name in req_set:
+            if name not in seen_req:
+                seen_req.add(name)
+                out.append(latest_req[name][2])
+        else:
+            out.append(c)
+    return out
+
+
+def missing_required_checks(checks: list[dict], config: dict | None = None) -> list[str]:
+    """Return required check names whose latest run has not succeeded in `checks`."""
+    required = ((config or {}).get("gatekeeper") or {}).get("required_checks") or []
+    if not required:
+        return []
+    eff = effective_checks(checks, config)
+    latest_state: dict[str, str] = {}
+    for c in eff:
+        name = c.get("name") or c.get("context")
+        if name:
+            latest_state[name] = check_state(c)
+    return [
+        name
+        for name in required
+        if (name not in latest_state or latest_state[name] != "SUCCESS")
+        and (name not in latest_state or latest_state[name] not in FAILED)
+    ]
+
+
+def clear_review_clean_on_head_change(
+    forge: Any,
+    number: int,
+    labels: list[str],
+    *,
+    reviewed_head: str | None,
+    head: str,
+) -> bool:
+    """Remove gatekeeper:review-clean when the PR head changed before review starts (issue #101 R1)."""
+    if not reviewed_head or reviewed_head == head:
+        return False
+    if contract.GATEKEEPER_REVIEW_CLEAN not in labels:
+        return False
+    forge.remove_labels(number, [contract.GATEKEEPER_REVIEW_CLEAN])
+    return True
+
+
 def classify(
     *,
     mergeable: str | None,
@@ -294,6 +367,7 @@ def classify(
     config: dict | None = None,
     repo_has_ci: bool = True,
     stalled: list[str] | None = None,
+    missing_required_checks: list[str] | None = None,
 ) -> tuple[str, str, int]:
     """Return (status, one-line reason, priority). Lower priority number is handled first."""
     ci_applies = is_dev_base(base, config=config)
@@ -351,6 +425,8 @@ def classify(
             return "await-ci", f"clean at head; CI queued and not started ({', '.join(stalled)}) — report the stall on the PR with cause", 1
         if ci_applies and pending_checks:
             return "await-ci", "reviewed clean; waiting for pending CI", 9
+        if ci_applies and missing_required_checks:
+            return "await-ci", f"reviewed clean; waiting for required checks ({', '.join(missing_required_checks)})", 9
         if ci_applies and total_checks == 0:
             if not repo_has_ci:
                 return "await-ci", "reviewed clean; repo has no PR CI — the gatekeeper files the gap issue; never a changes-requested for this cause", 8
@@ -423,8 +499,9 @@ def summarize(
     repo_has_ci = bool((readiness.get("ci") or {}).get("present"))
     base = pr["baseRefName"]
     checks = pr.get("statusCheckRollup") or []
-    failing = [c.get("name") or c.get("context") for c in checks if check_state(c) in FAILED]
-    pending = [c.get("name") or c.get("context") for c in checks if check_state(c) in PENDING]
+    eff_checks = effective_checks(checks, cfg)
+    failing = [c.get("name") or c.get("context") for c in eff_checks if check_state(c) in FAILED]
+    pending = [c.get("name") or c.get("context") for c in eff_checks if check_state(c) in PENDING]
     comments = pr.get("comments") or []
     markers, responses = parse_markers(comments, me)
     verdicts, cleans, needs = split_markers(markers)
@@ -486,6 +563,26 @@ def summarize(
     protected_config_paths = tuple(cfg.get("protected_paths", []))
     candidates = sensitive_candidates(paths, protected_config_paths)
 
+    missing_req = missing_required_checks(checks, cfg)
+    stale_review_clean = bool(
+        reviewed_head and reviewed_head != head and contract.GATEKEEPER_REVIEW_CLEAN in labels
+    )
+    if stale_review_clean:
+        try:
+            from devloops_lib.forge.detect import get_forge
+
+            if clear_review_clean_on_head_change(
+                get_forge(cfg, state=state),
+                number,
+                labels,
+                reviewed_head=reviewed_head,
+                head=head,
+            ):
+                labels = [l for l in labels if l != contract.GATEKEEPER_REVIEW_CLEAN]
+                stale_review_clean = False
+        except Exception:
+            pass
+
     status, reason, priority = classify(
         mergeable=pr.get("mergeable"),
         head=head,
@@ -507,6 +604,7 @@ def summarize(
         config=cfg,
         repo_has_ci=repo_has_ci,
         stalled=stalled,
+        missing_required_checks=missing_req,
     )
     # Loop-skill PRs keep their normal status; own_skill only drives needsHuman below.
     needs_at_head = next((m for m in reversed(needs) if m.get("head") == head), None)

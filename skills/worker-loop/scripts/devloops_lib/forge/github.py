@@ -223,9 +223,22 @@ class GitHubForge:
             cmd.extend(["--add-label", lbl])
         self._call(*cmd)
 
+    def list_labels(self) -> List[str]:
+        data = json.loads(self._call("label", "list", "--json", "name", "--limit", "1000") or "[]")
+        return [d["name"] for d in data]
+
     def remove_labels(self, number: int, names: Sequence[str]) -> None:
+        if not names:
+            return
+        # GitHub CLI rejects `--remove-label` for labels the repository does not
+        # have (G5.1: removing gatekeeper:review-clean failed on repos where the
+        # label was never created). Remove only labels the repository has.
+        present = set(self.list_labels())
+        known = [n for n in names if n in present]
+        if not known:
+            return
         cmd = ["issue", "edit", str(number)]
-        for lbl in names:
+        for lbl in known:
             cmd.extend(["--remove-label", lbl])
         self._call(*cmd)
 
@@ -283,10 +296,50 @@ class GitHubForge:
             raw=p,
         )
 
-    def ci_status(self, pr: PullRequest) -> CiSummary:
+    @staticmethod
+    def _check_run_ts(c: Dict[str, Any]) -> str:
+        for field in ("startedAt", "createdAt", "completedAt"):
+            val = str(c.get(field) or "")
+            if val and not val.startswith("0001-01-01"):
+                return val
+        return ""
+
+    def ci_status(self, pr: PullRequest, *, required_checks: Sequence[str] = ()) -> CiSummary:
         checks = pr.raw.get("statusCheckRollup") or []
-        failing = [c.get("name") or c.get("context") for c in checks if _check_state(c) in FAILED]
-        pending = [c.get("name") or c.get("context") for c in checks if _check_state(c) in PENDING]
+        req_set = set(required_checks)
+        latest_req: Dict[str, tuple[str, int, Dict[str, Any]]] = {}
+        if req_set:
+            for idx, c in enumerate(checks):
+                name = c.get("name") or c.get("context")
+                if not name or name not in req_set:
+                    continue
+                ts = self._check_run_ts(c)
+                key = (ts, idx)
+                prev = latest_req.get(name)
+                if prev is None or key >= (prev[0], prev[1]):
+                    latest_req[name] = (ts, idx, c)
+        effective: List[Dict[str, Any]] = []
+        seen_req: set[str] = set()
+        for c in checks:
+            name = c.get("name") or c.get("context")
+            if name and name in req_set:
+                if name not in seen_req:
+                    seen_req.add(name)
+                    effective.append(latest_req[name][2])
+            else:
+                effective.append(c)
+
+        failing = [c.get("name") or c.get("context") for c in effective if _check_state(c) in FAILED]
+        pending = [c.get("name") or c.get("context") for c in effective if _check_state(c) in PENDING]
+        missing = [
+            name
+            for name in required_checks
+            if (name not in latest_req or _check_state(latest_req[name][2]) != "SUCCESS")
+            and name not in failing
+            and name not in pending
+        ]
+        if missing:
+            pending = [*pending, *missing]
         if failing:
             state = CI_FAILURE
         elif pending:

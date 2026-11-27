@@ -408,6 +408,10 @@ class GhStub:
         self.auth_ok = auth_ok
         self.args_log: List[List[str]] = []
         self.graphql_calls: List[List[str]] = []
+        # Repository-level label set (G5.1): gh rejects --remove-label for
+        # labels the repository does not have; the double mirrors that.
+        self.repo_labels = {l["name"] for i in self.issues for l in i["labels"]}
+        self.repo_labels |= {l["name"] for p in self.prs for l in p["labels"]}
         self._next_issue = 100
         # issue #65: blocked-by dependencies, raw GitHub REST shape.
         self.dependencies: Dict[int, List[Dict[str, Any]]] = {
@@ -425,6 +429,11 @@ class GhStub:
             return SEED["user"] + "\n"
         if head == ("repo", "view"):
             return json.dumps(copy.deepcopy(SEED["repo"]))
+        if head == ("label", "list"):
+            return json.dumps([{"name": n} for n in sorted(self.repo_labels)])
+        if head == ("label", "create"):
+            self.repo_labels.add(argv[2])
+            return ""
         if head == ("auth", "status"):
             if not self.auth_ok:
                 raise ForgeError("gh auth status failed (code 1): not logged in")
@@ -508,6 +517,8 @@ class GhStub:
             if name not in {l["name"] for l in issue["labels"]}:
                 issue["labels"].append({"name": name})
         for name in self._opts(args, "--remove-label"):
+            if name not in self.repo_labels:
+                raise ForgeError(f"label '{name}' does not exist in repository")
             issue["labels"] = [l for l in issue["labels"] if l["name"] != name]
         assignee = self._opt(args, "--add-assignee")
         if assignee and not any(a["login"] == assignee for a in issue["assignees"]):

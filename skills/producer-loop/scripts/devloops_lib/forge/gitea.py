@@ -465,6 +465,21 @@ class GiteaForge:
         # Additive POST only — never PUT (which replaces the full label set).
         self._http_call("POST", f"{self._repo_prefix}/issues/{number}/labels", body={"labels": ids})
 
+    def ensure_label(self, name: str, *, color: str = "ededed", description: str = "") -> None:
+        """Create label if missing; no-op if it already exists (issue #101 R4)."""
+        existing = self._resolve_label_ids([name], create_missing=False)
+        if existing:
+            return
+        self._http_call(
+            "POST",
+            f"{self._repo_prefix}/labels",
+            body={
+                "name": name,
+                "color": "#" + color.lstrip("#"),
+                "description": description,
+            },
+        )
+
     def remove_labels(self, number: int, names: Sequence[str]) -> None:
         if not names:
             return
@@ -556,26 +571,66 @@ class GiteaForge:
         decision = self._review_decision(number)
         return self._parse_pr(raw, review_decision=decision)
 
-    def ci_status(self, pr: PullRequest) -> CiSummary:
+    def ci_status(self, pr: PullRequest, *, required_checks: Sequence[str] = ()) -> CiSummary:
         if not pr.head_sha:
+            if required_checks:
+                return CiSummary(state=CI_PENDING, failing=[], pending=list(required_checks))
             return CiSummary(state=CI_NONE)
         _, data = self._http_call(
             "GET", f"{self._repo_prefix}/commits/{pr.head_sha}/status", allow_404=True
         )
         statuses = (data or {}).get("statuses") or []
         if not statuses:
+            if required_checks:
+                return CiSummary(state=CI_PENDING, failing=[], pending=list(required_checks))
             return CiSummary(state=CI_NONE)
+
+        req_set = set(required_checks)
+        latest_req: Dict[str, tuple[str, int, Dict[str, Any], str]] = {}
+        if req_set:
+            for idx, st in enumerate(statuses):
+                ctx = str(st.get("context") or st.get("description") or "status")
+                if ctx not in req_set:
+                    continue
+                val = str(st.get("status") or st.get("state") or "").lower()
+                ts = str(st.get("created_at") or st.get("updated_at") or "")
+                if ts.startswith("0001-01-01"):
+                    ts = ""
+                key = (ts, idx)
+                prev = latest_req.get(ctx)
+                if prev is None or key >= (prev[0], prev[1]):
+                    latest_req[ctx] = (ts, idx, st, val)
+
+        effective: List[tuple[str, str]] = []
+        seen_req: set[str] = set()
+        for st in statuses:
+            ctx = str(st.get("context") or st.get("description") or "status")
+            if ctx in req_set:
+                if ctx not in seen_req:
+                    seen_req.add(ctx)
+                    effective.append((ctx, latest_req[ctx][3]))
+            else:
+                val = str(st.get("status") or st.get("state") or "").lower()
+                effective.append((ctx, val))
 
         failing: List[str] = []
         pending: List[str] = []
-        for st in statuses:
-            ctx = str(st.get("context") or st.get("description") or "status")
-            val = str(st.get("status") or st.get("state") or "").lower()
+        for ctx, val in effective:
             if val in ("failure", "error"):
                 failing.append(ctx)
             elif val == "pending":
                 pending.append(ctx)
             # "success" and "warning" count as non-failing/non-pending.
+
+        missing = [
+            name
+            for name in required_checks
+            if (name not in latest_req or latest_req[name][3] != "success")
+            and name not in failing
+            and name not in pending
+        ]
+        if missing:
+            pending.extend(missing)
 
         if failing:
             state = CI_FAILURE
@@ -678,10 +733,16 @@ class GiteaForge:
     def gate_snapshot(self, pr_limit: int = 100, issue_limit: int = 100) -> GateSnapshot:
         open_prs = self.list_prs(state="open", limit=pr_limit)
         open_issues = self.list_issues(state="open", limit=issue_limit)
+        try:
+            from devloops_lib.config import load_config, validate_required_checks
+
+            required_checks = validate_required_checks(load_config())
+        except Exception:
+            required_checks = []
 
         pr_nodes: List[Dict[str, Any]] = []
         for pr in open_prs:
-            ci = self.ci_status(pr)
+            ci = self.ci_status(pr, required_checks=required_checks)
             mergeable_str = (
                 "MERGEABLE" if pr.mergeable is True else "CONFLICTING" if pr.mergeable is False else "UNKNOWN"
             )

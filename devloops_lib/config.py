@@ -85,6 +85,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_issue_validations_per_tick": 1,
         "rubric_paths": [],
         "issue_rules_paths": [],
+        "required_checks": [],
     },
     "qa": {
         "max_prs_per_tick": 5,
@@ -345,7 +346,22 @@ def load_config(start_dir: Path | str | None = None) -> dict[str, Any]:
         raise ConfigError(f"cannot load {cfg_file}: {e}") from e
     if not isinstance(data, dict):
         raise ConfigError(f"cannot load {cfg_file}: the top level must be a mapping")
-    return deep_merge(DEFAULT_CONFIG, data)
+    merged = deep_merge(DEFAULT_CONFIG, data)
+    validate_required_checks(merged)
+    return merged
+
+
+def validate_required_checks(cfg: dict[str, Any]) -> list[str]:
+    """Validate gatekeeper.required_checks: must be a list of non-empty strings."""
+    gk = cfg.get("gatekeeper")
+    if not isinstance(gk, dict):
+        return []
+    raw = gk.get("required_checks", [])
+    if not isinstance(raw, list) or any(not isinstance(item, str) or not item.strip() for item in raw):
+        raise ConfigError(
+            f"gatekeeper.required_checks must be a list of non-empty strings, got {raw!r}"
+        )
+    return [item.strip() for item in raw]
 
 
 def _positive_number(cfg: dict[str, Any], section: str, key: str) -> float:
