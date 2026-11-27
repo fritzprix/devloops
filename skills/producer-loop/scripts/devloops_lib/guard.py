@@ -20,15 +20,21 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
-from devloops_lib.claims import ClaimError, owns_pr, pr_claim_holder, read_issue_claim, refresh_issue_claim
-from devloops_lib.config import add_agent_id_argument, get_agent_id, get_claims_dir, get_lock_path
+from devloops_lib.claims import ClaimError, owns_pr, pr_claim_holder, read_issue_claim, refresh_issue_claim, release_issue
+from devloops_lib.config import add_agent_id_argument, get_agent_id, get_claims_dir, get_lock_path, load_config
 from devloops_lib.gh import GhError
 from devloops_lib.tick_gate import DEFAULT_AGENT, EXIT_ERROR, EXIT_LOST, EXIT_RUN, TOKEN_ENV, describe_lock, renew_lock
+
+# Same closing-PR pattern as devloops_lib.issue_candidates (issue #117).
+_CLOSING_PATTERN = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b", re.I)
+_HEAD_ISSUE_PATTERN = re.compile(r"-(\d{3,})\b")
 
 # Marker file or directory in the git dir -> the command that aborts the operation.
 UNFINISHED_OPERATIONS = (
@@ -114,7 +120,59 @@ def preserve_and_reset(repo: Path, preserve_dir: Path, label: str) -> list[str]:
     return saved
 
 
-def main(argv: list[str] | None = None) -> int:
+def _is_pr_create_cmd(cmd: list[str]) -> bool:
+    """Return True when ``cmd`` invokes ``... pr create ...`` (forge.py or gh)."""
+    return any(cmd[i] == "pr" and cmd[i + 1] == "create" for i in range(len(cmd) - 1))
+
+
+def _pr_field(pr: Any, *names: str) -> Any:
+    for name in names:
+        if isinstance(pr, dict):
+            if name in pr and pr[name] is not None:
+                return pr[name]
+        else:
+            val = getattr(pr, name, None)
+            if val is not None:
+                return val
+    return None
+
+
+def find_open_closing_prs(
+    issue_number: int,
+    *,
+    forge: Any | None = None,
+    repo: Path | None = None,
+) -> list[int]:
+    """Return open PR numbers that close ``issue_number`` (same test as issue_candidates.py).
+
+    Known limit (#117): this check is not atomic; two workers running it at the
+    same moment can both pass and open two PRs.
+    """
+    forge_obj = forge
+    if forge_obj is None:
+        from devloops_lib.forge.detect import get_forge
+
+        forge_obj = get_forge(load_config(start_dir=repo))
+    open_prs = forge_obj.list_prs(state="open")
+    matches: list[int] = []
+    for pr in open_prs:
+        state = str(_pr_field(pr, "state") or "open").lower()
+        if state != "open":
+            continue
+        title = str(_pr_field(pr, "title") or "")
+        body = str(_pr_field(pr, "body") or "")
+        head = str(_pr_field(pr, "headRefName", "head_ref", "head") or "")
+        text = f"{title} {body}"
+        closes = {int(n) for n in _CLOSING_PATTERN.findall(text)}
+        closes |= {int(n) for n in _HEAD_ISSUE_PATTERN.findall(head)}
+        if issue_number in closes:
+            num = _pr_field(pr, "number")
+            if num is not None:
+                matches.append(int(num))
+    return matches
+
+
+def main(argv: list[str] | None = None, *, forge: Any | None = None) -> int:
     common = argparse.ArgumentParser(add_help=False)
     add_agent_id_argument(common)
     # Subcommand options only: a subparser default would overwrite a value given
@@ -152,6 +210,15 @@ def main(argv: list[str] | None = None) -> int:
             print("OWNED")
             return EXIT_RUN
         if args.command == "run":
+            issue_num = getattr(args, "issue", None)
+            if issue_num is not None and _is_pr_create_cmd(cmd):
+                existing = find_open_closing_prs(issue_num, forge=forge, repo=args.repo)
+                if existing:
+                    agent = get_agent_id() or DEFAULT_AGENT
+                    release_issue(args.repo, issue_num, agent)
+                    pr_list = ", ".join(f"#{n}" for n in existing)
+                    print(f"DUPLICATE PR: issue #{issue_num} already has open PR {pr_list}; released claim and skipped PR creation")
+                    return EXIT_LOST
             return subprocess.run(cmd).returncode
         agent = get_agent_id() or DEFAULT_AGENT
         label = f"agent {agent}, tick {token[:8]}, {time.strftime('%Y-%m-%dT%H:%M:%S%z')}"
