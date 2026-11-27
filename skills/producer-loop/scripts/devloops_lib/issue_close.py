@@ -7,7 +7,6 @@ from typing import Any
 POLICY_ORDER = ("skill", "config", "profile", "folklore")
 
 CLOSING_PATTERN = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b", re.I)
-BRANCH_ISSUE_PATTERN = re.compile(r"-(\d{3,})\b")
 
 PM_CLOSE_MARKER = "<!-- pm-loop: close-complete -->"
 
@@ -64,11 +63,25 @@ def profile_default_definition_of_done(project_type: str) -> list[str]:
 
 
 def issue_numbers_linked(item: dict[str, Any]) -> set[int]:
-    explicit = item.get("closesIssues") or item.get("closes_issues") or []
-    nums = {int(n) for n in explicit if str(n).isdigit()}
+    """Return issue numbers explicitly closed by a work item (#119).
+
+    Links only through closing keywords in the title/body or the forge's
+    closing-issue list; never through ``Refs #N`` or the branch-name number.
+    """
+    explicit = (
+        item.get("closesIssues")
+        or item.get("closes_issues")
+        or item.get("closingIssuesReferences")
+        or []
+    )
+    nums: set[int] = set()
+    for entry in explicit:
+        if isinstance(entry, dict) and str(entry.get("number", "")).isdigit():
+            nums.add(int(entry["number"]))
+        elif str(entry).isdigit():
+            nums.add(int(entry))
     text = f"{item.get('title') or ''} {item.get('body') or item.get('bodyText') or ''}"
     nums |= {int(n) for n in CLOSING_PATTERN.findall(text)}
-    nums |= {int(n) for n in BRANCH_ISSUE_PATTERN.findall(item.get("headRefName") or item.get("branch") or "")}
     return nums
 
 

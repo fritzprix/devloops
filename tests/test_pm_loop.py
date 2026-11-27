@@ -229,6 +229,40 @@ class PmIssueCloseTest(unittest.TestCase):
         self.assertEqual(dod["signals"], ["approved_manuscript"])
         self.assertEqual(dod["source"], "config")
 
+    def test_partial_pr_refs_with_branch_number_not_closable(self):
+        issues = [{"number": 123, "state": "OPEN"}]
+        work = [{"merged": True, "title": "Part 1", "body": "Refs #123", "headRefName": "feat/x-123"}]
+        self.assertEqual(issue_close.closable_issues(issues, work, signals=["merged_pr"]), [])
+
+    def test_merged_pr_with_fixes_body_is_closable(self):
+        issues = [{"number": 123, "state": "OPEN"}]
+        work = [{"merged": True, "title": "Complete", "body": "Fixes #123", "headRefName": "feat/x-123"}]
+        actions = issue_close.closable_issues(issues, work, signals=["merged_pr"])
+        self.assertEqual([a["issueNumber"] for a in actions], [123])
+
+    def test_merged_pr_with_closes_in_title_is_closable(self):
+        issues = [{"number": 123, "state": "OPEN"}]
+        work = [{"merged": True, "title": "Done (closes #123)", "body": "", "headRefName": "feat/x"}]
+        actions = issue_close.closable_issues(issues, work, signals=["merged_pr"])
+        self.assertEqual([a["issueNumber"] for a in actions], [123])
+
+    def test_merged_pr_with_only_branch_number_not_closable(self):
+        issues = [{"number": 123, "state": "OPEN"}]
+        work = [{"merged": True, "title": "Work", "body": "No keyword", "headRefName": "feat/x-123"}]
+        self.assertEqual(issue_close.closable_issues(issues, work, signals=["merged_pr"]), [])
+
+    def test_stacked_pr_merged_into_parent_with_fixes_is_closable(self):
+        issues = [{"number": 123, "state": "OPEN"}]
+        work = [{
+            "merged": True,
+            "baseRefName": "feat/parent-100",
+            "title": "Child PR",
+            "body": "Fixes #123",
+            "headRefName": "feat/child-123",
+        }]
+        actions = issue_close.closable_issues(issues, work, signals=["merged_pr"])
+        self.assertEqual([a["issueNumber"] for a in actions], [123])
+
 
 class PmInvokeIntegrationTest(unittest.TestCase):
     def setUp(self):
