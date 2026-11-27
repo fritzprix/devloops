@@ -274,7 +274,7 @@ class LongTickProcessTest(SingleSlotProcessTest):
 
 
 class LostOwnershipProcessTest(SingleSlotProcessTest):
-    ttl = 1
+    ttl = 3
 
     def test_tick_that_lost_its_lock_cannot_unlock_claim_or_run_guarded_commands(self):
         self.mark_in_progress()
