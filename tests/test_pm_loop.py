@@ -79,7 +79,9 @@ class PmScheduleTest(unittest.TestCase):
         for loop in pm_schedule.PEER_LOOPS:
             path = self.root / loop / "state.json"
             save_state(path, {"scheduler": {"kind": "cron", "armed": True}})
-        report = pm_schedule.exclusivity_report(pm_state, state_root=self.root)
+        # Explicit empty config: the repo's own devloops.config.yaml may configure
+        # a different peer list; the code default is covered here (issue #71 D4).
+        report = pm_schedule.exclusivity_report(pm_state, state_root=self.root, config={})
         self.assertFalse(report["exclusiveOk"])
         self.assertEqual(set(report["peerConflicts"]), set(pm_schedule.PEER_LOOPS))
 
@@ -94,21 +96,51 @@ class PmScheduleTest(unittest.TestCase):
     def test_qa_loop_is_a_peer(self):
         self.assertIn("qa-loop", pm_schedule.PEER_LOOPS)
 
+    def test_peer_loops_come_from_config(self):
+        # issue #71 deliverable 4 (epic #102): the peer list is scaffolding policy.
+        cfg = {"pm": {"peer_loops": ["worker-loop", "reviewer-loop"]}}
+        self.assertEqual(
+            pm_schedule.configured_peer_loops(cfg),
+            ("worker-loop", "reviewer-loop"),
+        )
+        # Empty/absent config falls back to the current default list.
+        self.assertEqual(pm_schedule.configured_peer_loops({}), pm_schedule.PEER_LOOPS)
+
+    def test_exclusivity_uses_configured_peer_loops(self):
+        cfg = {"pm": {"peer_loops": ["custom-loop"]}}
+        save_state(self.root / "custom-loop" / "state.json", {"scheduler": {"kind": "cron", "armed": True}})
+        save_state(self.root / "worker-loop" / "state.json", {"scheduler": {"kind": "cron", "armed": True}})
+        pm_state = {"scheduler": {"kind": "shell", "intervalSeconds": 600}}
+        report = pm_schedule.exclusivity_report(pm_state, state_root=self.root, config=cfg)
+        self.assertEqual(set(report["peerLoops"]), {"custom-loop"})
+        self.assertEqual(report["peerConflicts"], ["custom-loop"])
+
+    def test_exclusivity_flags_use_configured_peer_loops(self):
+        cfg = {"pm": {"peer_loops": ["custom-loop"]}}
+        pm_schedule.write_exclusivity_flags(self.root, True, config=cfg)
+        state = load_state(self.root / "custom-loop" / "state.json")
+        self.assertTrue(state["schedule"]["pm"]["pmCascadeActive"])
+        self.assertFalse((self.root / "worker-loop" / "state.json").exists())
+
     def test_exclusivity_flags_arm_qa_schedule(self):
         pm_scheduler = {"scheduler": {"kind": "shell", "intervalSeconds": 600}}
-        pm_schedule.write_exclusivity_flags(self.root, True)
+        # Explicit empty config: the repo's devloops.config.yaml may override the
+        # peer list; this test covers the code default including qa-loop.
+        pm_schedule.write_exclusivity_flags(self.root, True, config={})
         for loop in pm_schedule.PEER_LOOPS:
             state = load_state(self.root / loop / "state.json")
             self.assertTrue(state["schedule"]["pm"]["pmCascadeActive"], loop)
             self.assertFalse(pm_schedule.peer_tick_allowed(state), loop)
-        report = pm_schedule.exclusivity_report(pm_scheduler, state_root=self.root)
+        report = pm_schedule.exclusivity_report(pm_scheduler, state_root=self.root, config={})
         self.assertIn("qa-loop", report["peerLoops"])
 
     def test_exclusivity_reports_armed_qa_schedule_as_conflict(self):
         # G1.3: an armed qa-loop schedule while PM is armed must appear in peerConflicts.
         pm_scheduler = {"scheduler": {"kind": "shell", "intervalSeconds": 600}}
         save_state(self.root / "qa-loop" / "state.json", {"scheduler": {"kind": "process", "id": 7}})
-        report = pm_schedule.exclusivity_report(pm_scheduler, state_root=self.root)
+        # config={}: the code default peer list includes qa-loop regardless of
+        # the repo's devloops.config.yaml (issue #71 D4).
+        report = pm_schedule.exclusivity_report(pm_scheduler, state_root=self.root, config={})
         self.assertIn("qa-loop", report["peerConflicts"])
         self.assertFalse(report["exclusiveOk"])
 
