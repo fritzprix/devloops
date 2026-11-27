@@ -124,7 +124,7 @@ Pipeline counters (`approvedIssues`, `prsNeedingWorker`, `prsNeedingReview`, `pr
 
 Read the plan:
 
-- `cascade`: ordered delegate runs inside the slot cap (bottleneck-aware).
+- `cascade`: ordered delegate runs inside the slot cap (rotates active roles round-robin when slots are fewer than roles with work; follow this order).
 - `constraints`: PM must not approve, merge, or over-fill the board.
 - `roleSkills`: open those SKILL.md files for implementation/review/producer rules.
 

@@ -137,7 +137,7 @@ def cascade_plan(
 
     When the slot budget is smaller than the number of roles with work, roles
     are chosen in round-robin order starting after ``state["lastCascadeRole"]``
-    (defaulting to ``gatekeeper-loop`` when absent) so no role starves (#118).
+    (starting at ``gatekeeper-loop`` when absent) so no role starves (#118).
     When ``state`` is provided and at least one role is planned,
     ``state["lastCascadeRole"]`` is updated in place to the last planned role.
     """
