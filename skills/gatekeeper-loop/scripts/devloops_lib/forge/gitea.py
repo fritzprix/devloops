@@ -581,17 +581,37 @@ class GiteaForge:
                 return CiSummary(state=CI_PENDING, failing=[], pending=list(required_checks))
             return CiSummary(state=CI_NONE)
 
+        req_set = set(required_checks)
+        latest_req: Dict[str, tuple[str, int, Dict[str, Any], str]] = {}
+        if req_set:
+            for idx, st in enumerate(statuses):
+                ctx = str(st.get("context") or st.get("description") or "status")
+                if ctx not in req_set:
+                    continue
+                val = str(st.get("status") or st.get("state") or "").lower()
+                ts = str(st.get("created_at") or st.get("updated_at") or "")
+                if ts.startswith("0001-01-01"):
+                    ts = ""
+                key = (ts, idx)
+                prev = latest_req.get(ctx)
+                if prev is None or key >= (prev[0], prev[1]):
+                    latest_req[ctx] = (ts, idx, st, val)
+
+        effective: List[tuple[str, str]] = []
+        seen_req: set[str] = set()
+        for st in statuses:
+            ctx = str(st.get("context") or st.get("description") or "status")
+            if ctx in req_set:
+                if ctx not in seen_req:
+                    seen_req.add(ctx)
+                    effective.append((ctx, latest_req[ctx][3]))
+            else:
+                val = str(st.get("status") or st.get("state") or "").lower()
+                effective.append((ctx, val))
+
         failing: List[str] = []
         pending: List[str] = []
-        latest_by_ctx: Dict[str, tuple[str, int, str]] = {}
-        for idx, st in enumerate(statuses):
-            ctx = str(st.get("context") or st.get("description") or "status")
-            val = str(st.get("status") or st.get("state") or "").lower()
-            ts = str(st.get("updated_at") or st.get("created_at") or "")
-            key = (ts, idx)
-            prev = latest_by_ctx.get(ctx)
-            if prev is None or key >= (prev[0], prev[1]):
-                latest_by_ctx[ctx] = (ts, idx, val)
+        for ctx, val in effective:
             if val in ("failure", "error"):
                 failing.append(ctx)
             elif val == "pending":
@@ -601,7 +621,7 @@ class GiteaForge:
         missing = [
             name
             for name in required_checks
-            if (name not in latest_by_ctx or latest_by_ctx[name][2] != "success")
+            if (name not in latest_req or latest_req[name][3] != "success")
             and name not in failing
             and name not in pending
         ]

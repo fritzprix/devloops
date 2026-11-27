@@ -242,26 +242,59 @@ def stalled_checks(
     return sorted(stalled)
 
 
+def _check_run_ts(c: dict) -> str:
+    for field in ("startedAt", "createdAt", "completedAt"):
+        val = str(c.get(field) or "")
+        if val and not val.startswith("0001-01-01"):
+            return val
+    return ""
+
+
+def effective_checks(checks: list[dict], config: dict | None = None) -> list[dict]:
+    """For required check names, keep only the latest run; keep all runs for other checks."""
+    required = ((config or {}).get("gatekeeper") or {}).get("required_checks") or []
+    req_set = set(required)
+    if not req_set:
+        return list(checks)
+    latest_req: dict[str, tuple[str, int, dict]] = {}
+    for idx, c in enumerate(checks):
+        name = c.get("name") or c.get("context")
+        if not name or name not in req_set:
+            continue
+        ts = _check_run_ts(c)
+        key = (ts, idx)
+        prev = latest_req.get(name)
+        if prev is None or key >= (prev[0], prev[1]):
+            latest_req[name] = (ts, idx, c)
+    out: list[dict] = []
+    seen_req: set[str] = set()
+    for c in checks:
+        name = c.get("name") or c.get("context")
+        if name and name in req_set:
+            if name not in seen_req:
+                seen_req.add(name)
+                out.append(latest_req[name][2])
+        else:
+            out.append(c)
+    return out
+
+
 def missing_required_checks(checks: list[dict], config: dict | None = None) -> list[str]:
     """Return required check names whose latest run has not succeeded in `checks`."""
     required = ((config or {}).get("gatekeeper") or {}).get("required_checks") or []
     if not required:
         return []
-    latest_by_name: dict[str, tuple[str, int, str]] = {}
-    for idx, c in enumerate(checks):
+    eff = effective_checks(checks, config)
+    latest_state: dict[str, str] = {}
+    for c in eff:
         name = c.get("name") or c.get("context")
-        if not name:
-            continue
-        ts = str(c.get("completedAt") or c.get("startedAt") or c.get("createdAt") or "")
-        key = (ts, idx)
-        prev = latest_by_name.get(name)
-        if prev is None or key >= (prev[0], prev[1]):
-            latest_by_name[name] = (ts, idx, check_state(c))
+        if name:
+            latest_state[name] = check_state(c)
     return [
         name
         for name in required
-        if (name not in latest_by_name or latest_by_name[name][2] != "SUCCESS")
-        and (name not in latest_by_name or latest_by_name[name][2] not in FAILED)
+        if (name not in latest_state or latest_state[name] != "SUCCESS")
+        and (name not in latest_state or latest_state[name] not in FAILED)
     ]
 
 
@@ -428,8 +461,9 @@ def summarize(
     repo_has_ci = bool((readiness.get("ci") or {}).get("present"))
     base = pr["baseRefName"]
     checks = pr.get("statusCheckRollup") or []
-    failing = [c.get("name") or c.get("context") for c in checks if check_state(c) in FAILED]
-    pending = [c.get("name") or c.get("context") for c in checks if check_state(c) in PENDING]
+    eff_checks = effective_checks(checks, cfg)
+    failing = [c.get("name") or c.get("context") for c in eff_checks if check_state(c) in FAILED]
+    pending = [c.get("name") or c.get("context") for c in eff_checks if check_state(c) in PENDING]
     comments = pr.get("comments") or []
     markers, responses = parse_markers(comments, me)
     verdicts, cleans, needs = split_markers(markers)

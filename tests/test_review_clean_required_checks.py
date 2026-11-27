@@ -245,11 +245,11 @@ class RequiredChecksTests(unittest.TestCase):
         res_mixed = gh_forge.ci_status(pr_latest_skipped, required_checks=["ubuntu", "macos"])
         self.assertEqual(res_mixed.state, CI_PENDING)
         self.assertIn("macos", res_mixed.pending)
-        # Failing required check stays failure (not downgraded to pending)
+        # Failing latest required check stays failure (not downgraded to pending)
         pr_fail = self._pr([
             {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS"},
-            {"name": "macos", "status": "COMPLETED", "conclusion": "FAILURE"},
             {"name": "macos", "status": "COMPLETED", "conclusion": "SKIPPED"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "FAILURE"},
         ])
         res_fail = gh_forge.ci_status(pr_fail, required_checks=["ubuntu", "macos"])
         self.assertEqual(res_fail.state, CI_FAILURE)
@@ -309,6 +309,80 @@ class RequiredChecksTests(unittest.TestCase):
             {"name": "macos", "status": "COMPLETED", "conclusion": "FAILURE"},
         ]
         self.assertEqual(gq.missing_required_checks(checks_failed, cfg), [])
+
+    def test_github_ci_status_superseded_failure_and_running_rerun(self):
+        gh_forge = GitHubForge()
+        # Older CANCELLED / FAILURE followed by newer SUCCESS -> passes (G3.1)
+        pr_ok = self._pr([
+            {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-11-27T01:00:00Z", "completedAt": "2026-11-27T01:02:00Z"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "CANCELLED", "startedAt": "2026-11-27T01:00:00Z", "completedAt": "2026-11-27T01:01:00Z"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "FAILURE", "startedAt": "2026-11-27T01:02:00Z", "completedAt": "2026-11-27T01:03:00Z"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-11-27T01:05:00Z", "completedAt": "2026-11-27T01:07:00Z"},
+        ])
+        res_ok = gh_forge.ci_status(pr_ok, required_checks=["ubuntu", "macos"])
+        self.assertEqual(res_ok.state, CI_SUCCESS)
+        self.assertEqual(res_ok.failing, [])
+        self.assertEqual(res_ok.pending, [])
+        # Older SUCCESS followed by newer IN_PROGRESS with zero completedAt -> pending (G3.1)
+        pr_running = self._pr([
+            {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-11-27T01:00:00Z", "completedAt": "2026-11-27T01:02:00Z"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-11-27T01:00:00Z", "completedAt": "2026-11-27T01:02:00Z"},
+            {"name": "macos", "status": "IN_PROGRESS", "conclusion": "", "startedAt": "2026-11-27T01:05:00Z", "completedAt": "0001-01-01T00:00:00Z"},
+        ])
+        res_running = gh_forge.ci_status(pr_running, required_checks=["ubuntu", "macos"])
+        self.assertEqual(res_running.state, CI_PENDING)
+        self.assertIn("macos", res_running.pending)
+
+    def test_gitea_ci_status_superseded_failure_and_running_rerun(self):
+        g = GiteaForge(base_url="https://gitea.example", owner="o", name="r")
+        pr = PullRequest(
+            number=1, title="t", url="u", head_ref="b", head_sha="sha1", base_ref="main",
+            is_draft=False, author="me",
+        )
+        # Older failure followed by newer success -> passes (G3.1)
+        with mock.patch.object(
+            g, "_http_call",
+            return_value=(200, {"statuses": [
+                {"context": "ubuntu", "status": "success", "created_at": "2026-11-27T01:00:00Z"},
+                {"context": "macos", "status": "failure", "created_at": "2026-11-27T01:00:00Z"},
+                {"context": "macos", "status": "success", "created_at": "2026-11-27T01:05:00Z"},
+            ]}),
+        ):
+            res_ok = g.ci_status(pr, required_checks=["ubuntu", "macos"])
+            self.assertEqual(res_ok.state, CI_SUCCESS)
+            self.assertEqual(res_ok.failing, [])
+        # Older success followed by newer pending -> pending (G3.1)
+        with mock.patch.object(
+            g, "_http_call",
+            return_value=(200, {"statuses": [
+                {"context": "ubuntu", "status": "success", "created_at": "2026-11-27T01:00:00Z"},
+                {"context": "macos", "status": "success", "created_at": "2026-11-27T01:00:00Z"},
+                {"context": "macos", "status": "pending", "created_at": "2026-11-27T01:05:00Z"},
+            ]}),
+        ):
+            res_pending = g.ci_status(pr, required_checks=["ubuntu", "macos"])
+            self.assertEqual(res_pending.state, CI_PENDING)
+            self.assertIn("macos", res_pending.pending)
+
+    def test_queue_effective_checks_ignores_superseded_required_runs(self):
+        cfg = {"gatekeeper": {"required_checks": ["ubuntu", "macos"]}}
+        checks_ok = [
+            {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-11-27T01:00:00Z"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "CANCELLED", "startedAt": "2026-11-27T01:00:00Z"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "FAILURE", "startedAt": "2026-11-27T01:02:00Z"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-11-27T01:05:00Z"},
+        ]
+        eff_ok = gq.effective_checks(checks_ok, cfg)
+        self.assertEqual([c["name"] for c in eff_ok if gq.check_state(c) in gq.FAILED], [])
+        self.assertEqual(gq.missing_required_checks(checks_ok, cfg), [])
+        checks_running = [
+            {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-11-27T01:00:00Z", "completedAt": "2026-11-27T01:02:00Z"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-11-27T01:00:00Z", "completedAt": "2026-11-27T01:02:00Z"},
+            {"name": "macos", "status": "IN_PROGRESS", "conclusion": "", "startedAt": "2026-11-27T01:05:00Z", "completedAt": "0001-01-01T00:00:00Z"},
+        ]
+        eff_run = gq.effective_checks(checks_running, cfg)
+        self.assertEqual([c["name"] for c in eff_run if gq.check_state(c) in gq.PENDING], ["macos"])
+        self.assertEqual(gq.missing_required_checks(checks_running, cfg), ["macos"])
 
     def test_config_validation_rejects_invalid_required_checks(self):
         with tempfile.TemporaryDirectory() as tmp:

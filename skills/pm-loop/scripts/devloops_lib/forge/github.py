@@ -282,24 +282,45 @@ class GitHubForge:
             raw=p,
         )
 
+    @staticmethod
+    def _check_run_ts(c: Dict[str, Any]) -> str:
+        for field in ("startedAt", "createdAt", "completedAt"):
+            val = str(c.get(field) or "")
+            if val and not val.startswith("0001-01-01"):
+                return val
+        return ""
+
     def ci_status(self, pr: PullRequest, *, required_checks: Sequence[str] = ()) -> CiSummary:
         checks = pr.raw.get("statusCheckRollup") or []
-        failing = [c.get("name") or c.get("context") for c in checks if _check_state(c) in FAILED]
-        pending = [c.get("name") or c.get("context") for c in checks if _check_state(c) in PENDING]
-        latest_by_name: Dict[str, tuple[str, int, str]] = {}
-        for idx, c in enumerate(checks):
+        req_set = set(required_checks)
+        latest_req: Dict[str, tuple[str, int, Dict[str, Any]]] = {}
+        if req_set:
+            for idx, c in enumerate(checks):
+                name = c.get("name") or c.get("context")
+                if not name or name not in req_set:
+                    continue
+                ts = self._check_run_ts(c)
+                key = (ts, idx)
+                prev = latest_req.get(name)
+                if prev is None or key >= (prev[0], prev[1]):
+                    latest_req[name] = (ts, idx, c)
+        effective: List[Dict[str, Any]] = []
+        seen_req: set[str] = set()
+        for c in checks:
             name = c.get("name") or c.get("context")
-            if not name:
-                continue
-            ts = str(c.get("completedAt") or c.get("startedAt") or c.get("createdAt") or "")
-            key = (ts, idx)
-            prev = latest_by_name.get(name)
-            if prev is None or key >= (prev[0], prev[1]):
-                latest_by_name[name] = (ts, idx, _check_state(c))
+            if name and name in req_set:
+                if name not in seen_req:
+                    seen_req.add(name)
+                    effective.append(latest_req[name][2])
+            else:
+                effective.append(c)
+
+        failing = [c.get("name") or c.get("context") for c in effective if _check_state(c) in FAILED]
+        pending = [c.get("name") or c.get("context") for c in effective if _check_state(c) in PENDING]
         missing = [
             name
             for name in required_checks
-            if (name not in latest_by_name or latest_by_name[name][2] != "SUCCESS")
+            if (name not in latest_req or _check_state(latest_req[name][2]) != "SUCCESS")
             and name not in failing
             and name not in pending
         ]
