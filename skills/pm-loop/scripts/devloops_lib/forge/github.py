@@ -286,15 +286,20 @@ class GitHubForge:
         checks = pr.raw.get("statusCheckRollup") or []
         failing = [c.get("name") or c.get("context") for c in checks if _check_state(c) in FAILED]
         pending = [c.get("name") or c.get("context") for c in checks if _check_state(c) in PENDING]
-        states_by_name: Dict[str, List[str]] = {}
-        for c in checks:
+        latest_by_name: Dict[str, tuple[str, int, str]] = {}
+        for idx, c in enumerate(checks):
             name = c.get("name") or c.get("context")
-            if name:
-                states_by_name.setdefault(name, []).append(_check_state(c))
+            if not name:
+                continue
+            ts = str(c.get("completedAt") or c.get("startedAt") or c.get("createdAt") or "")
+            key = (ts, idx)
+            prev = latest_by_name.get(name)
+            if prev is None or key >= (prev[0], prev[1]):
+                latest_by_name[name] = (ts, idx, _check_state(c))
         missing = [
             name
             for name in required_checks
-            if (name not in states_by_name or any(s != "SUCCESS" for s in states_by_name[name]))
+            if (name not in latest_by_name or latest_by_name[name][2] != "SUCCESS")
             and name not in failing
             and name not in pending
         ]

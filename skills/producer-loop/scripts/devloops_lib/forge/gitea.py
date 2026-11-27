@@ -583,11 +583,15 @@ class GiteaForge:
 
         failing: List[str] = []
         pending: List[str] = []
-        states_by_ctx: Dict[str, List[str]] = {}
-        for st in statuses:
+        latest_by_ctx: Dict[str, tuple[str, int, str]] = {}
+        for idx, st in enumerate(statuses):
             ctx = str(st.get("context") or st.get("description") or "status")
             val = str(st.get("status") or st.get("state") or "").lower()
-            states_by_ctx.setdefault(ctx, []).append(val)
+            ts = str(st.get("updated_at") or st.get("created_at") or "")
+            key = (ts, idx)
+            prev = latest_by_ctx.get(ctx)
+            if prev is None or key >= (prev[0], prev[1]):
+                latest_by_ctx[ctx] = (ts, idx, val)
             if val in ("failure", "error"):
                 failing.append(ctx)
             elif val == "pending":
@@ -597,7 +601,7 @@ class GiteaForge:
         missing = [
             name
             for name in required_checks
-            if (name not in states_by_ctx or any(v != "success" for v in states_by_ctx[name]))
+            if (name not in latest_by_ctx or latest_by_ctx[name][2] != "success")
             and name not in failing
             and name not in pending
         ]

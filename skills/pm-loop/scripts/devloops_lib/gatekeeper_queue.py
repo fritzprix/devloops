@@ -243,20 +243,25 @@ def stalled_checks(
 
 
 def missing_required_checks(checks: list[dict], config: dict | None = None) -> list[str]:
-    """Return required check names from gatekeeper.required_checks that have not all succeeded in `checks`."""
+    """Return required check names whose latest run has not succeeded in `checks`."""
     required = ((config or {}).get("gatekeeper") or {}).get("required_checks") or []
     if not required:
         return []
-    states_by_name: dict[str, list[str]] = {}
-    for c in checks:
+    latest_by_name: dict[str, tuple[str, int, str]] = {}
+    for idx, c in enumerate(checks):
         name = c.get("name") or c.get("context")
-        if name:
-            states_by_name.setdefault(name, []).append(check_state(c))
+        if not name:
+            continue
+        ts = str(c.get("completedAt") or c.get("startedAt") or c.get("createdAt") or "")
+        key = (ts, idx)
+        prev = latest_by_name.get(name)
+        if prev is None or key >= (prev[0], prev[1]):
+            latest_by_name[name] = (ts, idx, check_state(c))
     return [
         name
         for name in required
-        if (name not in states_by_name or any(s != "SUCCESS" for s in states_by_name[name]))
-        and not any(s in FAILED for s in states_by_name.get(name, ()))
+        if (name not in latest_by_name or latest_by_name[name][2] != "SUCCESS")
+        and (name not in latest_by_name or latest_by_name[name][2] not in FAILED)
     ]
 
 

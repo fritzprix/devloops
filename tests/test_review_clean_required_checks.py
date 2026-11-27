@@ -228,13 +228,21 @@ class RequiredChecksTests(unittest.TestCase):
         res = gh_forge.ci_status(pr_skipped, required_checks=["ubuntu", "macos"])
         self.assertEqual(res.state, CI_PENDING)
         self.assertIn("macos", res.pending)
-        # Mixed SUCCESS + SKIPPED runs of the same required check -> still pending
-        pr_mixed = self._pr([
-            {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS"},
-            {"name": "macos", "status": "COMPLETED", "conclusion": "SUCCESS"},
-            {"name": "macos", "status": "COMPLETED", "conclusion": "SKIPPED"},
+        # Older SKIPPED run followed by newer SUCCESS run -> passes (G3.1)
+        pr_rerun_ok = self._pr([
+            {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-11-27T01:00:00Z"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "SKIPPED", "completedAt": "2026-11-27T01:00:00Z"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-11-27T01:05:00Z"},
         ])
-        res_mixed = gh_forge.ci_status(pr_mixed, required_checks=["ubuntu", "macos"])
+        res_ok = gh_forge.ci_status(pr_rerun_ok, required_checks=["ubuntu", "macos"])
+        self.assertEqual(res_ok.state, CI_SUCCESS)
+        # Older SUCCESS run followed by newer SKIPPED run -> still pending
+        pr_latest_skipped = self._pr([
+            {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-11-27T01:00:00Z"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-11-27T01:00:00Z"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "SKIPPED", "completedAt": "2026-11-27T01:05:00Z"},
+        ])
+        res_mixed = gh_forge.ci_status(pr_latest_skipped, required_checks=["ubuntu", "macos"])
         self.assertEqual(res_mixed.state, CI_PENDING)
         self.assertIn("macos", res_mixed.pending)
         # Failing required check stays failure (not downgraded to pending)
@@ -256,27 +264,46 @@ class RequiredChecksTests(unittest.TestCase):
         with mock.patch.object(
             g, "_http_call",
             return_value=(200, {"statuses": [
-                {"context": "ubuntu", "status": "success"},
-                {"context": "macos", "status": "warning"},
+                {"context": "ubuntu", "status": "success", "updated_at": "2026-11-27T01:00:00Z"},
+                {"context": "macos", "status": "warning", "updated_at": "2026-11-27T01:00:00Z"},
             ]}),
         ):
             res = g.ci_status(pr, required_checks=["ubuntu", "macos"])
             self.assertEqual(res.state, CI_PENDING)
             self.assertIn("macos", res.pending)
+        # Older non-success run followed by newer success run -> passes (G3.1)
+        with mock.patch.object(
+            g, "_http_call",
+            return_value=(200, {"statuses": [
+                {"context": "ubuntu", "status": "success", "updated_at": "2026-11-27T01:00:00Z"},
+                {"context": "macos", "status": "warning", "updated_at": "2026-11-27T01:00:00Z"},
+                {"context": "macos", "status": "success", "updated_at": "2026-11-27T01:05:00Z"},
+            ]}),
+        ):
+            res_ok = g.ci_status(pr, required_checks=["ubuntu", "macos"])
+            self.assertEqual(res_ok.state, CI_SUCCESS)
 
-    def test_missing_required_checks_rejects_skipped_and_mixed_runs(self):
+    def test_missing_required_checks_uses_latest_run(self):
         cfg = {"gatekeeper": {"required_checks": ["ubuntu", "macos"]}}
         checks_skipped = [
             {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS"},
             {"name": "macos", "status": "COMPLETED", "conclusion": "SKIPPED"},
         ]
         self.assertEqual(gq.missing_required_checks(checks_skipped, cfg), ["macos"])
-        checks_mixed = [
-            {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS"},
-            {"name": "macos", "status": "COMPLETED", "conclusion": "SUCCESS"},
-            {"name": "macos", "status": "COMPLETED", "conclusion": "SKIPPED"},
+        # Older SKIPPED followed by newer SUCCESS -> not missing (G3.1)
+        checks_rerun_ok = [
+            {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-11-27T01:00:00Z"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "SKIPPED", "completedAt": "2026-11-27T01:00:00Z"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-11-27T01:05:00Z"},
         ]
-        self.assertEqual(gq.missing_required_checks(checks_mixed, cfg), ["macos"])
+        self.assertEqual(gq.missing_required_checks(checks_rerun_ok, cfg), [])
+        # Older SUCCESS followed by newer SKIPPED -> missing
+        checks_latest_skipped = [
+            {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-11-27T01:00:00Z"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-11-27T01:00:00Z"},
+            {"name": "macos", "status": "COMPLETED", "conclusion": "SKIPPED", "completedAt": "2026-11-27T01:05:00Z"},
+        ]
+        self.assertEqual(gq.missing_required_checks(checks_latest_skipped, cfg), ["macos"])
         checks_failed = [
             {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS"},
             {"name": "macos", "status": "COMPLETED", "conclusion": "FAILURE"},
