@@ -20,11 +20,12 @@ import sys
 from devloops_lib import contract
 from devloops_lib import worker_candidates
 from devloops_lib.claims import pr_is_approved
-from devloops_lib.config import load_config, open_pr_limit as configured_open_pr_limit
+from devloops_lib.config import get_state_path, load_config, open_pr_limit as configured_open_pr_limit
 from devloops_lib.config import candidate_policy as configured_candidate_policy
 from devloops_lib.gh import GhError, gh
 from devloops_lib.pr_status import find_merged_via_parent_issues
 from devloops_lib.config import run_main
+from devloops_lib.tick_gate import load_state
 
 EXCLUDED_LABELS = worker_candidates.EXCLUDED_LABELS
 DEPRIORITIZED_LABELS = {"backlog"}
@@ -251,7 +252,7 @@ def filter_and_rank_issues(
             "updatedAt": updated_at,
         }
         if reason:
-            excluded.append({"number": number, "title": issue["title"], "reason": reason})
+            excluded.append({"number": number, "title": issue["title"], "reason": reason, "updatedAt": updated_at})
             continue
         candidates.append(entry)
 
@@ -283,7 +284,7 @@ def filter_and_rank_issues(
     }
 
 
-def fetch_candidates(limit: int = 100) -> dict:
+def fetch_candidates(limit: int = 100, skipped: dict | None = None) -> dict:
     me = gh("api", "user", "--jq", ".login").strip()
     issues = json.loads(
         gh("issue", "list", "--state", "open", "--limit", str(limit), "--json",
@@ -297,7 +298,10 @@ def fetch_candidates(limit: int = 100) -> dict:
         gh("pr", "list", "--state", "merged", "--limit", "100", "--json",
            "number,title,body,headRefName,baseRefName,url")
     )
-    return filter_and_rank_issues(issues, open_prs, me, merged_prs=merged_prs)
+    if skipped is None:
+        state = load_state(get_state_path("worker-loop"))
+        skipped = state.get("skipped") if isinstance(state, dict) else {}
+    return filter_and_rank_issues(issues, open_prs, me, merged_prs=merged_prs, skipped=skipped)
 
 
 def main() -> None:

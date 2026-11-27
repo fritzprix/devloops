@@ -241,6 +241,88 @@ class WorkerCandidatesTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 preflight_decision(config={}, state={})
 
+    def test_gate_backlog_matches_worker_candidates_with_skipped(self):
+        # G5.1: gate backlog and worker candidate list agree on actionable issues
+        # when worker state's `skipped` is passed, and skipped issues remain visible
+        # under `excluded` with `updatedAt` for the idle check.
+        from devloops_lib.issue_candidates import filter_and_rank_issues
+
+        issues_raw = [
+            {
+                "number": 10,
+                "title": "Actionable leaf",
+                "body": "Do the thing",
+                "updatedAt": "2026-02-01T00:00:00Z",
+                "labels": [{"name": "approved"}],
+                "assignees": [],
+                "url": "https://example/issues/10",
+            },
+            {
+                "number": 11,
+                "title": "Skipped unchanged",
+                "body": "Waiting on owner",
+                "updatedAt": "2026-02-01T00:00:00Z",
+                "labels": [{"name": "approved"}],
+                "assignees": [],
+                "url": "https://example/issues/11",
+            },
+            {
+                "number": 12,
+                "title": "Skipped but updated",
+                "body": "Owner replied",
+                "updatedAt": "2026-02-02T00:00:00Z",
+                "labels": [{"name": "approved"}],
+                "assignees": [],
+                "url": "https://example/issues/12",
+            },
+            {
+                "number": 13,
+                "title": "Epic tracker",
+                "body": "Epic",
+                "updatedAt": "2026-02-01T00:00:00Z",
+                "labels": [{"name": "approved"}, {"name": "epic"}],
+                "assignees": [],
+                "url": "https://example/issues/13",
+            },
+        ]
+        skipped = {
+            "11": {"reason": "owner-share", "updatedAt": "2026-02-01T00:00:00Z"},
+            "12": {"reason": "owner-share", "updatedAt": "2026-02-01T00:00:00Z"},
+        }
+        gate_issues = [
+            {
+                "number": i["number"],
+                "title": i["title"],
+                "updatedAt": i["updatedAt"],
+                "labels": {"nodes": i["labels"]},
+                "assignees": {"nodes": i["assignees"]},
+            }
+            for i in issues_raw
+        ]
+        gate_backlog = find_actionable_backlog(
+            {"prs": [], "issues": gate_issues},
+            me="me",
+            skipped=skipped,
+            forge=object(),
+            open_blockers_fn=lambda *_a, **_k: [],
+            list_sub_issues_fn=lambda *_a, **_k: [],
+        )
+        cand_res = filter_and_rank_issues(
+            issues_raw,
+            [],
+            "me",
+            skipped=skipped,
+            config={},
+            open_blockers_fn=lambda _n: [],
+        )
+        cand_numbers = sorted(c["number"] for c in cand_res["candidates"])
+        self.assertEqual(sorted(gate_backlog), [10, 12])
+        self.assertEqual(cand_numbers, sorted(gate_backlog))
+        excluded_by_num = {e["number"]: e for e in cand_res["excluded"]}
+        self.assertIn(11, excluded_by_num)
+        self.assertEqual(excluded_by_num[11]["updatedAt"], "2026-02-01T00:00:00Z")
+        self.assertIn("skipped", excluded_by_num[11]["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -245,7 +245,7 @@ def tick_command(
     if norm_loop == "worker-loop":
         if not state.get("current"):
             try:
-                fp, backlog = preflight_decision()
+                fp, backlog = preflight_decision(state=state)
                 last_fp = state.get("lastFingerprint")
                 if last_fp and last_fp == fp and not backlog:
                     print("NOOP (no changes)")
