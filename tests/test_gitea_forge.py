@@ -316,6 +316,16 @@ class GiteaFixtureStub:
                 return 200, {}, json.dumps(self.review_comments.get((num, int(rest[2])), []))
             if len(rest) == 2 and rest[1] == "update" and method == "POST":
                 return 200, {}, json.dumps({"ok": True})
+            if len(rest) == 2 and rest[1] == "merge" and method == "POST":
+                pr = self._find_pr(num)
+                if pr is None:
+                    return 404, {}, json.dumps({"message": "not found"})
+                expected = (body or {}).get("head_commit_id")
+                if expected and (pr.get("head") or {}).get("sha") != expected:
+                    return 409, {}, json.dumps({"message": "head commit mismatch"})
+                pr["state"] = "closed"
+                pr["merged"] = True
+                return 200, {}, json.dumps({"ok": True})
 
         if path.startswith(f"{prefix}/commits/") and path.endswith("/status") and method == "GET":
             sha = path[len(f"{prefix}/commits/"):-len("/status")]

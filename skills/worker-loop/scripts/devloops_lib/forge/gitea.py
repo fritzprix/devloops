@@ -500,6 +500,22 @@ class GiteaForge:
 
     # -- pull requests ----------------------------------------------------
 
+    def merge_pr(self, number: int, expected_head_sha: str) -> None:
+        """Merge PR #number only if its head commit matches expected_head_sha (#109)."""
+        if not expected_head_sha or not expected_head_sha.strip():
+            raise ForgeError("merge_pr requires a non-empty expected_head_sha")
+        pr = self.get_pr(number)
+        if pr.head_sha != expected_head_sha:
+            raise ForgeError(
+                f"{self.forge_type} merge_pr head mismatch on PR #{number}: "
+                f"expected {expected_head_sha}, got {pr.head_sha}"
+            )
+        self._http_call(
+            "POST",
+            f"{self._repo_prefix}/pulls/{number}/merge",
+            body={"Do": "merge", "head_commit_id": expected_head_sha},
+        )
+
     def _review_decision(self, number: int) -> str:
         _, reviews = self._http_call("GET", f"{self._repo_prefix}/pulls/{number}/reviews", allow_404=True)
         if not isinstance(reviews, list) or not reviews:

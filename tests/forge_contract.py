@@ -342,6 +342,16 @@ class FakeForge:
             "body": body, "url": _url("pull", number) + "#issuecomment-new",
         })
 
+    def merge_pr(self, number: int, expected_head_sha: str) -> None:
+        if not expected_head_sha or not expected_head_sha.strip():
+            raise ForgeError("merge_pr requires a non-empty expected_head_sha")
+        pr = self._pr(number)
+        if pr["headRefOid"] != expected_head_sha:
+            raise ForgeError(
+                f"head mismatch on PR #{number}: expected {expected_head_sha}, got {pr['headRefOid']}"
+            )
+        pr["state"] = "MERGED"
+
     def post_issue_comment(self, number: int, body: str) -> None:
         issue = self._issue(number)
         issue.setdefault("comments", []).append({
@@ -453,6 +463,8 @@ class GhStub:
             return json.dumps(self._find_pr(int(argv[2])))
         if head == ("pr", "comment"):
             return self._pr_comment(argv[2], args)
+        if head == ("pr", "merge"):
+            return self._pr_merge(argv[2], args)
         if head == ("api", "graphql"):
             return self._graphql(args)
         if len(argv) > 1 and argv[0] == "api" and argv[1].startswith("repos/"):
@@ -542,6 +554,16 @@ class GhStub:
             "body": self._opt(args, "--body") or "", "url": url,
         })
         return url + "\n"
+
+    def _pr_merge(self, number_s: str, args: List[str]) -> str:
+        pr = self._find_pr(int(number_s))
+        expected = self._opt(args, "--match-head-commit")
+        if expected and pr["headRefOid"] != expected:
+            raise ForgeError(
+                f"head commit {pr['headRefOid']} does not match --match-head-commit {expected}"
+            )
+        pr["state"] = "MERGED"
+        return ""
 
     def _graphql(self, args: List[str]) -> str:
         self.graphql_calls.append(list(args))
@@ -784,3 +806,18 @@ class ForgeContract:
     def test_add_blocker_closed_blocker_state(self):
         self.forge.add_blocker(2, 3)  # closed issue 3 blocks issue 2
         assert [b.state for b in self.forge.blocked_by(2) if b.number == 3] == ["closed"]
+
+    # -- pull request merge (issue #109) ------------------------------------
+
+    def test_merge_pr_rejects_mismatched_head_sha(self):
+        import pytest
+
+        pr = self.forge.get_pr(11)
+        with pytest.raises(ForgeError):
+            self.forge.merge_pr(11, "0000000000000000")
+        assert any(p.number == pr.number for p in self.forge.list_prs(state="open"))
+
+    def test_merge_pr_merges_when_head_sha_matches(self):
+        pr = self.forge.get_pr(11)
+        self.forge.merge_pr(11, pr.head_sha)
+        assert all(p.number != pr.number for p in self.forge.list_prs(state="open"))

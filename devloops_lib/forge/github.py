@@ -276,6 +276,12 @@ class GitHubForge:
         data = json.loads(self._call("pr", "view", str(number), "--json", _PR_VIEW_JSON))
         return self._parse_pr(data)
 
+    def merge_pr(self, number: int, expected_head_sha: str) -> None:
+        """Merge PR #number only if its head commit matches expected_head_sha (#109)."""
+        if not expected_head_sha or not expected_head_sha.strip():
+            raise ForgeError("merge_pr requires a non-empty expected_head_sha")
+        self._call("pr", "merge", str(number), "--match-head-commit", expected_head_sha)
+
     @staticmethod
     def _parse_pr(p: Dict[str, Any]) -> PullRequest:
         return PullRequest(
