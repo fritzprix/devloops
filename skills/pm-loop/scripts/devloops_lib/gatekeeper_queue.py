@@ -309,12 +309,23 @@ def effective_checks(checks: list[dict], config: dict | None = None) -> list[dic
     return out
 
 
-def missing_required_checks(checks: list[dict], config: dict | None = None) -> list[str]:
-    """Return required check names whose latest run has not succeeded in `checks`."""
+def missing_required_checks(
+    checks: list[dict],
+    config: dict | None = None,
+    head: str | None = None,
+) -> list[str]:
+    """Return required check names whose latest run has not succeeded at `head` in `checks`."""
     required = ((config or {}).get("gatekeeper") or {}).get("required_checks") or []
     if not required:
         return []
-    eff = effective_checks(checks, config)
+    filtered = checks
+    if head:
+        filtered = [
+            c for c in checks
+            if not (c.get("headSha") or c.get("head_sha"))
+            or (c.get("headSha") or c.get("head_sha")) == head
+        ]
+    eff = effective_checks(filtered, config)
     latest_state: dict[str, str] = {}
     for c in eff:
         name = c.get("name") or c.get("context")
@@ -393,6 +404,8 @@ def classify(
             return "review", f"base changed after approve ({reviewed_base} -> {base})", 0
         if ci_failed:
             return "review", "CI failing after approve", 0
+        if ci_applies and missing_required_checks:
+            return "await-ci", f"approved at head; waiting for required checks ({', '.join(missing_required_checks)})", 9
         return "approved", "approved at current head", 9
 
     max_rounds = max_rounds_from_config(config)
