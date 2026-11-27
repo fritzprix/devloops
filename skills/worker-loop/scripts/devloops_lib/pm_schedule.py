@@ -5,9 +5,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from devloops_lib.config import load_config
+from devloops_lib.config import load_config, peer_loops as configured_peer_loops
 from devloops_lib.tick_gate import load_state, save_state
 
+# Default peer loops; the filled scaffolding (pm.peer_loops) is the source of
+# truth (issue #71 deliverable 4, epic #102). Kept for back-compat imports.
 PEER_LOOPS = ("worker-loop", "gatekeeper-loop", "qa-loop", "producer-loop")
 _PM_LOOP = "pm-loop"
 
@@ -42,7 +44,7 @@ def exclusivity_report(
     config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return whether peer-loop crons conflict with an armed PM scheduler."""
-    cfg = config or load_config()
+    cfg = config if config is not None else load_config()
     root = state_root
     if root is None:
         from devloops_lib.config import find_project_root
@@ -53,7 +55,7 @@ def exclusivity_report(
     peer_status: dict[str, Any] = {}
     conflicts: list[str] = []
 
-    for loop in PEER_LOOPS:
+    for loop in configured_peer_loops(cfg):
         sched = read_loop_scheduler(root / loop / "state.json")
         peer_status[loop] = {"schedulerActive": sched is not None, "scheduler": sched}
         if pm_active and sched is not None:
@@ -89,10 +91,15 @@ def clear_pm_scheduler(state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
-def write_exclusivity_flags(state_root: Path, pm_active: bool) -> None:
+def write_exclusivity_flags(
+    state_root: Path,
+    pm_active: bool,
+    *,
+    config: dict[str, Any] | None = None,
+) -> None:
     """Write peer-loop state flags so external schedulers know not to run."""
     flag = {"pmCascadeActive": pm_active, "ownedBy": _PM_LOOP}
-    for loop in PEER_LOOPS:
+    for loop in configured_peer_loops(config if config is not None else load_config()):
         path = state_root / loop / "state.json"
         state = load_state(path)
         schedule = state.get("schedule") or {}

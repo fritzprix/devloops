@@ -424,6 +424,16 @@ def open_pr_limit(cfg: dict[str, Any]) -> int:
     return int(_positive_number(cfg, "worker", "open_pr_limit"))
 
 
+def peer_loops(cfg: dict[str, Any]) -> tuple[str, ...]:
+    """Peer loops the pm-loop runs and cascades to (issue #71 deliverable 4, epic #102).
+    Read from ``pm.peer_loops`` with the current list as the default."""
+    section = cfg.get("pm") or {}
+    raw = section.get("peer_loops")
+    if raw is None:
+        raw = DEFAULT_CONFIG["pm"]["peer_loops"]
+    return tuple(str(x) for x in raw)
+
+
 def issue_claim_ttl_seconds(cfg: dict[str, Any]) -> int:
     """An active issue claim not refreshed for this long is stale."""
     return int(_positive_number(cfg, "worker", "issue_claim_ttl_minutes") * 60)
