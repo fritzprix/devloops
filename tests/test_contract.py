@@ -275,6 +275,162 @@ class NeedsOwnerProtocolTest(unittest.TestCase):
         self.assertEqual(reply["createdAt"], "2026-01-02T00:00:00Z")
 
 
+class GatekeeperNoteMarkerTest(unittest.TestCase):
+    """Issue #114: gatekeeper note marker is never counted as an owner comment."""
+
+    def test_gatekeeper_note_parses_and_is_not_owner_reply(self):
+        self.assertEqual(
+            contract.parse_marker("<!-- gatekeeper-loop: note -->\nBase CI is red."),
+            ("gatekeeper-loop", {"kind": "note"}),
+        )
+        self.assertEqual(
+            contract.parse_marker("<!-- gatekeeper-loop: kind=note -->\nBase CI is red."),
+            ("gatekeeper-loop", {"kind": "note"}),
+        )
+        comments = [
+            comment("<!-- gatekeeper-loop: kind=needs-owner reason=ambiguity -->", "2026-01-01T01:00:00Z"),
+            comment("<!-- gatekeeper-loop: note -->\nBase CI is red.", "2026-01-01T02:00:00Z"),
+        ]
+        self.assertIsNone(contract.first_owner_reply(comments, "me", "2026-01-01T01:00:00Z"))
+
+    def test_marked_note_does_not_trigger_any_classifier_while_unmarked_does(self):
+        import json
+        from unittest import mock
+        from devloops_lib import gatekeeper_queue, pr_status, qa
+
+        base_comments = [
+            comment("<!-- gatekeeper-loop: round=1 verdict=approve head=sha1 base=main -->", "2026-01-01T01:00:00Z"),
+            comment("<!-- qa-loop: kind=verdict verdict=accepted head=sha1 base=main -->", "2026-01-01T01:05:00Z"),
+        ]
+        note_comments = base_comments + [
+            comment("<!-- gatekeeper-loop: note -->\nExternal CI note.", "2026-01-01T02:00:00Z"),
+        ]
+        unmarked_comments = base_comments + [
+            comment("Owner follow-up on shared account.", "2026-01-01T02:00:00Z"),
+        ]
+
+        def classify_gk(comments):
+            verdicts = [
+                m for m in contract.parse_markers(comments, "me", loop="gatekeeper-loop")
+                if m.get("verdict")
+            ]
+            last_v = verdicts[-1]
+            owner_c = gatekeeper_queue.owner_comments_after(comments, "me", last_v["createdAt"])
+            return gatekeeper_queue.classify(
+                mergeable="MERGEABLE",
+                head="sha1",
+                base="main",
+                last_verdict=last_v,
+                worker_response=None,
+                total_verdicts=len(verdicts),
+                state_reviewed_head="sha1",
+                state_pending_ci=False,
+                has_open_findings=False,
+                pending_checks=[],
+                failing_checks=[],
+                reviewed_base="main",
+                owner_comment=bool(owner_c),
+            )
+
+        def classify_qa(comments):
+            return qa.classify_pr(
+                {"number": 50, "headRefOid": "sha1", "comments": comments, "labels": []},
+                "me",
+            )
+
+        def summarize_worker(comments):
+            pr = {
+                "number": 50,
+                "title": "feat: test",
+                "body": "Summary",
+                "url": "https://example.invalid/pr/50",
+                "headRefName": "feat/test-50",
+                "headRefOid": "sha1",
+                "baseRefName": "main",
+                "isDraft": False,
+                "mergeable": "MERGEABLE",
+                "mergeStateStatus": "CLEAN",
+                "reviewDecision": "",
+                "statusCheckRollup": [],
+                "commits": [{"committedDate": "2026-01-01T00:30:00Z"}],
+                "comments": comments,
+                "labels": [],
+            }
+            def fake_gh(*args, **kwargs):
+                if args and args[0] == "api":
+                    return json.dumps({"data": {}})
+                return json.dumps(pr)
+            with mock.patch.object(pr_status, "gh", side_effect=fake_gh), \
+                 mock.patch.object(pr_status, "duplicate_commits", return_value=[]), \
+                 mock.patch.object(pr_status, "parent_pr_merged", return_value=None):
+                return pr_status.summarize(50, "owner", "repo", "me", default_base="main", merged_prs=[])
+
+        # Gatekeeper queue: status unchanged after marked note, changes to review after unmarked owner comment.
+        before_gk = classify_gk(base_comments)
+        after_note_gk = classify_gk(note_comments)
+        after_owner_gk = classify_gk(unmarked_comments)
+        self.assertEqual(after_note_gk[0], before_gk[0])
+        self.assertEqual(after_owner_gk[0], "review")
+
+        # QA classifier: status unchanged after marked note, changes to review after unmarked owner comment.
+        before_qa = classify_qa(base_comments)
+        after_note_qa = classify_qa(note_comments)
+        after_owner_qa = classify_qa(unmarked_comments)
+        self.assertEqual(after_note_qa["status"], before_qa["status"])
+        self.assertEqual(after_owner_qa["status"], "review")
+
+        # Worker classifier: marked note does not trigger triage-comments; unmarked comment does.
+        self.assertEqual(summarize_worker(note_comments)["nextAction"], "none")
+        self.assertEqual(summarize_worker(unmarked_comments)["nextAction"], "triage-comments")
+
+    def test_base_break_scenario_rebases_after_blocker_closes(self):
+        import json
+        from unittest import mock
+        from devloops_lib import gatekeeper_queue, pr_status, qa
+
+        comments = [
+            comment("<!-- gatekeeper-loop: verdict=clean head=sha1 base=main -->", "2026-01-01T01:00:00Z"),
+            comment("<!-- gatekeeper-loop: note -->\nCI failed due to base break #99.", "2026-01-01T01:05:00Z"),
+        ]
+        pr = {
+            "number": 51,
+            "title": "feat: feature (Fixes #10)",
+            "body": "Fixes #10",
+            "url": "https://example.invalid/pr/51",
+            "headRefName": "feat/feature-10",
+            "headRefOid": "sha1",
+            "baseRefName": "main",
+            "isDraft": False,
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "UNSTABLE",
+            "reviewDecision": "",
+            "statusCheckRollup": [],
+            "commits": [{"committedDate": "2026-01-01T00:30:00Z"}],
+            "comments": comments,
+            "labels": [],
+        }
+
+        class ClosedBlockerForge:
+            def blocked_by(self, number):
+                return [Blocker(99, "closed")]
+
+        def fake_gh(*args, **kwargs):
+            if args and args[0] == "api":
+                return json.dumps({"data": {}})
+            return json.dumps(pr)
+
+        with mock.patch.object(pr_status, "gh", side_effect=fake_gh), \
+             mock.patch.object(pr_status, "duplicate_commits", return_value=[]), \
+             mock.patch.object(pr_status, "parent_pr_merged", return_value=None), \
+             mock.patch("devloops_lib.forge.detect.get_forge", return_value=ClosedBlockerForge()):
+            summary = pr_status.summarize(51, "owner", "repo", "me", default_base="main", merged_prs=[])
+
+        self.assertEqual(summary["newComments"], [])
+        self.assertEqual(summary["nextAction"], "rebase")
+        self.assertEqual(gatekeeper_queue.owner_comments_after(comments, "me", "2026-01-01T01:00:00Z"), [])
+        self.assertEqual(qa.owner_comments_after(comments, "me", "2026-01-01T01:00:00Z"), [])
+
+
 if __name__ == "__main__":
     unittest.main()
 
