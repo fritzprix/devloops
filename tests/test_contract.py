@@ -430,6 +430,45 @@ class GatekeeperNoteMarkerTest(unittest.TestCase):
         self.assertEqual(gatekeeper_queue.owner_comments_after(comments, "me", "2026-01-01T01:00:00Z"), [])
         self.assertEqual(qa.owner_comments_after(comments, "me", "2026-01-01T01:00:00Z"), [])
 
+    def test_summarize_note_after_owner_comment_preserves_review_status(self):
+        # G1.1: a gatekeeper note posted after an unhandled owner comment must not
+        # advance last_marker_at and hide the owner comment.
+        import json
+        from unittest import mock
+        from devloops_lib import gatekeeper_queue
+
+        pr_payload = {
+            "number": 52,
+            "title": "feat: test",
+            "body": "Summary",
+            "url": "https://example.invalid/pr/52",
+            "headRefName": "feat/test-52",
+            "headRefOid": "sha1",
+            "baseRefName": "main",
+            "isDraft": False,
+            "mergeable": "MERGEABLE",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "statusCheckRollup": [],
+            "labels": [{"name": "gatekeeper:approved"}],
+            "files": [],
+            "comments": [
+                comment("<!-- gatekeeper-loop: round=1 verdict=approve head=sha1 base=main -->", "2026-01-01T01:00:00Z"),
+                comment("Please check edge case X.", "2026-01-01T02:00:00Z"),
+                comment("<!-- gatekeeper-loop: note -->\nCI runner stalled.", "2026-01-01T02:05:00Z"),
+            ],
+        }
+        with mock.patch.object(gatekeeper_queue, "gh", return_value=json.dumps(pr_payload)):
+            summary = gatekeeper_queue.summarize(
+                52,
+                "me",
+                state={},
+                config={"project": {"base_branch": "main"}},
+                readiness={"ci": {"present": True}},
+            )
+        self.assertEqual(summary["status"], "review")
+        self.assertEqual(len(summary["ownerComments"]), 1)
+        self.assertIn("edge case X", summary["ownerComments"][0]["body"])
+
 
 if __name__ == "__main__":
     unittest.main()
