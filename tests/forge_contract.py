@@ -818,7 +818,9 @@ class ForgeContract:
     def test_merge_pr_rejects_mismatched_head_sha(self):
         import pytest
 
-        pr = self._pick_mergeable_pr()
+        open_prs = self.forge.list_prs(state="open")
+        assert open_prs, "expected at least one open PR"
+        pr = open_prs[0]
         with pytest.raises(ForgeError):
             self.forge.merge_pr(pr.number, "0000000000000000")
         assert any(p.number == pr.number for p in self.forge.list_prs(state="open"))
