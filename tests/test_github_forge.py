@@ -133,3 +133,10 @@ class TestGitHubForgeTransport:
         pr_raw["headRefOid"] = "deadbeef"
         with pytest.raises(ForgeError, match="did not merge"):
             self.forge.merge_pr(10, "different-sha")
+
+    def test_merge_pr_with_repo_passes_positional_repo_to_repo_view(self):
+        forge = GitHubForge(run=self.stub.run, repo="o/r")
+        pr = forge.get_pr(10)
+        forge.merge_pr(pr.number, pr.head_sha)
+        repo_views = [a for a in self.stub.args_log if a[:2] == ["repo", "view"]]
+        assert repo_views == [["repo", "view", "o/r", "--json", "viewerDefaultMergeMethod"]]

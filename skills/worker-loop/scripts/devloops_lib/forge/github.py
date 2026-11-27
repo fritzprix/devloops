@@ -175,13 +175,21 @@ class GitHubForge:
         """Run a gh api command (gh api does not accept --repo)."""
         return self._run(list(args))
 
+    def _repo_view(self, fields: str) -> Dict[str, Any]:
+        """Run `gh repo view [OWNER/NAME] --json <fields>` (gh repo view does not accept --repo)."""
+        cmd = ["repo", "view"]
+        if self._repo:
+            cmd.append(self._repo)
+        cmd.extend(["--json", fields])
+        return json.loads(self._run(cmd) or "{}")
+
     # -- identity / repository -------------------------------------------
 
     def whoami(self) -> str:
         return self._api("api", "user", "--jq", ".login").strip()
 
     def repo_ref(self) -> RepoRef:
-        data = json.loads(self._call("repo", "view", "--json", "owner,name"))
+        data = self._repo_view("owner,name")
         return RepoRef(host=None, owner=data["owner"]["login"], name=data["name"])
 
     def auth_check(self) -> AuthStatus:
@@ -283,7 +291,7 @@ class GitHubForge:
     }
 
     def _default_merge_flag(self) -> str:
-        data = json.loads(self._call("repo", "view", "--json", "viewerDefaultMergeMethod") or "{}")
+        data = self._repo_view("viewerDefaultMergeMethod")
         method = str(data.get("viewerDefaultMergeMethod") or "").upper()
         flag = self._MERGE_METHOD_FLAGS.get(method)
         if not flag:

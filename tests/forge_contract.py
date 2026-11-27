@@ -441,6 +441,8 @@ class GhStub:
         if head == ("api", "user"):
             return SEED["user"] + "\n"
         if head == ("repo", "view"):
+            if "--repo" in args:
+                raise ForgeError("unknown flag: --repo")
             repo = copy.deepcopy(SEED["repo"])
             repo["viewerDefaultMergeMethod"] = self.default_merge_method
             return json.dumps(repo)
