@@ -17,13 +17,17 @@ import json
 import re
 import sys
 
+from devloops_lib import contract
+from devloops_lib import worker_candidates
 from devloops_lib.claims import pr_is_approved
-from devloops_lib.config import load_config, open_pr_limit as configured_open_pr_limit
+from devloops_lib.config import get_state_path, load_config, open_pr_limit as configured_open_pr_limit
+from devloops_lib.config import candidate_policy as configured_candidate_policy
 from devloops_lib.gh import GhError, gh
 from devloops_lib.pr_status import find_merged_via_parent_issues
 from devloops_lib.config import run_main
+from devloops_lib.tick_gate import load_state
 
-EXCLUDED_LABELS = {"wontfix", "duplicate", "invalid", "question"}
+EXCLUDED_LABELS = worker_candidates.EXCLUDED_LABELS
 DEPRIORITIZED_LABELS = {"backlog"}
 REF_PATTERN = re.compile(r"(?<![\w/])#(\d+)\b")
 EXTERNAL_REF_PATTERN = re.compile(r"\b[\w.-]+/[\w.-]+#\d+\b")
@@ -124,10 +128,15 @@ def filter_and_rank_issues(
     me: str,
     config: dict | None = None,
     merged_prs: list[dict] | None = None,
+    *,
+    forge: object | None = None,
+    skipped: dict | None = None,
+    open_blockers_fn=None,
 ) -> dict:
     cfg = config or load_config()
-    producer_label = cfg.get("labels", {}).get("producer", "auto:producer")
-    approved_label = cfg.get("labels", {}).get("approved", "approved")
+    approved_label = contract.issue_label(cfg, "approved")
+    rejected_label = contract.issue_label(cfg, "rejected")
+    candidate_policy = configured_candidate_policy(cfg)
 
     open_issue_numbers = {i["number"] for i in issues}
     open_pr_numbers = {p["number"] for p in open_prs}
@@ -147,6 +156,17 @@ def filter_and_rank_issues(
         for ref in {int(n) for n in REF_PATTERN.findall(text)} - closes:
             mentioned_by_pr.setdefault(ref, []).append(pr["number"])
 
+    forge_obj = forge
+    forge_error: str | None = None
+    if forge_obj is None and open_blockers_fn is None:
+        try:
+            from devloops_lib.forge.detect import get_forge
+
+            forge_obj = get_forge(cfg)
+        except Exception as exc:
+            # Fail closed for blocker checks (#66 G1.1): do not treat as "no blockers".
+            forge_error = str(exc) or exc.__class__.__name__
+
     candidates, excluded = [], []
     for issue in issues:
         number = issue["number"]
@@ -158,18 +178,54 @@ def filter_and_rank_issues(
         ]
         refs = sorted({int(n) for n in REF_PATTERN.findall(body)} - {number})
         checkboxes = re.findall(r"^\s*[-*] \[( |x|X)\]", body, re.M)
+        updated_at = issue.get("updatedAt", "")
 
         reason = None
-        if labels & EXCLUDED_LABELS:
-            reason = f"label: {', '.join(sorted(labels & EXCLUDED_LABELS))}"
-        elif producer_label in labels and approved_label not in labels:
-            reason = f"producer issue not approved ({producer_label})"
-        elif assignees and me not in assignees:
-            reason = f"assigned to {', '.join(assignees)}"
+        if worker_candidates.is_skipped(number, updated_at, skipped):
+            reason = "skipped (unchanged updatedAt)"
         elif number in closing_pr:
             reason = f"closed by open PR #{', #'.join(map(str, closing_pr[number]))}"
         elif number in pending_closure:
             reason = pending_closure[number]["reason"]
+        else:
+            # Labels/assignees/title first; forge reads only when those pass.
+            prelim = worker_candidates.exclusion_reason(
+                labels,
+                assignees,
+                me,
+                open_blocker_numbers=(),
+                sub_issue_numbers=(),
+                title=issue.get("title") or "",
+                approved_label=approved_label,
+                rejected_label=rejected_label,
+                policy=candidate_policy,
+            )
+            if prelim is not None:
+                reason = prelim
+            elif forge_error is not None:
+                reason = f"forge unavailable for blocker check: {forge_error}"
+            else:
+                blockers: list[int] = []
+                subs: list[int] = []
+                if open_blockers_fn is not None:
+                    blockers = list(open_blockers_fn(number))
+                elif forge_obj is not None:
+                    blockers = worker_candidates.open_blocker_numbers(
+                        forge_obj, number
+                    )
+                if forge_obj is not None:
+                    subs = worker_candidates.list_sub_issue_numbers(forge_obj, number)
+                reason = worker_candidates.exclusion_reason(
+                    labels,
+                    assignees,
+                    me,
+                    open_blocker_numbers=blockers,
+                    sub_issue_numbers=subs,
+                    title=issue.get("title") or "",
+                    approved_label=approved_label,
+                    rejected_label=rejected_label,
+                    policy=candidate_policy,
+                )
 
         entry = {
             "number": number,
@@ -193,10 +249,10 @@ def filter_and_rank_issues(
             ),
             "blockedHint": bool(BLOCKED_PATTERN.search(body)),
             "umbrellaHint": bool(UMBRELLA_PATTERN.search(issue["title"])),
-            "updatedAt": issue.get("updatedAt", ""),
+            "updatedAt": updated_at,
         }
         if reason:
-            excluded.append({"number": number, "title": issue["title"], "reason": reason})
+            excluded.append({"number": number, "title": issue["title"], "reason": reason, "updatedAt": updated_at})
             continue
         candidates.append(entry)
 
@@ -228,7 +284,7 @@ def filter_and_rank_issues(
     }
 
 
-def fetch_candidates(limit: int = 100) -> dict:
+def fetch_candidates(limit: int = 100, skipped: dict | None = None) -> dict:
     me = gh("api", "user", "--jq", ".login").strip()
     issues = json.loads(
         gh("issue", "list", "--state", "open", "--limit", str(limit), "--json",
@@ -242,7 +298,10 @@ def fetch_candidates(limit: int = 100) -> dict:
         gh("pr", "list", "--state", "merged", "--limit", "100", "--json",
            "number,title,body,headRefName,baseRefName,url")
     )
-    return filter_and_rank_issues(issues, open_prs, me, merged_prs=merged_prs)
+    if skipped is None:
+        state = load_state(get_state_path("worker-loop"))
+        skipped = state.get("skipped") if isinstance(state, dict) else {}
+    return filter_and_rank_issues(issues, open_prs, me, merged_prs=merged_prs, skipped=skipped)
 
 
 def main() -> None:

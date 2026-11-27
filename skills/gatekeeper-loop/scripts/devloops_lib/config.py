@@ -104,6 +104,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "open_pr_limit": 5,
         "issue_claim_ttl_minutes": 120,
         "lock_ttl_seconds": 1800,
+        "candidate_policy": {
+            "require_approved": True,
+            "epic_label": "epic",
+            "excluded_labels": ["wontfix", "duplicate", "invalid", "question"],
+            "epic_title_patterns": [],
+        },
     },
     "pm": {
         "default_interval": "10m",
@@ -432,6 +438,20 @@ def peer_loops(cfg: dict[str, Any]) -> tuple[str, ...]:
     if raw is None:
         raw = DEFAULT_CONFIG["pm"]["peer_loops"]
     return tuple(str(x) for x in raw)
+
+
+def candidate_policy(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Worker candidate policy (epic #102): the scaffolding overrides the built-in
+    defaults per key (``require_approved``, ``epic_label``, ``excluded_labels``,
+    ``epic_title_patterns``)."""
+    from devloops_lib.worker_candidates import DEFAULT_CANDIDATE_POLICY
+
+    section = (cfg.get("worker") or {}).get("candidate_policy") or {}
+    policy = dict(DEFAULT_CANDIDATE_POLICY)
+    for key, value in section.items():
+        if key in policy and value is not None:
+            policy[key] = value
+    return policy
 
 
 def issue_claim_ttl_seconds(cfg: dict[str, Any]) -> int:

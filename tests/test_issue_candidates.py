@@ -4,6 +4,7 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -21,7 +22,7 @@ class IssueCandidatesRule3Test(unittest.TestCase):
         self.me = "test-worker"
         self.open_prs = []
 
-    def test_producer_issue_without_approved_is_excluded(self):
+    def test_issue_without_approved_is_excluded(self):
         issues = [
             {
                 "number": 1,
@@ -32,13 +33,15 @@ class IssueCandidatesRule3Test(unittest.TestCase):
                 "updatedAt": "2026-10-31T00:00:00Z",
             }
         ]
-        result = filter_and_rank_issues(issues, self.open_prs, self.me)
+        result = filter_and_rank_issues(
+            issues, self.open_prs, self.me, open_blockers_fn=lambda _n: []
+        )
         self.assertEqual(len(result["candidates"]), 0)
         self.assertEqual(len(result["excluded"]), 1)
         self.assertEqual(result["excluded"][0]["number"], 1)
-        self.assertIn("producer issue not approved", result["excluded"][0]["reason"])
+        self.assertIn("missing approved", result["excluded"][0]["reason"])
 
-    def test_producer_issue_with_approved_is_candidate(self):
+    def test_approved_issue_is_candidate(self):
         issues = [
             {
                 "number": 2,
@@ -49,12 +52,14 @@ class IssueCandidatesRule3Test(unittest.TestCase):
                 "updatedAt": "2026-10-31T00:00:00Z",
             }
         ]
-        result = filter_and_rank_issues(issues, self.open_prs, self.me)
+        result = filter_and_rank_issues(
+            issues, self.open_prs, self.me, open_blockers_fn=lambda _n: []
+        )
         self.assertEqual(len(result["candidates"]), 1)
         self.assertEqual(result["candidates"][0]["number"], 2)
         self.assertEqual(len(result["excluded"]), 0)
 
-    def test_non_producer_issue_is_candidate_without_approved(self):
+    def test_non_approved_issue_is_not_candidate(self):
         issues = [
             {
                 "number": 3,
@@ -65,12 +70,13 @@ class IssueCandidatesRule3Test(unittest.TestCase):
                 "updatedAt": "2026-10-31T00:00:00Z",
             }
         ]
-        result = filter_and_rank_issues(issues, self.open_prs, self.me)
-        self.assertEqual(len(result["candidates"]), 1)
-        self.assertEqual(result["candidates"][0]["number"], 3)
-        self.assertEqual(len(result["excluded"]), 0)
+        result = filter_and_rank_issues(
+            issues, self.open_prs, self.me, open_blockers_fn=lambda _n: []
+        )
+        self.assertEqual(len(result["candidates"]), 0)
+        self.assertEqual(result["excluded"][0]["reason"], "missing approved")
 
-    def test_custom_producer_and_approved_labels_from_config(self):
+    def test_custom_approved_label_from_config(self):
         custom_config = {
             "labels": {
                 "producer": "bot:generated",
@@ -95,15 +101,85 @@ class IssueCandidatesRule3Test(unittest.TestCase):
                 "updatedAt": "2026-10-31T00:00:00Z",
             },
         ]
-        result = filter_and_rank_issues(issues, self.open_prs, self.me, config=custom_config)
+        result = filter_and_rank_issues(
+            issues,
+            self.open_prs,
+            self.me,
+            config=custom_config,
+            open_blockers_fn=lambda _n: [],
+        )
         self.assertEqual(len(result["excluded"]), 1)
         self.assertEqual(result["excluded"][0]["number"], 4)
         self.assertEqual(len(result["candidates"]), 1)
         self.assertEqual(result["candidates"][0]["number"], 5)
 
+    def test_approved_and_rejected_is_excluded(self):
+        issues = [
+            {
+                "number": 6,
+                "title": "Rejected work",
+                "body": "x",
+                "labels": [{"name": "approved"}, {"name": "rejected"}],
+                "assignees": [],
+                "updatedAt": "2026-10-31T00:00:00Z",
+            }
+        ]
+        result = filter_and_rank_issues(
+            issues, self.open_prs, self.me, open_blockers_fn=lambda _n: []
+        )
+        self.assertEqual(result["excluded"][0]["reason"], "label: rejected")
+        self.assertEqual(result["candidates"], [])
 
-def _issue(number, body=""):
-    return {"number": number, "title": f"Issue {number}", "body": body, "labels": [], "assignees": []}
+    def test_open_blocker_excludes_until_cleared(self):
+        issues = [
+            {
+                "number": 7,
+                "title": "Blocked",
+                "body": "x",
+                "labels": [{"name": "approved"}],
+                "assignees": [],
+                "updatedAt": "2026-10-31T00:00:00Z",
+            }
+        ]
+        blocked = filter_and_rank_issues(
+            issues, self.open_prs, self.me, open_blockers_fn=lambda n: [12] if n == 7 else []
+        )
+        self.assertEqual(blocked["excluded"][0]["reason"], "open blocker #12")
+        clear = filter_and_rank_issues(
+            issues, self.open_prs, self.me, open_blockers_fn=lambda _n: []
+        )
+        self.assertEqual([c["number"] for c in clear["candidates"]], [7])
+
+    def test_forge_detection_failure_excludes_with_reason(self):
+        # G1.1: get_forge failure must not silently skip blocker checks.
+        issues = [
+            {
+                "number": 8,
+                "title": "Approved",
+                "body": "x",
+                "labels": [{"name": "approved"}],
+                "assignees": [],
+                "updatedAt": "2026-10-31T00:00:00Z",
+            }
+        ]
+        with mock.patch(
+            "devloops_lib.forge.detect.get_forge",
+            side_effect=RuntimeError("no forge"),
+        ):
+            result = filter_and_rank_issues(issues, self.open_prs, self.me)
+        self.assertEqual(result["candidates"], [])
+        self.assertIn("forge unavailable for blocker check", result["excluded"][0]["reason"])
+        self.assertIn("no forge", result["excluded"][0]["reason"])
+
+def _issue(number, body="", labels=None):
+    return {
+        "number": number,
+        "title": f"Issue {number}",
+        "body": body,
+        "labels": labels if labels is not None else [{"name": "approved"}],
+        "assignees": [],
+        "updatedAt": "2026-10-31T00:00:00Z",
+    }
 
 
 def _pr(number, head, base="main", title="PR", body="", author="me", **fields):
@@ -115,7 +191,9 @@ def _pr(number, head, base="main", title="PR", body="", author="me", **fields):
 
 class DependencyTest(unittest.TestCase):
     def _candidates(self, issues, prs=()):
-        result = filter_and_rank_issues(issues, list(prs), "me", config={})
+        result = filter_and_rank_issues(
+            issues, list(prs), "me", config={}, open_blockers_fn=lambda _n: []
+        )
         return {c["number"]: c for c in result["candidates"]}, [c["number"] for c in result["candidates"]]
 
     def test_parse_depends_on_reads_lines_only(self):
@@ -227,7 +305,9 @@ class BlockedOnClosureTest(unittest.TestCase):
             _pr(100, "feat/parent-1", base="main", body="Fixes #1"),
             _pr(101, "feat/child-10", base="feat/parent-1", body="Fixes #10"),
         ]
-        result = filter_and_rank_issues(issues, [], "me", config={}, merged_prs=merged_prs)
+        result = filter_and_rank_issues(
+            issues, [], "me", config={}, merged_prs=merged_prs, open_blockers_fn=lambda _n: []
+        )
 
         # #10 is reported in needsClosure and excluded with an explicit closure reason.
         self.assertEqual([n["issue"] for n in result["needsClosure"]], [10])

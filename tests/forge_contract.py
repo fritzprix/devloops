@@ -159,10 +159,10 @@ SEED: Dict[str, Any] = {
                 },
             ]},
             "repository": {"issues": {"nodes": [
-                {"number": 1, "updatedAt": "2026-01-02T00:00:00Z",
+                {"number": 1, "title": "Producer issue", "updatedAt": "2026-01-02T00:00:00Z",
                  "labels": {"nodes": [{"name": "auto:producer"}, {"name": "validated"}]},
                  "assignees": {"nodes": []}},
-                {"number": 2, "updatedAt": "2026-01-04T00:00:00Z",
+                {"number": 2, "title": "Feature request", "updatedAt": "2026-01-04T00:00:00Z",
                  "labels": {"nodes": [{"name": "enhancement"}]},
                  "assignees": {"nodes": [{"login": USER}]}},
             ]}},
@@ -368,6 +368,11 @@ class FakeForge:
             for d in self.dependencies.get(number, [])
         ]
 
+    def list_sub_issues(self, number: int):
+        # Seed: issue 1 is a parent of issue 2 when present in SEED.
+        children = getattr(self, "sub_issues", None) or {}
+        return list(children.get(number, []))
+
     def add_blocker(self, number: int, blocker_number: int) -> None:
         self._get_any(number)  # unknown target raises ForgeError
         blocker = self._get_any(blocker_number)  # unknown blocker raises ForgeError
@@ -409,6 +414,8 @@ class GhStub:
             1: [copy.deepcopy(self.issues[1])],
             10: [dict(copy.deepcopy(self.prs[1]), pull_request={"url": _url("pull", 11)})],
         }
+        # issue #74: parent/sub-issue relationships (GET .../sub_issues).
+        self.sub_issues: Dict[int, List[Dict[str, Any]]] = {}
 
     def run(self, args: List[str]) -> str:
         self.args_log.append(list(args))
@@ -582,6 +589,8 @@ class GhStub:
                             break
                     return json.dumps(deps)
                 return json.dumps(self.dependencies.get(number, []))
+            if parts[5] == "sub_issues":
+                return json.dumps(self.sub_issues.get(number, []))
         raise ForgeError(f"unexpected gh api path: {path}")
 
 
