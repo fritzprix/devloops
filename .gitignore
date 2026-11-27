@@ -3,3 +3,8 @@ __pycache__/
 .devloops/
 dist/
 *.egg-info/
+# TLA+ tools and TLC output
+spec/tools/
+states/
+spec/states/
+*_TTrace_*
