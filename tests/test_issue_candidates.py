@@ -357,8 +357,9 @@ class NeedsOwnerParkTest(unittest.TestCase):
             self._reply("human-owner", "2026-11-02T00:00:00Z", association="OWNER"),
         ]
         result = filter_and_rank_issues(
-            [self._issue(7, ["needs-owner"])], [], self.me,
+            [self._issue(7, ["approved", "needs-owner"])], [], self.me,
             config={}, issue_comments={7: comments},
+            open_blockers_fn=lambda _n: [],
         )
         self.assertEqual([c["number"] for c in result["candidates"]], [7])
         self.assertEqual(result["excluded"], [])
