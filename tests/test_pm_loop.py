@@ -166,6 +166,56 @@ class PmScheduleTest(unittest.TestCase):
         self.assertEqual([p["role"] for p in plan],
                          ["gatekeeper-loop", "worker-loop", "qa-loop", "producer-loop"])
 
+    def test_cascade_round_robin_three_roles_one_slot(self):
+        state: dict = {}
+        pipeline = {"prsNeedingReview": 1, "prsNeedingWorker": 1, "prsNeedingQa": 1}
+        started = [
+            pm_schedule.cascade_plan(slots=1, pipeline=pipeline, state=state)[0]["role"]
+            for _ in range(3)
+        ]
+        self.assertEqual(started, ["gatekeeper-loop", "worker-loop", "qa-loop"])
+
+    def test_cascade_round_robin_skips_idle_qa(self):
+        state: dict = {}
+        pipeline = {"prsNeedingReview": 1, "approvedIssues": 2, "prsNeedingQa": 0}
+        started = [
+            pm_schedule.cascade_plan(slots=1, pipeline=pipeline, state=state)[0]["role"]
+            for _ in range(4)
+        ]
+        self.assertEqual(
+            started,
+            ["gatekeeper-loop", "worker-loop", "gatekeeper-loop", "worker-loop"],
+        )
+        self.assertNotIn("qa-loop", started)
+
+    def test_cascade_three_slots_starts_all_three_roles_in_one_tick(self):
+        state: dict = {}
+        pipeline = {"prsNeedingReview": 1, "approvedIssues": 3, "prsNeedingQa": 1}
+        plan = pm_schedule.cascade_plan(slots=3, pipeline=pipeline, state=state)
+        self.assertEqual(
+            [p["role"] for p in plan],
+            ["gatekeeper-loop", "worker-loop", "qa-loop"],
+        )
+
+    def test_cascade_missing_rotation_state_starts_at_gatekeeper(self):
+        pipeline = {"prsNeedingReview": 1, "approvedIssues": 1, "prsNeedingQa": 1}
+        plan_no_state = pm_schedule.cascade_plan(slots=1, pipeline=pipeline)
+        plan_empty_state = pm_schedule.cascade_plan(slots=1, pipeline=pipeline, state={})
+        self.assertEqual([p["role"] for p in plan_no_state], ["gatekeeper-loop"])
+        self.assertEqual([p["role"] for p in plan_empty_state], ["gatekeeper-loop"])
+
+    def test_cascade_permanent_backlog_does_not_starve_other_roles(self):
+        state: dict = {}
+        # Gatekeeper and worker have permanent backlogs; qa must still start within 3 ticks.
+        pipeline = {"prsNeedingReview": 99, "prsNeedingWorker": 99, "prsNeedingQa": 1}
+        started = [
+            pm_schedule.cascade_plan(slots=1, pipeline=pipeline, state=state)[0]["role"]
+            for _ in range(3)
+        ]
+        self.assertIn("qa-loop", started)
+        self.assertIn("worker-loop", started)
+        self.assertIn("gatekeeper-loop", started)
+
 
 class PmInductionTest(unittest.TestCase):
     def test_policy_priority_skill_over_folklore(self):

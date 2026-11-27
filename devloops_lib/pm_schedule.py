@@ -116,10 +116,16 @@ def peer_tick_allowed(peer_state: dict[str, Any]) -> bool:
     return True
 
 
+# Fixed base order for cascade allocation; round-robin rotates through this
+# tuple when the slot budget is smaller than the number of roles with work (#118).
+CASCADE_ROLES = ("gatekeeper-loop", "worker-loop", "qa-loop", "producer-loop")
+
+
 def cascade_plan(
     *,
     slots: int,
     pipeline: dict[str, int] | None = None,
+    state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Allocate delegate slots across roles inside the user cap (generic heuristic).
 
@@ -128,6 +134,12 @@ def cascade_plan(
     action, so PR-service keeps the loop alive even with an empty issue board.
     Parked work (escalate, needs-human, wait-ci) is counted nowhere and never
     cascades.
+
+    When the slot budget is smaller than the number of roles with work, roles
+    are chosen in round-robin order starting after ``state["lastCascadeRole"]``
+    (defaulting to ``gatekeeper-loop`` when absent) so no role starves (#118).
+    When ``state`` is provided and at least one role is planned,
+    ``state["lastCascadeRole"]`` is updated in place to the last planned role.
     """
     pipeline = pipeline or {}
     approved_backlog = max(0, int(pipeline.get("approvedIssues", 0)))
@@ -136,22 +148,44 @@ def cascade_plan(
     qa_queue = max(0, int(pipeline.get("prsNeedingQa", 0)))
     producer_due = max(0, int(pipeline.get("producerDue", 0)))
 
-    plan: list[dict[str, Any]] = []
-    remaining = max(1, slots)
-
-    if review_queue and remaining:
-        plan.append({"role": "gatekeeper-loop", "slots": 1, "reason": "review bottleneck"})
-        remaining -= 1
     worker_backlog = approved_backlog + pr_work
-    if worker_backlog and remaining:
-        reason = "approved backlog" if not pr_work else ("PR work" if not approved_backlog else "approved backlog + PR work")
-        worker_slots = min(remaining, worker_backlog)
-        plan.append({"role": "worker-loop", "slots": worker_slots, "reason": reason})
-        remaining -= worker_slots
-    if qa_queue and remaining:
-        plan.append({"role": "qa-loop", "slots": 1, "reason": "qa review queue"})
-        remaining -= 1
-    if producer_due and remaining and not pipeline.get("boardFull"):
-        plan.append({"role": "producer-loop", "slots": 1, "reason": "producer task due"})
-        remaining -= 1
+    worker_reason = (
+        "approved backlog"
+        if not pr_work
+        else ("PR work" if not approved_backlog else "approved backlog + PR work")
+    )
+
+    active: dict[str, dict[str, Any]] = {}
+    if review_queue:
+        active["gatekeeper-loop"] = {"role": "gatekeeper-loop", "slots": 1, "reason": "review bottleneck"}
+    if worker_backlog:
+        active["worker-loop"] = {"role": "worker-loop", "slots": 1, "reason": worker_reason}
+    if qa_queue:
+        active["qa-loop"] = {"role": "qa-loop", "slots": 1, "reason": "qa review queue"}
+    if producer_due and not pipeline.get("boardFull"):
+        active["producer-loop"] = {"role": "producer-loop", "slots": 1, "reason": "producer task due"}
+
+    if not active:
+        return []
+
+    budget = max(1, slots)
+    if budget >= len(active):
+        plan = [dict(active[role]) for role in CASCADE_ROLES if role in active]
+        extra = budget - len(plan)
+        if extra > 0 and "worker-loop" in active and worker_backlog > 1:
+            for item in plan:
+                if item["role"] == "worker-loop":
+                    item["slots"] += min(extra, worker_backlog - 1)
+                    break
+    else:
+        last_role = state.get("lastCascadeRole") if isinstance(state, dict) else None
+        if last_role in CASCADE_ROLES:
+            start = (CASCADE_ROLES.index(last_role) + 1) % len(CASCADE_ROLES)
+        else:
+            start = 0
+        rotated = CASCADE_ROLES[start:] + CASCADE_ROLES[:start]
+        plan = [dict(active[role]) for role in rotated if role in active][:budget]
+
+    if isinstance(state, dict) and plan:
+        state["lastCascadeRole"] = plan[-1]["role"]
     return plan
