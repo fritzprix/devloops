@@ -14,6 +14,7 @@ from devloops_lib import gatekeeper_queue as gq
 from devloops_lib.forge import cli as forge_cli
 from devloops_lib.forge.gitea import GiteaForge
 from devloops_lib.forge.github import GitHubForge
+from devloops_lib.forge import ForgeError
 from devloops_lib.forge.models import CI_FAILURE, CI_PENDING, CI_SUCCESS, PullRequest
 
 
@@ -129,6 +130,65 @@ class GitHubEnsureLabelTests(unittest.TestCase):
             calls[0],
             ("label", "create", contract.GATEKEEPER_REVIEW_CLEAN, "--color", "0e8a16", "--force", "--description", "clean"),
         )
+
+
+class GitHubRemoveLabelsRepoFilterTests(unittest.TestCase):
+    """G5.1: removing a label the repository does not have must not fail on GitHub."""
+
+    class _RepoLabelsGh:
+        """gh double that rejects removal of labels the repository does not have."""
+
+        def __init__(self, repo_labels):
+            self.repo_labels = set(repo_labels)
+            self.calls: list[list[str]] = []
+
+        def run(self, args):
+            self.calls.append(list(args))
+            if args[:2] == ["label", "list"]:
+                return json.dumps([{"name": n} for n in sorted(self.repo_labels)])
+            if args[:2] == ["label", "create"]:
+                self.repo_labels.add(args[2])
+                return ""
+            if args[:2] == ["issue", "edit"]:
+                for name in self._opts(args, "--remove-label"):
+                    if name not in self.repo_labels:
+                        raise ForgeError(f"label '{name}' does not exist in repository")
+                return json.dumps({"url": "https://github.com/acme/repo/issues/12"})
+            raise ForgeError(f"unexpected gh args: {args}")
+
+        @staticmethod
+        def _opts(args, flag):
+            return [args[i + 1] for i, a in enumerate(args) if a == flag and i + 1 < len(args)]
+
+    def _forge(self, repo_labels):
+        self.gh = self._RepoLabelsGh(repo_labels)
+        return GitHubForge(run=self.gh.run)
+
+    def test_double_rejects_unknown_label_removal(self):
+        forge = self._forge(["gatekeeper:changes-requested"])
+        with self.assertRaises(ForgeError):
+            forge._call("issue", "edit", "12", "--remove-label", contract.GATEKEEPER_REVIEW_CLEAN)
+
+    def test_remove_labels_skips_label_missing_from_repo(self):
+        forge = self._forge(["gatekeeper:changes-requested"])
+        forge.remove_labels(12, [contract.GATEKEEPER_REVIEW_CLEAN])
+        self.assertEqual([c for c in self.gh.calls if "--remove-label" in c], [])
+
+    def test_remove_labels_keeps_known_labels(self):
+        forge = self._forge(["gatekeeper:changes-requested"])
+        forge.remove_labels(12, [contract.GATEKEEPER_CHANGES_REQUESTED, contract.GATEKEEPER_REVIEW_CLEAN])
+        remove_cmds = [c for c in self.gh.calls if "--remove-label" in c]
+        self.assertEqual(len(remove_cmds), 1)
+        self.assertIn(contract.GATEKEEPER_CHANGES_REQUESTED, remove_cmds[0])
+        self.assertNotIn(contract.GATEKEEPER_REVIEW_CLEAN, remove_cmds[0])
+
+    def test_set_verdict_escalated_survives_repo_without_review_clean(self):
+        forge = self._forge(list(contract.VERDICT_LABELS))
+        res = forge_cli.set_verdict_labels(forge, 12, "escalated")
+        self.assertIn(contract.GATEKEEPER_REVIEW_CLEAN, res["removed"])
+        remove_cmds = [c for c in self.gh.calls if "--remove-label" in c]
+        self.assertEqual(len(remove_cmds), 1)
+        self.assertNotIn(contract.GATEKEEPER_REVIEW_CLEAN, remove_cmds[0])
 
 
 class ForgeCliChecksRequiredTests(unittest.TestCase):

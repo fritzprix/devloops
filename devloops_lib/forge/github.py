@@ -222,9 +222,22 @@ class GitHubForge:
             cmd.extend(["--add-label", lbl])
         self._call(*cmd)
 
+    def list_labels(self) -> List[str]:
+        data = json.loads(self._call("label", "list", "--json", "name", "--limit", "1000") or "[]")
+        return [d["name"] for d in data]
+
     def remove_labels(self, number: int, names: Sequence[str]) -> None:
+        if not names:
+            return
+        # GitHub CLI rejects `--remove-label` for labels the repository does not
+        # have (G5.1: removing gatekeeper:review-clean failed on repos where the
+        # label was never created). Remove only labels the repository has.
+        present = set(self.list_labels())
+        known = [n for n in names if n in present]
+        if not known:
+            return
         cmd = ["issue", "edit", str(number)]
-        for lbl in names:
+        for lbl in known:
             cmd.extend(["--remove-label", lbl])
         self._call(*cmd)
 
