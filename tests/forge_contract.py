@@ -809,15 +809,21 @@ class ForgeContract:
 
     # -- pull request merge (issue #109) ------------------------------------
 
+    def _pick_mergeable_pr(self):
+        open_prs = self.forge.list_prs(state="open")
+        mergeable = [p for p in open_prs if p.mergeable is True and not p.is_draft]
+        assert mergeable, f"expected at least one open mergeable PR, got {open_prs}"
+        return mergeable[0]
+
     def test_merge_pr_rejects_mismatched_head_sha(self):
         import pytest
 
-        pr = self.forge.get_pr(11)
+        pr = self._pick_mergeable_pr()
         with pytest.raises(ForgeError):
-            self.forge.merge_pr(11, "0000000000000000")
+            self.forge.merge_pr(pr.number, "0000000000000000")
         assert any(p.number == pr.number for p in self.forge.list_prs(state="open"))
 
     def test_merge_pr_merges_when_head_sha_matches(self):
-        pr = self.forge.get_pr(11)
-        self.forge.merge_pr(11, pr.head_sha)
+        pr = self._pick_mergeable_pr()
+        self.forge.merge_pr(pr.number, pr.head_sha)
         assert all(p.number != pr.number for p in self.forge.list_prs(state="open"))
