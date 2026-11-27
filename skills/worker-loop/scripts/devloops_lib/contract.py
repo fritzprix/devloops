@@ -165,7 +165,7 @@ MARKER = re.compile(r"^(?:\ufeff)?\s*<!--\s*(gatekeeper-loop|worker-loop|qa-loop
 # response, and not an owner comment. kind "needs-human" does not exist; the
 # human-attention marker kind is needs-owner.
 GATEKEEPER_VERDICTS = ("changes-requested", "approve", "clean", "escalate")
-GATEKEEPER_KINDS = ("needs-owner",)
+GATEKEEPER_KINDS = ("needs-owner", "note")
 WORKER_KINDS = ("response", "qa-response", "note", "needs-owner")
 QA_KINDS = ("verdict", "post-merge", "needs-owner")
 QA_VERDICTS = ("accepted", "changes-requested")

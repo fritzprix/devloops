@@ -2,6 +2,16 @@
 
 Worker and gatekeeper share one GitHub account, and GitHub rejects Approve / Request changes on your own PR. The protocol therefore uses plain PR comments with a hidden marker on the first line. `review_queue.py` (gatekeeper) and `pr_status.py` (worker) only trust markers on comments authored by the authenticated user.
 
+## Gatekeeper note
+
+Every comment posted by the gatekeeper must begin with a `gatekeeper-loop:` marker so no loop mistakes it for an owner comment. For non-verdict informational notes (for example reporting a CI failure caused by an external base break or infra issue), use:
+
+```markdown
+<!-- gatekeeper-loop: note -->
+
+<brief note>
+```
+
 ## Gatekeeper verdict
 
 `head` = full SHA of the PR head that was reviewed. `base` = the PR's base branch at review time (a later change forces re-review). `round` starts at 1 and increments per verdict (`clean` markers do not count).
