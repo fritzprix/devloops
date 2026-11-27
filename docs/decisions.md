@@ -255,10 +255,10 @@ The finding numbers (F1 to F15) and the property names in the `Source` lines are
 - Area: Gatekeeper
 - Status: Added
 - Date: 2026-11-27
-- Decision: The gatekeeper has no review round limit. The setting `gatekeeper.max_rounds` and the round-limit escalation are removed. When the gatekeeper raises again a finding that it raised in an earlier round, and the finding is still unresolved, the gatekeeper sets `blocked:owner` on the pull request.
-- Reason: The round limit adds complexity that the project does not need. A repeated, unresolved finding is the real sign that the owner must decide.
+- Decision: The gatekeeper has no review round limit. The setting `gatekeeper.max_rounds` and the round-limit escalation are removed. The gatekeeper keeps requesting changes until the finding is fixed. An unresolved finding alone does not go to the owner. When the worker explicitly disputes a finding and the gatekeeper does not accept the dispute, arbitration is needed. Then the gatekeeper sets `blocked:owner` on the pull request. The rule that the gatekeeper decides on a second rebuttal is removed.
+- Reason: The round limit adds complexity that the project does not need. An unfixed finding needs more review rounds, not the owner. The owner is needed only when the worker and the gatekeeper disagree.
 - Source: owner decision, 2026-11-27. [State model](https://github.com/fritzprix/devloops/blob/36d3e8a786e2cb0e385036bb75465ba3d37280f6/docs/state-model.md) findings F10 and F11. TLC properties `RoundLimit` and `EscalationHappens` fail with the limit. Both findings disappear when the limit is removed.
-- Conflict: This decision reverses closed #70 and PRs #92 and #100. It amends #64 ("Decisions already made", item 2, and the child table) and #102 R1 (policy item "The review round limit").
+- Conflict: This decision reverses closed #70 and PRs #92 and #100. It removes the rule in `skills/gatekeeper-loop/references/review-rubric.md:28` and the matching text in `comment-format.md:103` and `SKILL.md:134` (the gatekeeper decides on a second rebuttal). It amends #64 ("Decisions already made", item 2, and the child table) and #102 R1 (policy item "The review round limit").
 
 ### D-022
 
@@ -343,7 +343,7 @@ Does not match current behavior:
 - D-018 — no loop merges. `devloops_lib/forge/base.py` has no merge operation. `devloops_lib/qa.py:130-161` (`signoff`) does not name the head that is merged. It does not check CI.
 - D-019 — the labels `blocked:owner` and `decision:owner` do not exist. `devloops_lib/forge/cli.py:117-121` sets and removes `gatekeeper:escalated`.
 - D-020 — `devloops_lib/config.py:514-525` gives each worker slot its own `state.json`. `skills/worker-loop/SKILL.md:31` and `:78` keep `needsUser` there.
-- D-021 — `devloops_lib/gatekeeper_queue.py:64-72` and `:398-400` set and use the round limit. `skills/gatekeeper-loop/SKILL.md:96` and `:146` describe the escalation.
+- D-021 — `devloops_lib/gatekeeper_queue.py:64-72` and `:398-400` set and use the round limit. `skills/gatekeeper-loop/SKILL.md:96` and `:146` describe the escalation. `skills/gatekeeper-loop/references/review-rubric.md:28` lets the gatekeeper decide on a second rebuttal.
 - D-022 — `skills/worker-loop/SKILL.md:143` and `:160` define `skipped`. The worker candidate filter reads it (`devloops_lib/worker_candidates.py:124-135`).
 - D-023 — `devloops_lib/pr_status.py:336-350` keeps a comment new until a later commit exists. `devloops_lib/gatekeeper_queue.py:166-178` counts every unmarked comment of the shared account as an owner comment. `skills/gatekeeper-loop/SKILL.md:93` tells the gatekeeper to post a plain comment.
 - D-025 — `devloops_lib/claims.py:276-295` grants a free or released claim and does not look for an open pull request.
