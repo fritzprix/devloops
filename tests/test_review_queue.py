@@ -26,6 +26,7 @@ is_rebased = _module.is_rebased
 owner_comments_after = _module.owner_comments_after
 parse_markers = _module.parse_markers
 needs_human_guidance = _module.needs_human_guidance
+round_restart = _module.round_restart
 queued_not_started = _module.queued_not_started
 merge_queued_since = _module.merge_queued_since
 stalled_checks = _module.stalled_checks
@@ -225,6 +226,19 @@ class DetermineStatusTests(unittest.TestCase):
             failing_checks=[],
         )
         self.assertEqual(status, "review")
+
+    def test_max_rounds_reads_from_config(self) -> None:
+        # G2.1 / #102: gatekeeper.max_rounds overrides default 5; invalid values fall back to 5.
+        args = base_args(
+            total_verdicts=3,
+            last_verdict={"round": "3", "verdict": "changes-requested", "head": "h0"},
+        )
+        self.assertEqual(determine_status(**args), "review")
+        status, reason, _ = classify(**args, config={"gatekeeper": {"max_rounds": 3}})
+        self.assertEqual(status, "escalate")
+        self.assertIn("3", reason)
+        self.assertEqual(determine_status(**args, config={"gatekeeper": {"max_rounds": 0}}), "review")
+        self.assertEqual(determine_status(**args, config={"gatekeeper": {"max_rounds": True}}), "review")
 
     def test_max_rounds_escalates(self) -> None:
         status = determine_status(
@@ -711,6 +725,150 @@ class RetargetBeforeMergeTests(unittest.TestCase):
     def test_primary_base_sets_retarget_before_merge_false(self) -> None:
         summary = self._summarize_with_base("main")
         self.assertFalse(summary["retargetBeforeMerge"])
+
+
+class EscalationExitTests(unittest.TestCase):
+    """Issue #70: label-parked escalation, approve at the last round, round restart."""
+
+    def test_escalated_label_parks_pr_even_with_new_head_and_owner_comment(self) -> None:
+        status, reason, priority = classify(
+            **base_args(
+                head="head9",
+                last_verdict={"head": "head5", "verdict": "escalate"},
+                total_verdicts=3,
+                owner_comment=True,
+                escalated=True,
+            )
+        )
+        self.assertEqual(status, "escalate")
+        self.assertEqual(priority, 9)
+        self.assertIn("gatekeeper:escalated", reason)
+
+    def test_owner_comment_alone_does_not_end_escalation(self) -> None:
+        # With the label still on, an owner comment must not unpark the PR (#70).
+        status, reason, priority = classify(
+            **base_args(
+                head="head1",
+                last_verdict={"head": "head1", "verdict": "escalate"},
+                total_verdicts=3,
+                owner_comment=True,
+                escalated=True,
+            )
+        )
+        self.assertEqual(status, "escalate")
+        self.assertEqual(priority, 9)
+        self.assertIn("gatekeeper:escalated", reason)
+        # Removing the label restarts the count; a bare comment is then normal review.
+        verdicts = [{"head": "head1", "verdict": "escalate", "createdAt": "2026-01-01T00:00:00Z"}]
+        counted, restart_at = round_restart(verdicts, escalated=False)
+        self.assertEqual(counted, [])
+        self.assertEqual(restart_at, "2026-01-01T00:00:00Z")
+
+    def test_summarize_ignores_clean_older_than_restart(self) -> None:
+        # G1.1: after label removal, a pre-escalation clean at the same head must
+        # not skip re-review of the escalated question.
+        import json
+        from unittest.mock import patch
+
+        from devloops_lib import contract
+
+        head = "abc123"
+        comments = [
+            {
+                "author": {"login": "me"},
+                "createdAt": "2026-01-01T00:00:00Z",
+                "body": f"<!-- gatekeeper-loop: round=1 verdict=clean head={head} -->\nclean",
+                "url": "https://example.com/c1",
+            },
+            {
+                "author": {"login": "me"},
+                "createdAt": "2026-01-02T00:00:00Z",
+                "body": f"<!-- gatekeeper-loop: round=5 verdict=escalate head={head} -->\nescalate",
+                "url": "https://example.com/c2",
+            },
+        ]
+        pr_payload = {
+            "number": 70,
+            "title": "feat: escalate exit",
+            "url": "https://example.com/pr/70",
+            "headRefName": "feat/escalate-exit-70",
+            "headRefOid": head,
+            "baseRefName": "main",
+            "isDraft": False,
+            "mergeable": "MERGEABLE",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "statusCheckRollup": [{"name": "ci", "conclusion": "SUCCESS"}],
+            "comments": comments,
+            "labels": [],  # owner removed gatekeeper:escalated
+            "files": [{"path": "devloops_lib/gatekeeper_queue.py"}],
+        }
+        state = {
+            "prs": {
+                "70": {
+                    "reviewedHead": head,
+                    "pendingApproveWaitCi": True,
+                    "findings": {},
+                }
+            }
+        }
+        readiness = {"ci": {"present": True}, "rubric": {"status": "present"}}
+        with patch.object(_module, "gh", return_value=json.dumps(pr_payload)):
+            summary = _module.summarize(
+                70, "me", state=state,
+                config={"project": {"base_branch": "main"}},
+                readiness=readiness,
+            )
+        self.assertEqual(summary["status"], "review")
+        self.assertNotIn("reviewed clean", summary["reason"])
+        self.assertIsNone(summary.get("cleanMarker"))
+        self.assertNotIn(contract.GATEKEEPER_ESCALATED, summary["labels"])
+
+    def test_round_limit_without_label_still_reports_escalate(self) -> None:
+        # G1.2: status escalate on round limit tells the skill to add the label
+        # and post the escalate verdict (exit remains label removal).
+        status, reason, _priority = classify(
+            **base_args(
+                head="head6",
+                last_verdict={"head": "head5", "verdict": "changes-requested"},
+                total_verdicts=5,
+                escalated=False,
+            )
+        )
+        self.assertEqual(status, "escalate")
+        self.assertIn("round limit", reason)
+
+    def test_round_count_restarts_after_label_removal(self) -> None:
+        verdicts = [
+            {"head": "h1", "verdict": "changes-requested", "createdAt": "2026-01-01T00:00:00Z"},
+            {"head": "h1", "verdict": "escalate", "createdAt": "2026-01-02T00:00:00Z"},
+            {"head": "h2", "verdict": "changes-requested", "createdAt": "2026-01-03T00:00:00Z"},
+        ]
+        counted, restart_at = round_restart(verdicts, escalated=False)
+        self.assertEqual(len(counted), 1)
+        self.assertEqual(restart_at, "2026-01-02T00:00:00Z")
+        # While parked, nothing restarts; all verdicts keep counting.
+        self.assertEqual(round_restart(verdicts, escalated=True), (verdicts, None))
+
+    def test_approve_as_last_allowed_verdict_stands(self) -> None:
+        status = determine_status(
+            **base_args(
+                head="head5",
+                last_verdict={"head": "head5", "verdict": "approve"},
+                total_verdicts=5,
+                reviewed_base="main",
+            )
+        )
+        self.assertEqual(status, "approved")
+
+    def test_round_limit_still_escalates_without_approve(self) -> None:
+        status = determine_status(
+            **base_args(
+                head="head6",
+                last_verdict={"head": "head5", "verdict": "changes-requested"},
+                total_verdicts=5,
+            )
+        )
+        self.assertEqual(status, "escalate")
 
 
 if __name__ == "__main__":

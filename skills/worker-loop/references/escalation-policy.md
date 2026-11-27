@@ -56,7 +56,7 @@ When blocked on (a), quote the ambiguous lines in `question` and stop work that 
 ## Gatekeeper: `escalate` and `gatekeeper:needs-human`
 
 - **`gatekeeper:needs-human`**: "Human merges this" signal for loop-skill edits only. Never applied from a path-name match; real permission/secret/policy/sandbox changes get stricter gatekeeper review instead. It never blocks review or approval. Worker may still implement.
-- **`verdict=escalate`**: Round limit (5); second dispute on the same `G` item; or an unresolved **product/security/data owner decision** the worker flagged and the thread does not settle—hand to maintainer with both positions.
+- **`verdict=escalate`**: Used for exactly two cases — the round limit (5) is reached, or an unresolved **product/security/data owner decision** the worker flagged and the thread does not settle—hand to maintainer with both positions. A second rebuttal of the same `G` item is settled by the gatekeeper with a decision and `file:line` evidence, never by escalating. The gatekeeper adds `gatekeeper:escalated` before posting the verdict; the PR then stays parked (no review, no worker action) until the owner removes the label, after which the round count restarts at 1. An approve posted as the 5th (last allowed) verdict stands.
 
 ## Producer
 

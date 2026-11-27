@@ -25,7 +25,11 @@ status values:
                conflicts. Worker's turn to fix.
   approved   - approve verdict exists for the current head, base unchanged, CI
                not failing, no newer owner comment.
-  escalate   - round limit reached or second dispute on the same finding; maintainer direction.
+  escalate   - parked: the `gatekeeper:escalated` label is present (the
+               gatekeeper adds it before posting an `escalate` verdict), or the
+               round limit of 5 is reached. Only the owner removing the label
+               resumes review, and the round count then restarts at 1; a bare
+               owner comment does not end an escalation (issue #70).
 
 No status skips review (issue #81): every reviewable PR gets a full review at
 the first tick that sees it, whatever CI or repo-readiness looks like. Gaps
@@ -58,6 +62,14 @@ from devloops_lib.config import run_main
 from devloops_lib import contract
 
 MAX_ROUNDS = 5
+
+
+def max_rounds_from_config(config: dict | None = None) -> int:
+    """Return configured gatekeeper.max_rounds, defaulting to MAX_ROUNDS (5)."""
+    raw = ((config or {}).get("gatekeeper") or {}).get("max_rounds")
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
+        return raw
+    return MAX_ROUNDS
 # Loop markers are defined once in devloops_lib.contract (issue #65): they must
 # open the comment (optional BOM/whitespace aside), cover all three loops, and
 # only accepted vocabulary counts.
@@ -131,6 +143,24 @@ def split_markers(markers: list[dict]) -> tuple[list[dict], list[dict], list[dic
     cleans = [m for m in markers if m.get("verdict") == "clean"]
     needs = [m for m in markers if m.get("kind") == contract.NEEDS_OWNER]
     return verdicts, cleans, needs
+
+
+def round_restart(verdicts: list[dict], escalated: bool) -> tuple[list[dict], str | None]:
+    """Verdicts counted toward the round limit, plus the restart timestamp (issue #70).
+
+    An escalate verdict ends the previous review. While `gatekeeper:escalated`
+    is still on the PR, every verdict counts (the PR is parked, and the caller
+    never reaches the round-limit logic). Once the owner removes the label,
+    only verdicts posted after the latest escalate verdict count: the next
+    verdict is round 1. Returns (verdicts_after_restart, createdAt of that
+    escalate verdict) — or (verdicts, None) when there is nothing to restart.
+    """
+    if escalated:
+        return verdicts, None
+    for i in range(len(verdicts) - 1, -1, -1):
+        if verdicts[i].get("verdict") == "escalate":
+            return verdicts[i + 1:], verdicts[i]["createdAt"]
+    return verdicts, None
 
 
 def owner_comments_after(comments: list[dict], me: str, since: str | None) -> list[dict]:
@@ -259,6 +289,7 @@ def classify(
     reviewed_base: str | None = None,
     rebased: bool = False,
     owner_comment: bool = False,
+    escalated: bool = False,
     total_checks: int | None = None,
     config: dict | None = None,
     repo_has_ci: bool = True,
@@ -268,24 +299,31 @@ def classify(
     ci_applies = is_dev_base(base, config=config)
     ci_failed = ci_applies and bool(failing_checks)
 
+    if escalated:
+        return "escalate", "parked by gatekeeper:escalated; only the owner removing the label resumes review", 9
+
     if mergeable == "CONFLICTING":
         return "wait-worker", "merge conflict; worker must rebase", 9
 
     if owner_comment:
         return "review", "owner comment after last verdict; treat as required items", 0
 
-    if total_verdicts >= MAX_ROUNDS:
-        return "escalate", f"round limit ({MAX_ROUNDS}) reached", 9
-
     at_head = bool(last_verdict) and last_verdict.get("head") == head
     base_changed = bool(reviewed_base) and reviewed_base != base
 
+    # An approve at the current head stands even when the round limit is
+    # reached: the limit turns an unreviewed head into escalate, never an
+    # approve into an escalation (issue #70).
     if at_head and last_verdict.get("verdict") == "approve":
         if base_changed:
             return "review", f"base changed after approve ({reviewed_base} -> {base})", 0
         if ci_failed:
             return "review", "CI failing after approve", 0
         return "approved", "approved at current head", 9
+
+    max_rounds = max_rounds_from_config(config)
+    if total_verdicts >= max_rounds:
+        return "escalate", f"round limit ({max_rounds}) reached", 9
 
     if at_head and last_verdict.get("verdict") == "changes-requested":
         if worker_response is None:
@@ -390,6 +428,16 @@ def summarize(
     comments = pr.get("comments") or []
     markers, responses = parse_markers(comments, me)
     verdicts, cleans, needs = split_markers(markers)
+    labels = sorted(label["name"] for label in pr.get("labels") or [])
+    escalated = contract.GATEKEEPER_ESCALATED in labels
+    # An escalate verdict restarts the round count once the owner removes the
+    # label; while the label is on, the PR stays parked (issue #70). Markers and
+    # saved clean state from before that escalate must not survive the restart
+    # (otherwise an older clean at the same head skips re-review).
+    verdicts, restart_at = round_restart(verdicts, escalated)
+    if restart_at:
+        cleans = [c for c in cleans if c.get("createdAt", "") > restart_at]
+        responses = [r for r in responses if r.get("createdAt", "") > restart_at]
 
     head = pr["headRefOid"]
     last = verdicts[-1] if verdicts else None
@@ -406,6 +454,11 @@ def summarize(
     pr_state = (state or {}).get("prs", {}).get(str(number), {})
     state_reviewed_head = pr_state.get("reviewedHead")
     state_pending_ci = pr_state.get("pendingApproveWaitCi", False)
+    if restart_at:
+        # Saved clean/pending-ci state has no timestamp; drop it across a restart
+        # so a pre-escalation clean cannot skip the post-restart review.
+        state_reviewed_head = None
+        state_pending_ci = False
     findings = pr_state.get("findings", {})
     has_open_findings = any(v == "open" for v in findings.values()) if isinstance(findings, dict) else bool(findings)
 
@@ -428,7 +481,6 @@ def summarize(
     last_marker_at = max((m["createdAt"] for m in [*markers, *responses]), default=None)
     owner = owner_comments_after(comments, me, last_marker_at)
 
-    labels = sorted(label["name"] for label in pr.get("labels") or [])
     paths = [f["path"] for f in pr.get("files") or []]
     own_skill = any(p.startswith(PROTECTED_SKILL_PREFIXES) for p in paths)
     protected_config_paths = tuple(cfg.get("protected_paths", []))
@@ -450,6 +502,7 @@ def summarize(
         reviewed_base=(last or {}).get("base"),
         rebased=rebased,
         owner_comment=bool(owner),
+        escalated=escalated,
         total_checks=len(checks),
         config=cfg,
         repo_has_ci=repo_has_ci,
