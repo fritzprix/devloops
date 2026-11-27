@@ -116,6 +116,44 @@ class GiteaEnsureLabelTests(unittest.TestCase):
         self.assertEqual(posts[0][2]["name"], contract.GATEKEEPER_REVIEW_CLEAN)
 
 
+class GitHubEnsureLabelTests(unittest.TestCase):
+    def test_github_ensure_label_creates_review_clean(self):
+        gh_forge = GitHubForge()
+        calls = []
+        with mock.patch.object(gh_forge, "_call", side_effect=lambda *a: calls.append(a) or ""):
+            gh_forge.ensure_label(
+                contract.GATEKEEPER_REVIEW_CLEAN, color="0e8a16", description="clean"
+            )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            calls[0],
+            ("label", "create", contract.GATEKEEPER_REVIEW_CLEAN, "--color", "0e8a16", "--force", "--description", "clean"),
+        )
+
+
+class ForgeCliChecksRequiredTests(unittest.TestCase):
+    def test_forge_cli_pr_checks_respects_required_checks(self):
+        # G1.1: `forge.py pr checks` passes gatekeeper.required_checks into ci_status.
+        import io
+        from contextlib import redirect_stdout
+
+        gh_forge = GitHubForge()
+        pr = PullRequest(
+            number=12, title="t", url="u", head_ref="b", head_sha="sha1", base_ref="main",
+            is_draft=False, author="me",
+            raw={"statusCheckRollup": [{"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS"}]},
+        )
+        buf = io.StringIO()
+        with mock.patch.object(gh_forge, "get_pr", return_value=pr), \
+             mock.patch("devloops_lib.config.load_config", return_value={"gatekeeper": {"required_checks": ["ubuntu", "macos"]}}), \
+             redirect_stdout(buf):
+            rc = forge_cli.forge_main(["pr", "checks", "12"], forge=gh_forge)
+        self.assertEqual(rc, 0)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["state"], CI_PENDING)
+        self.assertIn("macos", payload["pending"])
+
+
 class RequiredChecksTests(unittest.TestCase):
     def _pr(self, checks):
         return PullRequest(

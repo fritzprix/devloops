@@ -699,10 +699,16 @@ class GiteaForge:
     def gate_snapshot(self, pr_limit: int = 100, issue_limit: int = 100) -> GateSnapshot:
         open_prs = self.list_prs(state="open", limit=pr_limit)
         open_issues = self.list_issues(state="open", limit=issue_limit)
+        try:
+            from devloops_lib.config import load_config, validate_required_checks
+
+            required_checks = validate_required_checks(load_config())
+        except Exception:
+            required_checks = []
 
         pr_nodes: List[Dict[str, Any]] = []
         for pr in open_prs:
-            ci = self.ci_status(pr)
+            ci = self.ci_status(pr, required_checks=required_checks)
             mergeable_str = (
                 "MERGEABLE" if pr.mergeable is True else "CONFLICTING" if pr.mergeable is False else "UNKNOWN"
             )

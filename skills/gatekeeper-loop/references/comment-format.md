@@ -74,7 +74,7 @@ Approve:
 > [!IMPORTANT]
 > The `### Checked` section is **mandatory**. Every acceptance criterion from the linked issue, every finding from earlier rounds and every owner concern must be listed with concrete verification evidence (`file:line`). For PRs that, after reading the files, actually change shell policy, tool approval, permission, secret, or sandbox code or config, also list the bypass scenarios checked. For OS-sensitive changes also list the per-OS CI job results (ubuntu / windows / macos) for the reviewed head. If this section is missing or empty, an `approve` verdict cannot be issued.
 
-Clean, waiting for CI (no label change, not a round; lets any tick or machine see the review is done):
+Clean, waiting for CI (sets `gatekeeper:review-clean` and removes `gatekeeper:changes-requested` via `set-verdict clean`; not a round; lets any tick or machine see the review is done):
 
 ```markdown
 <!-- gatekeeper-loop: verdict=clean head=<sha> base=<branch> -->

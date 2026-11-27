@@ -321,7 +321,16 @@ def run_forge_args(args: argparse.Namespace, forge: Optional[Forge] = None) -> i
                 return _emit({"number": args.number, "ok": True})
             if action == "checks":
                 pr = active.get_pr(args.number)
-                ci = active.ci_status(pr)
+                from devloops_lib.config import load_config, validate_required_checks
+
+                required_checks = validate_required_checks(load_config())
+                if required_checks:
+                    try:
+                        ci = active.ci_status(pr, required_checks=required_checks)
+                    except TypeError:
+                        ci = active.ci_status(pr)
+                else:
+                    ci = active.ci_status(pr)
                 return _emit({"number": args.number, **asdict(ci)})
 
         if group == "ci":

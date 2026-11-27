@@ -468,7 +468,10 @@ def summarize(
     candidates = sensitive_candidates(paths, protected_config_paths)
 
     missing_req = missing_required_checks(checks, cfg)
-    if reviewed_head and reviewed_head != head and contract.GATEKEEPER_REVIEW_CLEAN in labels:
+    stale_review_clean = bool(
+        reviewed_head and reviewed_head != head and contract.GATEKEEPER_REVIEW_CLEAN in labels
+    )
+    if stale_review_clean:
         try:
             from devloops_lib.forge.detect import get_forge
 
@@ -480,6 +483,7 @@ def summarize(
                 head=head,
             ):
                 labels = [l for l in labels if l != contract.GATEKEEPER_REVIEW_CLEAN]
+                stale_review_clean = False
         except Exception:
             pass
 
