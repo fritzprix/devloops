@@ -568,7 +568,10 @@ def summarize(
                        capture_output=True)
     rebased = is_rebased(reviewed_head, head, git_is_ancestor)
 
-    last_marker_at = max((m["createdAt"] for m in [*markers, *responses]), default=None)
+    # Use gatekeeper's own markers (not worker responses) so an owner comment
+    # after an approve keeps the PR in `review` even if the worker replied
+    # without pushing (G1.1 / #110).
+    last_marker_at = max((m["createdAt"] for m in markers), default=None)
     owner = owner_comments_after(comments, me, last_marker_at)
 
     paths = [f["path"] for f in pr.get("files") or []]

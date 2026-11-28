@@ -209,5 +209,105 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(cfg["post_merge"], {"build": "make"})
 
 
+class SignoffGateHardeningTest(unittest.TestCase):
+    """Issue #110 deliverable 1: signoff checks CI, parked labels, and post-approve owner comments."""
+
+    def _base_pr(self, *, checks=None, extra_labels=None, extra_comments=None):
+        labels = [{"name": "gatekeeper:approved"}, {"name": "qa:accepted"}]
+        for lbl in extra_labels or []:
+            labels.append({"name": lbl})
+        comments = [
+            {"author": {"login": "me"}, "createdAt": "2026-11-27T01:00:00Z",
+             "body": "<!-- gatekeeper-loop: round=1 verdict=approve head=sha1 base=main -->"},
+            {"author": {"login": "me"}, "createdAt": "2026-11-27T01:01:00Z",
+             "body": "<!-- qa-loop: kind=verdict verdict=accepted head=sha1 base=main -->"},
+        ]
+        comments.extend(extra_comments or [])
+        return {
+            "number": 42,
+            "headRefOid": "sha1",
+            "isDraft": False,
+            "mergeable": "MERGEABLE",
+            "labels": labels,
+            "comments": comments,
+            "statusCheckRollup": checks or [],
+        }
+
+    def test_failing_ci_blocks_signoff_and_names_check(self):
+        pr = self._base_pr(checks=[{"name": "pytest", "status": "COMPLETED", "conclusion": "FAILURE"}])
+        res = qa.signoff(pr, "me")
+        self.assertFalse(res["mergeReady"])
+        self.assertTrue(any("pytest" in b for b in res["blockers"]), res["blockers"])
+
+    def test_pending_ci_blocks_signoff_and_names_check(self):
+        pr = self._base_pr(checks=[{"name": "macos", "status": "IN_PROGRESS", "conclusion": ""}])
+        res = qa.signoff(pr, "me")
+        self.assertFalse(res["mergeReady"])
+        self.assertTrue(any("macos" in b for b in res["blockers"]), res["blockers"])
+
+    def test_owner_comment_after_approve_blocks_signoff(self):
+        pr = self._base_pr(extra_comments=[
+            {"author": {"login": "me"}, "createdAt": "2026-11-27T02:00:00Z", "body": "Hold on, check X."},
+        ])
+        res = qa.signoff(pr, "me")
+        self.assertFalse(res["mergeReady"])
+        self.assertTrue(any("owner" in b for b in res["blockers"]), res["blockers"])
+
+    def test_parked_labels_block_signoff(self):
+        for lbl in ("blocked:owner", "gatekeeper:escalated", "needs-owner"):
+            with self.subTest(label=lbl):
+                pr = self._base_pr(extra_labels=[lbl])
+                res = qa.signoff(pr, "me")
+                self.assertFalse(res["mergeReady"])
+                self.assertTrue(any(lbl in b for b in res["blockers"]), res["blockers"])
+
+    def test_owner_comment_then_worker_response_triggers_review_and_new_approve_clears_signoff(self):
+        # G1.1: after approve -> owner comment -> worker response, gatekeeper_queue
+        # must return `review` (not `approved`), and once gatekeeper posts a new
+        # approve verdict, qa.signoff becomes mergeReady again.
+        from unittest import mock
+        from devloops_lib import gatekeeper_queue
+
+        comments_after_worker = [
+            {"author": {"login": "me"}, "createdAt": "2026-11-27T01:00:00Z",
+             "body": "<!-- gatekeeper-loop: round=1 verdict=approve head=sha1 base=main -->"},
+            {"author": {"login": "me"}, "createdAt": "2026-11-27T01:01:00Z",
+             "body": "<!-- qa-loop: kind=verdict verdict=accepted head=sha1 base=main -->"},
+            {"author": {"login": "me"}, "createdAt": "2026-11-27T02:00:00Z",
+             "body": "Please double-check edge case Y."},
+            {"author": {"login": "me"}, "createdAt": "2026-11-27T02:05:00Z",
+             "body": "<!-- worker-loop: response -->\nExplained why Y is already handled."},
+        ]
+        pr_payload = {
+            "number": 42,
+            "title": "feat: example",
+            "body": "Summary",
+            "url": "https://example.invalid/pr/42",
+            "headRefName": "feat/example-42",
+            "headRefOid": "sha1",
+            "baseRefName": "main",
+            "isDraft": False,
+            "mergeable": "MERGEABLE",
+            "createdAt": "2026-11-27T00:00:00Z",
+            "statusCheckRollup": [],
+            "labels": [{"name": "gatekeeper:approved"}, {"name": "qa:accepted"}],
+            "files": [],
+            "comments": comments_after_worker,
+        }
+        with mock.patch.object(gatekeeper_queue, "gh", return_value=json.dumps(pr_payload)):
+            gk_entry = gatekeeper_queue.summarize(
+                42, "me", state={}, config={"project": {"base_branch": "main"}}, readiness={"ci": {"present": True}}
+            )
+        self.assertEqual(gk_entry["status"], "review")
+        self.assertFalse(qa.signoff(pr_payload, "me")["mergeReady"])
+
+        # After gatekeeper re-approves, signoff is clear.
+        pr_reapproved = dict(pr_payload, comments=comments_after_worker + [
+            {"author": {"login": "me"}, "createdAt": "2026-11-27T02:10:00Z",
+             "body": "<!-- gatekeeper-loop: round=2 verdict=approve head=sha1 base=main -->"},
+        ])
+        self.assertTrue(qa.signoff(pr_reapproved, "me")["mergeReady"])
+
+
 if __name__ == "__main__":
     unittest.main()
