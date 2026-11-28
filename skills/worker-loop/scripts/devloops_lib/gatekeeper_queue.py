@@ -472,11 +472,10 @@ def needs_human_guidance(
 ) -> dict | None:
     """What the gatekeeper should post/keep for human attention, or None.
 
-    Issue #81: the merge decision is the only gate reserved to a human. Loop-skill PRs
-    are reviewed and approved like any other PR; `changes loop skill files`
-    signals only that the merge stays with a human. There is no status-based
-    reason: ambiguous review criteria is filed as an issue (carrying
-    `needs-owner`), never a review skip.
+    Loop-skill PRs are reviewed and approved like any other PR; `changes loop
+    skill files` adds extra visibility without blocking review or approval.
+    There is no status-based reason: ambiguous review criteria is filed as an
+    issue (carrying `needs-owner`), never a review skip.
 
     Idempotency lives here: `commentPresent`/`labelPresent` tell the tick to skip
     work it already did. `staleLabel` marks a `gatekeeper:needs-human` label whose
@@ -635,7 +634,7 @@ def summarize(
         review_mode = "range-diff" if rebased else "incremental"
 
     from devloops_lib import qa as qa_mod
-    signoff_res = qa_mod.signoff(pr, me, config=cfg)
+    signoff_res = qa_mod.signoff(pr, me, config=cfg, repo_has_ci=repo_has_ci)
 
     # Place review state first so the model and operator see review status before CI details.
     return {
@@ -695,7 +694,14 @@ def check_head(number: int, head: str, base: str | None) -> int:
     return 1
 
 
-def try_merge_pr(pr: dict, me: str, forge, config: dict | None = None) -> dict:
+def try_merge_pr(
+    pr: dict,
+    me: str,
+    forge,
+    config: dict | None = None,
+    *,
+    repo_has_ci: bool = True,
+) -> dict:
     """Merge PR via forge only when gatekeeper, qa, and required checks all pass at head X (#109).
 
     Passes expected_head_sha=X to forge.merge_pr. If the head moved or merge fails,
@@ -704,7 +710,7 @@ def try_merge_pr(pr: dict, me: str, forge, config: dict | None = None) -> dict:
     from devloops_lib import qa as qa_mod
     from devloops_lib.forge.base import ForgeError
 
-    check = qa_mod.signoff(pr, me, config=config)
+    check = qa_mod.signoff(pr, me, config=config, repo_has_ci=repo_has_ci)
     head = check["headSha"]
     if not check["mergeReady"]:
         return {
@@ -761,7 +767,9 @@ def main(argv: list[str] | None = None) -> None:
                    "number,title,url,headRefName,headRefOid,baseRefName,isDraft,mergeable,createdAt,"
                    "statusCheckRollup,comments,labels,files")
             )
-            result = try_merge_pr(pr, me, get_forge(cfg, state=state), config=cfg)
+            readiness = assess_readiness(config=cfg)
+            repo_has_ci = bool((readiness.get("ci") or {}).get("present"))
+            result = try_merge_pr(pr, me, get_forge(cfg, state=state), config=cfg, repo_has_ci=repo_has_ci)
             print(json.dumps(result, ensure_ascii=False, indent=2))
             sys.exit(0 if result["merged"] else 1)
         except GhError as e:

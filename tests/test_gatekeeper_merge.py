@@ -30,8 +30,11 @@ class FakeMergeForge:
 def _mergeable_pr(
     *,
     head: str = "shaX",
+    base: str = "main",
     gk_head: str = "shaX",
+    gk_base: str = "main",
     qa_head: str | None = "shaX",
+    qa_base: str = "main",
     labels: list[str] | None = None,
     checks: list[dict] | None = None,
     is_draft: bool = False,
@@ -45,18 +48,19 @@ def _mergeable_pr(
         {
             "author": {"login": "me"},
             "createdAt": "2026-11-28T01:00:00Z",
-            "body": f"<!-- gatekeeper-loop: round=1 verdict=approve head={gk_head} base=main -->\nLGTM",
+            "body": f"<!-- gatekeeper-loop: round=1 verdict=approve head={gk_head} base={gk_base} -->\nLGTM",
         },
     ]
     if qa_head is not None:
         comments.append({
             "author": {"login": "me"},
             "createdAt": "2026-11-28T01:05:00Z",
-            "body": f"<!-- qa-loop: round=1 verdict=accepted head={qa_head} base=main -->\nQA pass",
+            "body": f"<!-- qa-loop: round=1 verdict=accepted head={qa_head} base={qa_base} -->\nQA pass",
         })
     return {
         "number": 42,
         "headRefOid": head,
+        "baseRefName": base,
         "isDraft": is_draft,
         "mergeable": mergeable,
         "labels": [{"name": name} for name in labels],
@@ -121,11 +125,28 @@ class GatekeeperMergeTest(unittest.TestCase):
             ("PR is draft", _mergeable_pr(is_draft=True)),
             ("PR has conflict", _mergeable_pr(mergeable="CONFLICTING")),
             ("PR has blocked:owner", _mergeable_pr(labels=["gatekeeper:approved", "qa:accepted", "blocked:owner"])),
+            ("stacked PR targeting parent branch", _mergeable_pr(base="feat/parent", gk_base="feat/parent", qa_base="feat/parent")),
+            ("retargeted PR with old approve base", _mergeable_pr(base="main", gk_base="feat/parent", qa_base="main")),
+            ("retargeted PR with old qa base", _mergeable_pr(base="main", gk_base="main", qa_base="feat/parent")),
         ]
         for label, pr in cases:
             with self.subTest(case=label):
                 forge = FakeMergeForge(current_head="shaX")
                 result = gatekeeper_queue.try_merge_pr(pr, "me", forge, config=cfg)
+                self.assertFalse(result["merged"], msg=f"unexpected merge for {label}")
+                self.assertEqual(forge.calls, [], msg=f"merge_pr called for {label}")
+
+    def test_no_merge_without_green_ci_when_repo_has_ci_and_no_required_checks(self):
+        # G1.2: even when gatekeeper.required_checks is empty, a repo with CI must not
+        # merge a head with no checks or only skipped checks.
+        cfg = {"project": {"base_branch": "main"}, "gatekeeper": {}}
+        for label, checks in [
+            ("no checks at all", []),
+            ("only skipped check", [{"name": "ci", "status": "COMPLETED", "conclusion": "SKIPPED", "headSha": "shaX"}]),
+        ]:
+            with self.subTest(case=label):
+                forge = FakeMergeForge(current_head="shaX")
+                result = gatekeeper_queue.try_merge_pr(_mergeable_pr(checks=checks), "me", forge, config=cfg, repo_has_ci=True)
                 self.assertFalse(result["merged"], msg=f"unexpected merge for {label}")
                 self.assertEqual(forge.calls, [], msg=f"merge_pr called for {label}")
 
@@ -141,9 +162,14 @@ class GatekeeperMergeTest(unittest.TestCase):
         self.assertEqual(callers, ["devloops_lib/gatekeeper_queue.py"])
 
     def test_no_skill_text_says_human_merges(self):
-        pattern = re.compile(r"human merges|ready for a human merge|human user's call", re.IGNORECASE)
+        pattern = re.compile(
+            r"human merges|ready for a human merge|human user's call|"
+            r"human always merges|agents never merge|no loop merges|merge stays with a human",
+            re.IGNORECASE,
+        )
         hits: list[str] = []
-        for path in sorted((REPO_ROOT / "skills").rglob("*.md")):
+        targets = list(sorted((REPO_ROOT / "skills").rglob("*.md"))) + [REPO_ROOT / "README.md"]
+        for path in targets:
             text = path.read_text(encoding="utf-8")
             if pattern.search(text):
                 hits.append(path.relative_to(REPO_ROOT).as_posix())
