@@ -1,6 +1,6 @@
 ---
 name: gatekeeper-loop
-description: 'Reviewer loop paired with worker-loop. Each tick reviews open PRs, posts a structured verdict comment that directs the worker (changes requested with numbered findings), re-reviews after the worker responds, and iterates until a final Approve verdict — never merging. Use when the user types "/gatekeeper-loop", "/gatekeeper-loop 10m", "gatekeeper loop", "review worker PRs until approve", or asks for an automated reviewer that goes back and forth with the worker until approval.'
+description: 'Reviewer loop paired with worker-loop. Each tick reviews open PRs, posts a structured verdict comment that directs the worker (changes requested with numbered findings), re-reviews after the worker responds, and iterates until a final Approve verdict, then merges only through the merge gate (#109) once qa also accepts at the same head. Use when the user types "/gatekeeper-loop", "/gatekeeper-loop 10m", "gatekeeper loop", "review worker PRs until approve", or asks for an automated reviewer that goes back and forth with the worker until approval.'
 ---
 
 # Gatekeeper Loop

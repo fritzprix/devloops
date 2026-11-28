@@ -19,7 +19,7 @@ python3 "$SKILL_DIR/scripts/pm_profile.py" --write
 
 - Slot budget (`slots`)
 - Delegation backend (`cursor`, `claude`, `harness`)
-- Who may add `approved` or merge PRs (always human)
+- Who may add `approved` (only the owner) and who runs the merge gate (only the gatekeeper, #109)
 
 ## Mixed repositories
 

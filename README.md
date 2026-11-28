@@ -55,7 +55,7 @@ gatekeeper-loop ─► verdict comment + gatekeeper:* label
                      ▼
                   approve (+ CI green)
                      │
-human ───────────► merge
+gatekeeper ─(merge gate)─► merge
 ```
 
 - The worker services its open PRs first (conflicts, gatekeeper findings, comments,

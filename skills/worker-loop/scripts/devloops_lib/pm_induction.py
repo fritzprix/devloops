@@ -62,7 +62,7 @@ def build_project_profile(
         "labels": dict(config.get("labels") or {}),
         "roleSkills": skill_refs,
         "policyOrder": list(POLICY_PRIORITY),
-        "humanOnly": ["approved", "merge", "auto-merge"],
+        "neverPm": ["approved", "merge", "auto-merge"],
         "note": (
             "Role skills and devloops.config.yaml override informal comment folklore. "
             "PM never sets approved, never merges, and never infers slot budget or delegation."

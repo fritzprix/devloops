@@ -89,7 +89,9 @@ def main(argv: list[str] | None = None) -> None:
                 print("VALID"); sys.exit(0)
             print(f"CHANGED: head {pr.get('headRefOid')}, state {pr.get('state')}"); sys.exit(1)
         elif args.cmd == "signoff":
-            result = qa.signoff(_view(args.number), _me(), config=cfg)
+            from devloops_lib.gatekeeper_readiness import assess_readiness
+            repo_has_ci = bool((assess_readiness(config=cfg).get("ci") or {}).get("present"))
+            result = qa.signoff(_view(args.number), _me(), config=cfg, repo_has_ci=repo_has_ci)
             _out(result)
             sys.exit(0 if result["mergeReady"] else 1)
         elif args.cmd == "merged":

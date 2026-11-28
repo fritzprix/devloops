@@ -44,18 +44,20 @@ def _mergeable_pr(
         labels = ["gatekeeper:approved", "qa:accepted"]
     if checks is None:
         checks = [{"name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS", "headSha": head}]
+    gk_base_tok = f" base={gk_base}" if gk_base else ""
+    qa_base_tok = f" base={qa_base}" if qa_base else ""
     comments = [
         {
             "author": {"login": "me"},
             "createdAt": "2026-11-28T01:00:00Z",
-            "body": f"<!-- gatekeeper-loop: round=1 verdict=approve head={gk_head} base={gk_base} -->\nLGTM",
+            "body": f"<!-- gatekeeper-loop: round=1 verdict=approve head={gk_head}{gk_base_tok} -->\nLGTM",
         },
     ]
     if qa_head is not None:
         comments.append({
             "author": {"login": "me"},
             "createdAt": "2026-11-28T01:05:00Z",
-            "body": f"<!-- qa-loop: round=1 verdict=accepted head={qa_head} base={qa_base} -->\nQA pass",
+            "body": f"<!-- qa-loop: kind=verdict round=1 verdict=accepted head={qa_head}{qa_base_tok} -->\nQA pass",
         })
     return {
         "number": 42,
@@ -128,6 +130,8 @@ class GatekeeperMergeTest(unittest.TestCase):
             ("stacked PR targeting parent branch", _mergeable_pr(base="feat/parent", gk_base="feat/parent", qa_base="feat/parent")),
             ("retargeted PR with old approve base", _mergeable_pr(base="main", gk_base="feat/parent", qa_base="main")),
             ("retargeted PR with old qa base", _mergeable_pr(base="main", gk_base="main", qa_base="feat/parent")),
+            ("gatekeeper approve marker without base=", _mergeable_pr(gk_base=None)),
+            ("qa accepted marker without base=", _mergeable_pr(qa_base=None)),
         ]
         for label, pr in cases:
             with self.subTest(case=label):
@@ -164,16 +168,26 @@ class GatekeeperMergeTest(unittest.TestCase):
     def test_no_skill_text_says_human_merges(self):
         pattern = re.compile(
             r"human merges|ready for a human merge|human user's call|"
-            r"human always merges|agents never merge|no loop merges|merge stays with a human",
+            r"human always merges|agents never merge|no loop merges|merge stays with a human|"
+            r"always human|never merging|merge itself stays with a human|"
+            r"human[\s─►\-]{2,}merge",
             re.IGNORECASE,
         )
         hits: list[str] = []
-        targets = list(sorted((REPO_ROOT / "skills").rglob("*.md"))) + [REPO_ROOT / "README.md"]
+        targets = (
+            list(sorted((REPO_ROOT / "skills").rglob("*.md")))
+            + [REPO_ROOT / "README.md", REPO_ROOT / "devloops_lib" / "pm_induction.py"]
+        )
         for path in targets:
             text = path.read_text(encoding="utf-8")
             if pattern.search(text):
                 hits.append(path.relative_to(REPO_ROOT).as_posix())
         self.assertEqual(hits, [])
+
+    def test_pm_induction_does_not_reserve_merge_for_humans(self):
+        text = (REPO_ROOT / "devloops_lib" / "pm_induction.py").read_text(encoding="utf-8")
+        self.assertNotIn("humanOnly", text)
+        self.assertIn("neverPm", text)
 
 
 if __name__ == "__main__":

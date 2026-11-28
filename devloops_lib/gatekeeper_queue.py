@@ -38,8 +38,8 @@ issues the gatekeeper files; they never hold back a review verdict.
 
 PRs that change loop skill files get the same statuses as any other PR; they are
 reviewed and can be approved. They additionally carry `gatekeeper:needs-human`
-(reason `changes loop skill files`) to signal that the merge itself stays with a
-human; the label never blocks review or approval.
+(reason `changes loop skill files`) as extra visibility; the label never blocks
+review or approval, and approved PRs merge through the merge gate (#109).
 
 The list is sorted by priority (worker response / new head / owner comment
 first), then oldest PR first. Every entry carries a one-line `reason`.

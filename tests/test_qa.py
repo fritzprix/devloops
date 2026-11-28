@@ -23,8 +23,8 @@ def c(body: str, at: str, author: str = ME, assoc: str = "OWNER") -> dict:
     return {"author": {"login": author}, "body": body, "createdAt": at, "authorAssociation": assoc}
 
 
-def qa_marker(verdict: str, head: str = HEAD, rnd: int = 1) -> str:
-    return f"<!-- qa-loop: kind=verdict round={rnd} verdict={verdict} head={head} -->\n## QA"
+def qa_marker(verdict: str, head: str = HEAD, rnd: int = 1, base: str = "main") -> str:
+    return f"<!-- qa-loop: kind=verdict round={rnd} verdict={verdict} head={head} base={base} -->\n## QA"
 
 
 def gk_marker(verdict: str, head: str = HEAD, rnd: int = 1) -> str:

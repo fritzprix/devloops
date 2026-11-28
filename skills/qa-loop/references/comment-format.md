@@ -4,10 +4,10 @@ qa uses the same method as gatekeeper-loop: a PR comment with a hidden marker on
 
 ## Verdict
 
-`head` is the full SHA that qa reviewed. `round` starts at 1 and increments per verdict.
+`head` is the full SHA that qa reviewed. `round` starts at 1 and increments per verdict. `base` is the PR's base branch at review time; after a retarget, only a verdict carrying the new `base=` counts for the merge gate.
 
 ```markdown
-<!-- qa-loop: kind=verdict round=1 verdict=changes-requested head=<sha> -->
+<!-- qa-loop: kind=verdict round=1 verdict=changes-requested head=<sha> base=<base-branch> -->
 
 ## QA · round 1 · Changes requested (testability)
 
@@ -26,7 +26,7 @@ Scope: <one line: what changes, and which behaviors need a test path>
 Accepted (the `### Test plan` is mandatory; post-merge testing uses it):
 
 ```markdown
-<!-- qa-loop: kind=verdict round=2 verdict=accepted head=<sha> -->
+<!-- qa-loop: kind=verdict round=2 verdict=accepted head=<sha> base=<base-branch> -->
 
 ## QA · round 2 · ✅ Accepted (testable)
 

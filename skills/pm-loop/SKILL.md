@@ -149,7 +149,7 @@ Use the definition of done from role skills, `devloops.config.yaml`, and `projec
 
 ### 5. needsHuman and customer contact
 
-Update `needsHuman` in state for true human gates (approval, merge, divergent requirements). Batch one message per blocking set. Draft customer or stakeholder email/chat; never send without explicit approval.
+Update `needsHuman` in state for true human gates (issue approval, divergent requirements). Merging is not a human gate: the gatekeeper merges through the merge gate (#109); PM never merges. Batch one message per blocking set. Draft customer or stakeholder email/chat; never send without explicit approval.
 
 ### 6. Unlock
 

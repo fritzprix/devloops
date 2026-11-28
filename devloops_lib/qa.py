@@ -159,7 +159,9 @@ def signoff(
         blockers.append("gatekeeper: latest verdict is not approve")
     elif gk.get("head") != head:
         blockers.append("gatekeeper: approve is for an older head")
-    elif base and gk.get("base") and gk.get("base") != base:
+    elif not gk.get("base"):
+        blockers.append("gatekeeper: approve marker has no base= (post a fresh approve at the current base)")
+    elif base and gk.get("base") != base:
         blockers.append(f"gatekeeper: approve is for base '{gk.get('base')}', not '{base}'")
 
     qa = last_qa_verdict(comments, me)
@@ -169,7 +171,9 @@ def signoff(
         blockers.append("qa: latest verdict is not accepted")
     elif qa.get("head") != head:
         blockers.append("qa: accepted is for an older head")
-    elif base and qa.get("base") and qa.get("base") != base:
+    elif not qa.get("base"):
+        blockers.append("qa: accepted marker has no base= (post a fresh accept at the current base)")
+    elif base and qa.get("base") != base:
         blockers.append(f"qa: accepted is for base '{qa.get('base')}', not '{base}'")
 
     if gk and gk.get("verdict") == "approve" and gk.get("head") == head:
