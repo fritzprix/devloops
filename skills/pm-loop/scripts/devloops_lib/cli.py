@@ -55,10 +55,17 @@ def get_asset_paths() -> tuple[Path, Path]:
     )
 
 
-def copy_tree_safe(src: Path, dest: Path, exclude_names: set[str] | None = None) -> list[tuple[str, Path]]:
-    """Copy files from src to dest preserving existing files.
+def copy_tree_safe(
+    src: Path,
+    dest: Path,
+    exclude_names: set[str] | None = None,
+    *,
+    update: bool = False,
+) -> list[tuple[str, Path]]:
+    """Copy files from src to dest preserving existing files (or replacing changed files when update=True).
 
-    Returns list of (status, dest_path) where status is 'installed' or 'skipped (already exists)'.
+    Returns list of (status, dest_path) where status is 'installed', 'updated',
+    'unchanged', or 'skipped (already exists)'.
     """
     results: list[tuple[str, Path]] = []
     excludes = exclude_names if exclude_names is not None else {"__pycache__", ".git"}
@@ -76,7 +83,14 @@ def copy_tree_safe(src: Path, dest: Path, exclude_names: set[str] | None = None)
             dest_file = target_dir / f
 
             if dest_file.exists():
-                results.append(("skipped (already exists)", dest_file))
+                if update:
+                    if src_file.read_bytes() != dest_file.read_bytes():
+                        shutil.copy2(src_file, dest_file)
+                        results.append(("updated", dest_file))
+                    else:
+                        results.append(("unchanged", dest_file))
+                else:
+                    results.append(("skipped (already exists)", dest_file))
             else:
                 shutil.copy2(src_file, dest_file)
                 results.append(("installed", dest_file))
@@ -84,8 +98,10 @@ def copy_tree_safe(src: Path, dest: Path, exclude_names: set[str] | None = None)
     return results
 
 
-def install_command(target_dir: Path) -> int:
+def install_command(target_dir: Path, *, update: bool = False) -> int:
     """Install devloops skills (each with its own devloops_lib) and config into target_dir."""
+    from devloops_lib.doctor import STAMP_FILENAME, write_skill_stamp
+
     try:
         skills_src, templates_src = get_asset_paths()
     except RuntimeError as e:
@@ -112,10 +128,21 @@ def install_command(target_dir: Path) -> int:
 
     log_entries: list[tuple[str, Path]] = []
 
-    # 1. Install skills (skills can contain their own assets/ dir; exclude only cache/git)
-    log_entries.extend(copy_tree_safe(skills_src, skills_dest, exclude_names={"__pycache__", ".git"}))
+    # 1. Install or update skills (skills can contain their own assets/ dir; exclude only cache/git)
+    log_entries.extend(
+        copy_tree_safe(skills_src, skills_dest, exclude_names={"__pycache__", ".git"}, update=update)
+    )
 
-    # 2. Install config (root config copied only if absent)
+    # 1b. Write version stamp in each installed skill directory (#130).
+    # Without --update, never overwrite an existing stamp so drift stays visible.
+    for s in required_skills:
+        dest_skill = skills_dest / s
+        stamp_path = dest_skill / STAMP_FILENAME
+        if update or not stamp_path.exists():
+            write_skill_stamp(dest_skill)
+            log_entries.append(("updated" if update else "installed", stamp_path))
+
+    # 2. Install config (root config copied only if absent, even with --update)
     if config_dest.exists():
         log_entries.append(("skipped (already exists)", config_dest))
     else:
@@ -339,6 +366,11 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("."),
         help="Target project directory (default: current directory)"
     )
+    install_parser.add_argument(
+        "--update",
+        action="store_true",
+        help="Replace installed skill files that differ from the source release (preserves config and state)"
+    )
 
     tick_parser = subparsers.add_parser("tick", help="Run preflight gate, lock, execute agent command, and unlock safely")
     tick_parser.add_argument(
@@ -366,7 +398,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.subcommand == "install":
-        return install_command(args.target)
+        return install_command(args.target, update=args.update)
     if args.subcommand == "tick":
         return run_tick(args.loop, args)
     if args.subcommand == "forge":

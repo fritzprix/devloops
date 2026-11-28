@@ -1140,6 +1140,19 @@ def main(argv: list[str] | None = None) -> None:
         if check_lock(lock_path) and not wrapper_held:
             _exit_busy()
 
+        if args.lock:
+            from devloops_lib.config import find_project_root
+            from devloops_lib.doctor import find_skill_stamp_problems
+            installed_skills = find_project_root() / ".agents" / "skills"
+            if installed_skills.is_dir():
+                stamp_problems = find_skill_stamp_problems(installed_skills)
+                if stamp_problems:
+                    sys.stderr.write(
+                        f"tick_gate error: {'; '.join(stamp_problems)}. "
+                        "Run `devloops install --update` to sync installed skills.\n"
+                    )
+                    sys.exit(EXIT_ERROR)
+
         if args.loop != "worker-loop":
             # The fingerprint gate is the worker's; other loops only take the lock here.
             tick_token = take_tick_lock(lock_path, args.loop, pid=holder_pid) if args.lock else None

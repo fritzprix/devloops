@@ -196,6 +196,9 @@ uvx --from $wheel devloops install --target "$TMP\dl rel\proj"
 - [ ] The documented library-import one-liners work outside the source tree.
 - [ ] A second `devloops install` keeps edited skill files and the existing config,
       and reports them as skipped or in conflict.
+- [ ] `devloops install --update` replaces installed skill files that differ from the
+      source release, refreshes `.devloops-version.json` stamps, and leaves
+      `devloops.config.yaml` and `.devloops/` untouched.
 - [ ] With a required asset missing, the installer exits non-zero with a clear
       message and never reports partial success.
 - [ ] Stdout lists real installed/skipped destination paths only.

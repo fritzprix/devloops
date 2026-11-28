@@ -181,6 +181,8 @@ the skills to `.agents/skills/` and creates `devloops.config.yaml` if it does no
 ```sh
 uvx --from git+https://github.com/fritzprix/devloops devloops install
 uvx --from git+https://github.com/fritzprix/devloops devloops install --target /path/to/project
+# Update installed skill files to the latest release (keeps devloops.config.yaml and .devloops/):
+uvx --from git+https://github.com/fritzprix/devloops devloops install --update
 ```
 
 From a local checkout, `scripts/install.sh /path/to/project` does the same, and
