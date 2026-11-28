@@ -579,5 +579,60 @@ class WorkerRebaseNoteAndRecheckTest(unittest.TestCase):
         self.assertIn("pr_status.py --pr N", text)
 
 
+class SummarizeLabeledPrTest(unittest.TestCase):
+    """Issue #131: pr_status.summarize must not overwrite repo `name` with a label name."""
+
+    def _run_summarize(self, labels):
+        import json
+        from unittest import mock
+
+        pr_payload = {
+            "number": 55,
+            "title": "feat: labeled pr",
+            "body": "Summary",
+            "url": "https://example.invalid/pr/55",
+            "headRefName": "feat/labeled-55",
+            "headRefOid": "sha1",
+            "baseRefName": "main",
+            "isDraft": False,
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "CLEAN",
+            "reviewDecision": "",
+            "statusCheckRollup": [],
+            "commits": [{"committedDate": "2026-11-28T00:00:00Z"}],
+            "comments": [],
+            "labels": labels,
+        }
+        graphql_calls = []
+
+        def fake_gh(*args, **kwargs):
+            if args and args[0] == "api" and "graphql" in args:
+                graphql_calls.append(args)
+                if "name=my-repo" not in args:
+                    raise AssertionError(f"expected name=my-repo in graphql args, got {args!r}")
+                return json.dumps({"data": {}})
+            return json.dumps(pr_payload)
+
+        with mock.patch.object(pr_status, "gh", side_effect=fake_gh), \
+             mock.patch.object(pr_status, "duplicate_commits", return_value=[]), \
+             mock.patch.object(pr_status, "parent_pr_merged", return_value=None):
+            summary = pr_status.summarize(55, "my-owner", "my-repo", "me", default_base="main", merged_prs=[])
+        self.assertEqual(len(graphql_calls), 1)
+        return summary
+
+    def test_pr_with_two_labels_passes_repo_name_to_graphql(self):
+        summary = self._run_summarize([
+            {"name": "gatekeeper:changes-requested"},
+            {"name": "enhancement"},
+        ])
+        self.assertEqual(summary["labels"], ["enhancement", "gatekeeper:changes-requested"])
+        self.assertEqual(summary["nextAction"], "none")
+
+    def test_pr_with_no_labels_passes_repo_name_to_graphql(self):
+        summary = self._run_summarize([])
+        self.assertEqual(summary["labels"], [])
+        self.assertEqual(summary["nextAction"], "none")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -303,9 +303,9 @@ def summarize(
     pending = [c.get("name") or c.get("context") for c in checks if check_state(c) in PENDING]
     labels: list[str] = []
     for item in pr.get("labels") or []:
-        name = item.get("name") if isinstance(item, dict) else item
-        if name:
-            labels.append(str(name))
+        label_name = item.get("name") if isinstance(item, dict) else item
+        if label_name:
+            labels.append(str(label_name))
     labels = sorted(labels)
     escalated = contract.GATEKEEPER_ESCALATED in labels
 
