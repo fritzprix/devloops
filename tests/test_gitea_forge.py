@@ -136,6 +136,7 @@ class GiteaFixtureStub:
         # issue #65: issue 1 is blocked by open issue 2; PR 10 is blocked by
         # open PR 11. dependencies_disabled simulates the repo feature being off.
         self.dependencies_disabled = False
+        self.default_merge_style = "merge"
         self.dependencies: Dict[int, Dict[str, List[Dict[str, Any]]]] = {
             1: {"blocked_by": [copy.deepcopy(self.issues[1])], "blocks": []},
             10: {"blocked_by": [dict(self.prs[1], pull_request={"html_url": self.prs[1]["html_url"]})],
@@ -179,6 +180,9 @@ class GiteaFixtureStub:
             return 401, {}, json.dumps({"message": "unauthorized"})
 
         prefix = f"/api/v1/repos/{OWNER}/{NAME}"
+
+        if method == "GET" and path == prefix:
+            return 200, {}, json.dumps({"default_merge_style": self.default_merge_style})
 
         if method == "GET" and path == "/api/v1/user":
             return 200, {}, json.dumps({"login": USER})
@@ -315,6 +319,16 @@ class GiteaFixtureStub:
             if len(rest) == 4 and rest[1] == "reviews" and rest[3] == "comments" and method == "GET":
                 return 200, {}, json.dumps(self.review_comments.get((num, int(rest[2])), []))
             if len(rest) == 2 and rest[1] == "update" and method == "POST":
+                return 200, {}, json.dumps({"ok": True})
+            if len(rest) == 2 and rest[1] == "merge" and method == "POST":
+                pr = self._find_pr(num)
+                if pr is None:
+                    return 404, {}, json.dumps({"message": "not found"})
+                expected = (body or {}).get("head_commit_id")
+                if expected and (pr.get("head") or {}).get("sha") != expected:
+                    return 409, {}, json.dumps({"message": "head commit mismatch"})
+                pr["state"] = "closed"
+                pr["merged"] = True
                 return 200, {}, json.dumps({"ok": True})
 
         if path.startswith(f"{prefix}/commits/") and path.endswith("/status") and method == "GET":
@@ -557,6 +571,37 @@ class GiteaForgeBehaviorTest(unittest.TestCase):
                 wf.parent.mkdir(parents=True)
                 wf.write_text("on:\n  pull_request:\njobs:\n  test:\n    runs-on: ubuntu\n", encoding="utf-8")
                 self.assertTrue(has_pr_ci_workflow(Path(tmp)))
+
+    def test_merge_pr_uses_repo_default_merge_style(self):
+        stub = GiteaFixtureStub()
+        stub.default_merge_style = "squash"
+        forge = GiteaForge(
+            base_url="https://git.example.com", owner=OWNER, name=NAME,
+            version="1.22.0", retry_backoff=0.0, opener=stub,
+        )
+        pr = forge.get_pr(10)
+        forge.merge_pr(pr.number, pr.head_sha)
+        merge_posts = [b for m, p, b in stub.requests if m == "POST" and p.endswith("/pulls/10/merge")]
+        self.assertEqual(len(merge_posts), 1)
+        self.assertEqual(merge_posts[0]["Do"], "squash")
+
+    def test_merge_pr_server_head_mismatch_after_get_pr(self):
+        stub = GiteaFixtureStub()
+        forge = GiteaForge(
+            base_url="https://git.example.com", owner=OWNER, name=NAME,
+            version="1.22.0", retry_backoff=0.0, opener=stub,
+        )
+        pr = forge.get_pr(10)
+        orig_call = stub.__call__
+
+        def race_opener(req, timeout):
+            if req.get_method().upper() == "POST" and req.full_url.endswith("/pulls/10/merge"):
+                stub._find_pr(10)["head"]["sha"] = "moved-after-get-pr"
+            return orig_call(req, timeout)
+
+        forge._opener = race_opener
+        with self.assertRaises(ForgeError):
+            forge.merge_pr(pr.number, pr.head_sha)
 
 
 if __name__ == "__main__":

@@ -342,6 +342,16 @@ class FakeForge:
             "body": body, "url": _url("pull", number) + "#issuecomment-new",
         })
 
+    def merge_pr(self, number: int, expected_head_sha: str) -> None:
+        if not expected_head_sha or not expected_head_sha.strip():
+            raise ForgeError("merge_pr requires a non-empty expected_head_sha")
+        pr = self._pr(number)
+        if pr["headRefOid"] != expected_head_sha:
+            raise ForgeError(
+                f"head mismatch on PR #{number}: expected {expected_head_sha}, got {pr['headRefOid']}"
+            )
+        pr["state"] = "MERGED"
+
     def post_issue_comment(self, number: int, body: str) -> None:
         issue = self._issue(number)
         issue.setdefault("comments", []).append({
@@ -420,6 +430,9 @@ class GhStub:
         }
         # issue #74: parent/sub-issue relationships (GET .../sub_issues).
         self.sub_issues: Dict[int, List[Dict[str, Any]]] = {}
+        # issue #109: repo merge method and merge-queue simulation.
+        self.default_merge_method = "MERGE"
+        self.queue_merges = False
 
     def run(self, args: List[str]) -> str:
         self.args_log.append(list(args))
@@ -428,7 +441,11 @@ class GhStub:
         if head == ("api", "user"):
             return SEED["user"] + "\n"
         if head == ("repo", "view"):
-            return json.dumps(copy.deepcopy(SEED["repo"]))
+            if "--repo" in args:
+                raise ForgeError("unknown flag: --repo")
+            repo = copy.deepcopy(SEED["repo"])
+            repo["viewerDefaultMergeMethod"] = self.default_merge_method
+            return json.dumps(repo)
         if head == ("label", "list"):
             return json.dumps([{"name": n} for n in sorted(self.repo_labels)])
         if head == ("label", "create"):
@@ -453,6 +470,8 @@ class GhStub:
             return json.dumps(self._find_pr(int(argv[2])))
         if head == ("pr", "comment"):
             return self._pr_comment(argv[2], args)
+        if head == ("pr", "merge"):
+            return self._pr_merge(argv[2], args)
         if head == ("api", "graphql"):
             return self._graphql(args)
         if len(argv) > 1 and argv[0] == "api" and argv[1].startswith("repos/"):
@@ -542,6 +561,22 @@ class GhStub:
             "body": self._opt(args, "--body") or "", "url": url,
         })
         return url + "\n"
+
+    def _pr_merge(self, number_s: str, args: List[str]) -> str:
+        if not any(flag in args for flag in ("--merge", "--squash", "--rebase")):
+            raise ForgeError("--merge, --rebase, or --squash required when not running interactively")
+        pr = self._find_pr(int(number_s))
+        if pr["state"] == "MERGED":
+            return ""
+        expected = self._opt(args, "--match-head-commit")
+        if expected and pr["headRefOid"] != expected:
+            raise ForgeError(
+                f"head commit {pr['headRefOid']} does not match --match-head-commit {expected}"
+            )
+        if self.queue_merges:
+            return ""
+        pr["state"] = "MERGED"
+        return ""
 
     def _graphql(self, args: List[str]) -> str:
         self.graphql_calls.append(list(args))
@@ -784,3 +819,26 @@ class ForgeContract:
     def test_add_blocker_closed_blocker_state(self):
         self.forge.add_blocker(2, 3)  # closed issue 3 blocks issue 2
         assert [b.state for b in self.forge.blocked_by(2) if b.number == 3] == ["closed"]
+
+    # -- pull request merge (issue #109) ------------------------------------
+
+    def _pick_mergeable_pr(self):
+        open_prs = self.forge.list_prs(state="open")
+        mergeable = [p for p in open_prs if p.mergeable is True and not p.is_draft]
+        assert mergeable, f"expected at least one open mergeable PR, got {open_prs}"
+        return mergeable[0]
+
+    def test_merge_pr_rejects_mismatched_head_sha(self):
+        import pytest
+
+        open_prs = self.forge.list_prs(state="open")
+        assert open_prs, "expected at least one open PR"
+        pr = open_prs[0]
+        with pytest.raises(ForgeError):
+            self.forge.merge_pr(pr.number, "0000000000000000")
+        assert any(p.number == pr.number for p in self.forge.list_prs(state="open"))
+
+    def test_merge_pr_merges_when_head_sha_matches(self):
+        pr = self._pick_mergeable_pr()
+        self.forge.merge_pr(pr.number, pr.head_sha)
+        assert all(p.number != pr.number for p in self.forge.list_prs(state="open"))
