@@ -181,7 +181,7 @@ Run the same commands with or without the wrapper. Under the tick wrapper, `--un
 ## Hard rules
 
 - **Items per tick**: finish at most `worker.max_items_per_tick` plan items per tick (default 1), with one push per action (a PR item may push again when the same-tick re-check reveals another actionable state, or when pushing branches of one restacked stack together).
-- **Never merge or auto-merge**: never merge, enable auto-merge, force-push (other than `--force-with-lease` on your own PR branch after a rebase), delete remote branches, or close issues — not even after a gatekeeper `approve`; merging is always the human user's call. The only other pushes are the fast-forward `wip/issue-N` claim commits that `claim.py` makes.
+- **Never merge or auto-merge**: never merge, enable auto-merge, force-push (other than `--force-with-lease` on your own PR branch after a rebase), delete remote branches, or close issues — not even after a gatekeeper `approve`; only the gatekeeper merges. The only other pushes are the fast-forward `wip/issue-N` claim commits that `claim.py` makes.
 - **Ownership**: pushes, PR writes, and destructive git commands run only through `guard.py`; on `LOST` stop without them.
 - **Preserve work**: never discard uncommitted changes, stashes, or another slot's worktree; reset only `$WT`, only with `guard.py reset-worktree`. Never delete lock or claim files by hand.
 - **Comment markers**: Every comment posted by the worker MUST begin with `<!-- worker-loop: ... -->`. Never write `gatekeeper-loop` markers or edit `gatekeeper:*` labels.

@@ -98,7 +98,7 @@ Needs owner (not a verdict, does not count as a round; post once per reason+head
 <Concrete draft rubric or checklist the owner must confirm or edit — not open-ended questions.>
 ```
 
-Reasons: `changes loop skill files` only. A path-name match is never a reason. Missing repo CI is not a needs-owner reason: the gatekeeper files a gap issue instead and keeps reviewing. `changes loop skill files` does not block review or approval — loop-skill PRs are reviewed normally and can be approved; the marker and the `gatekeeper:needs-human` label only signal that the merge itself stays with a human. There is no `kind=needs-human` marker; `kind=needs-owner` is the only human-attention marker kind for this loop.
+Reasons: `changes loop skill files` only. A path-name match is never a reason. Missing repo CI is not a needs-owner reason: the gatekeeper files a gap issue instead and keeps reviewing. `changes loop skill files` does not block review or approval — loop-skill PRs are reviewed normally and can be approved; the marker and the `gatekeeper:needs-human` label only signal extra visibility for loop-skill edits; the merge runs through the merge gate (#109) like any other approved PR. There is no `kind=needs-human` marker; `kind=needs-owner` is the only human-attention marker kind for this loop.
 
 Escalate (round limit of 5, or an unresolved product/security/data owner decision). A second dispute on the same `G` item is **not** an escalate: decide with `file:line` evidence in the next verdict. Protocol: add `gatekeeper:escalated` first, then post this marker. The only exit is the owner removing the label.
 
@@ -131,9 +131,9 @@ Every `G` item must be answered as **fixed** or **declined**. Suggestions may be
 | Label                          | Set by     | Meaning                                                                                  |
 | ------------------------------ | ---------- | ---------------------------------------------------------------------------------------- |
 | `gatekeeper:changes-requested` | gatekeeper | Latest verdict requests changes                                                          |
-| `gatekeeper:approved`          | gatekeeper | Approved at the current head; ready for a human merge (with `qa:accepted` too when qa-loop runs) |
+| `gatekeeper:approved`          | gatekeeper | Approved at the current head; ready for gatekeeper merge once `qa:accepted` and required checks are green at the same head |
 | `gatekeeper:escalated`         | gatekeeper | Round limit or unresolved product/security/data owner decision; only the owner removing the label resumes review |
-| `gatekeeper:needs-human`       | gatekeeper | "Human merges this" signal (loop-skill change only). It never stops review or approval, and is never set from a path-name match. Kept alongside the verdict label; removed when its reason no longer applies |
+| `gatekeeper:needs-human`       | gatekeeper | Visibility signal for loop-skill changes. It never stops review or approval, and is never set from a path-name match. Kept alongside the verdict label; removed when its reason no longer applies |
 | `gatekeeper:review-clean`      | gatekeeper | Extra state label (not a verdict): set by the gatekeeper account on `verdict=clean` while CI runs; kept on `approve`; removed when the PR head changes (before re-review starts), on `changes-requested`, or on `escalate` |
 
 ### `gatekeeper:review-clean` label contract (for gated CI)

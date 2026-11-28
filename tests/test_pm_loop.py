@@ -229,7 +229,7 @@ class PmInductionTest(unittest.TestCase):
 
     def test_profile_does_not_contain_budget(self):
         profile = pm_induction.build_project_profile(config={"project": {"repo": "o/r"}}, signals={"hasCi": True})
-        self.assertIn("humanOnly", profile)
+        self.assertIn("neverPm", profile)
         self.assertNotIn("slots", json.dumps(profile))
 
 

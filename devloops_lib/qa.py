@@ -2,7 +2,7 @@
 
 qa-loop is the second reviewer next to gatekeeper-loop. The gatekeeper asks
 "is this change correct?"; qa asks "can this change be tested with the tools
-that qa-loop has?". A PR is ready for a human merge only when both agree at the
+that qa-loop has?". A PR is ready for gatekeeper merge only when both agree at the
 same head. After a merge, qa-loop builds and tests the integrated base branch
 and files issues for failures.
 
@@ -127,18 +127,30 @@ def classify_pr(pr: dict, me: str) -> dict:
     }
 
 
-def signoff(pr: dict, me: str, config: dict | None = None) -> dict:
+def signoff(
+    pr: dict,
+    me: str,
+    config: dict | None = None,
+    *,
+    repo_has_ci: bool | None = None,
+) -> dict:
     """Two-party sign-off: gatekeeper approve AND qa accepted, both at the current head.
 
     Labels alone are not enough: a label can survive a push. Each party must
-    also have a marker comment for the current head. When `config` lists
-    `gatekeeper.required_checks`, every required check must also be green at
-    the current head (issue #111).
+    also have a marker comment for the current head and base branch. When `config`
+    lists `gatekeeper.required_checks`, every required check must also be green at
+    the current head (issue #111). When `repo_has_ci` is True, at least one green
+    check must have completed at the current head (issue #109).
     """
     head = pr["headRefOid"]
+    base = pr.get("baseRefName")
     comments = pr.get("comments") or []
     labels = {label["name"] for label in pr.get("labels") or []}
     blockers = []
+
+    expected_base = ((config or {}).get("project") or {}).get("base_branch") or "main"
+    if base and base != expected_base:
+        blockers.append(f"base: PR targets '{base}', expected '{expected_base}' (retarget before merge)")
 
     gk = last_gatekeeper_verdict(comments, me)
     if GATEKEEPER_APPROVED_LABEL not in labels:
@@ -147,6 +159,10 @@ def signoff(pr: dict, me: str, config: dict | None = None) -> dict:
         blockers.append("gatekeeper: latest verdict is not approve")
     elif gk.get("head") != head:
         blockers.append("gatekeeper: approve is for an older head")
+    elif not gk.get("base"):
+        blockers.append("gatekeeper: approve marker has no base= (post a fresh approve at the current base)")
+    elif base and gk.get("base") != base:
+        blockers.append(f"gatekeeper: approve is for base '{gk.get('base')}', not '{base}'")
 
     qa = last_qa_verdict(comments, me)
     if QA_ACCEPTED_LABEL not in labels:
@@ -155,6 +171,10 @@ def signoff(pr: dict, me: str, config: dict | None = None) -> dict:
         blockers.append("qa: latest verdict is not accepted")
     elif qa.get("head") != head:
         blockers.append("qa: accepted is for an older head")
+    elif not qa.get("base"):
+        blockers.append("qa: accepted marker has no base= (post a fresh accept at the current base)")
+    elif base and qa.get("base") != base:
+        blockers.append(f"qa: accepted is for base '{qa.get('base')}', not '{base}'")
 
     if gk and gk.get("verdict") == "approve" and gk.get("head") == head:
         if owner_comments_after(comments, me, gk.get("createdAt")):
@@ -165,7 +185,7 @@ def signoff(pr: dict, me: str, config: dict | None = None) -> dict:
             blockers.append(f"parked: label {parked_label} present")
 
     checks = pr.get("statusCheckRollup") or []
-    if checks or config:
+    if checks or config or repo_has_ci:
         from devloops_lib import gatekeeper_queue
 
         eff = gatekeeper_queue.effective_checks(checks, config)
@@ -179,6 +199,12 @@ def signoff(pr: dict, me: str, config: dict | None = None) -> dict:
             missing_req = gatekeeper_queue.missing_required_checks(checks, config, head=head)
             if missing_req:
                 blockers.append(f"ci: required checks not green at current head ({', '.join(missing_req)})")
+        if repo_has_ci:
+            green = [c for c in eff if gatekeeper_queue.check_state(c) == "SUCCESS"]
+            if not eff:
+                blockers.append("ci: no checks reported for current head")
+            elif not green and not failing and not pending:
+                blockers.append("ci: no green checks completed at current head")
 
     if pr.get("isDraft"):
         blockers.append("PR is a draft")

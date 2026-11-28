@@ -35,10 +35,9 @@ The worker and the gatekeeper go back and forth until the gatekeeper approves.
 The human does not do this routine work. The human makes only the important decisions:
 
 - which issues to accept (the `approved` label),
-- user-visible behavior, permissions, and security-sensitive changes,
-- the merge.
+- user-visible behavior, permissions, and security-sensitive changes.
 
-Agents never merge. A human always merges.
+Only the gatekeeper merges (when a PR is approved, qa-accepted, and CI green at the same head, using the viewer's default merge method on GitHub or the repository default on Gitea).
 
 ## How the loop works
 
@@ -56,7 +55,7 @@ gatekeeper-loop ─► verdict comment + gatekeeper:* label
                      ▼
                   approve (+ CI green)
                      │
-human ───────────► merge
+gatekeeper ─(merge gate)─► merge
 ```
 
 - The worker services its open PRs first (conflicts, gatekeeper findings, comments,
@@ -68,7 +67,7 @@ human ───────────► merge
   tools in `qa.tools`. A PR is merge-ready only when `gatekeeper:approved` and
   `qa:accepted` are both on the current head (`qa_queue.py signoff N`). After merges,
   qa builds and tests the base branch locally and files issues for failures.
-- The gatekeeper **always reviews** every PR in the first tick that sees it; it never opens PRs. Missing prerequisites (CI workflows, review rubrics, fixtures) become gap **issues** instead of blocking review — ambiguous criteria carry a concrete draft with `needs-owner`. `gatekeeper:needs-human` remains only as the "human merges this" signal for loop-skill edits. Sensitive-looking paths are read and get stricter review from the gatekeeper, not a human gate.
+- The gatekeeper **always reviews** every PR in the first tick that sees it; it never opens PRs. Missing prerequisites (CI workflows, review rubrics, fixtures) become gap **issues** instead of blocking review — ambiguous criteria carry a concrete draft with `needs-owner`. Once a PR has `gatekeeper:approved`, `qa:accepted`, and all required checks green at the same head (and is not a draft, conflicting, or `blocked:owner`), the gatekeeper merges it using the repository's configured default merge method. Sensitive-looking paths are read and get stricter review from the gatekeeper, not a human gate.
 
 ### Tick gate
 
@@ -265,15 +264,15 @@ See [`scheduling.md`](skills/worker-loop/references/scheduling.md) (installed at
 | `validated` / `rejected` | gatekeeper | The issue matches / does not match the code |
 | `approved` | **human only** | Scope accepted; the worker can take a producer issue |
 | `gatekeeper:changes-requested` | gatekeeper | The worker must answer the findings |
-| `gatekeeper:approved` | gatekeeper | Ready for a human merge |
+| `gatekeeper:approved` | gatekeeper | Approved at current head; gatekeeper merges once `qa:accepted` and required checks are green (viewer's default merge method on GitHub / repository default on Gitea) |
 | `gatekeeper:escalated` | gatekeeper | Review round limit or unresolved product/security/data owner decision; owner removes the label to resume |
-| `gatekeeper:needs-human` | gatekeeper | "Human merges this" signal (loop-skill edits). Never blocks review or approval; never set from a path-name match |
+| `gatekeeper:needs-human` | gatekeeper | Visibility signal for loop-skill edits. Never blocks review or approval; never set from a path-name match |
 
 ## Safety rules
 
 The skills encode these rules:
 
-- No loop merges, enables auto-merge, tags, or publishes.
+- Only the gatekeeper merges (when approved, qa-accepted, and CI green at the same head); no loop enables auto-merge, tags, or publishes.
 - The worker does not close issues or delete remote branches. It force-pushes only
   with `--force-with-lease` on its own PR branch after a rebase. It rebases; it never
   merges the base into a feature branch.
