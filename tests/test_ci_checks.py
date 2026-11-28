@@ -155,15 +155,25 @@ class EffectiveChecksTest(unittest.TestCase):
                 self.assertEqual(w_pend, ["test"])
                 self.assertEqual((gk_fail, gk_pend), ([], ["test"]))
 
-    def test_rerun_attempt_within_same_run_keeps_latest_per_name(self):
-        # S1.1: two entries with the same job name in one run keep only the latest attempt.
-        checks = [
+    def test_same_name_jobs_within_one_run_keep_failing_and_pending(self):
+        # G2.1: separate jobs sharing a name in one run (e.g. matrix legs) must not be deduplicated.
+        checks_fail = [
             _run("test", run_id=100, started="2026-11-27T10:00:00Z", conclusion="FAILURE"),
             _run("test", run_id=100, started="2026-11-27T10:05:00Z", conclusion="SUCCESS"),
         ]
-        failing, pending = ci_checks.summarize_checks(checks)
-        self.assertEqual(failing, [])
+        failing, pending = ci_checks.summarize_checks(checks_fail)
+        self.assertEqual(failing, ["test"])
         self.assertEqual(pending, [])
+
+        queued = _run("test", run_id=100, status="QUEUED", conclusion="")
+        queued["startedAt"] = "0001-01-01T00:00:00Z"
+        checks_pending = [
+            _run("test", run_id=100, started="2026-11-27T10:00:00Z", conclusion="SUCCESS"),
+            queued,
+        ]
+        failing2, pending2 = ci_checks.summarize_checks(checks_pending)
+        self.assertEqual(failing2, [])
+        self.assertEqual(pending2, ["test"])
 
 
 if __name__ == "__main__":

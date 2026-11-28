@@ -90,7 +90,7 @@ def effective_checks(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     for runs in workflows.values():
         best_rank: tuple[str, int, int] | None = None
-        best_items: list[tuple[int, dict[str, Any], str]] = []
+        best_items: list[tuple[int, dict[str, Any]]] = []
         for items in runs.values():
             if all(check_state(c) == "SKIPPED" for _, c, _, _ in items):
                 continue
@@ -100,28 +100,25 @@ def effective_checks(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             rank = (max_ts, max_run_id, max_idx)
             if best_rank is None or _run_newer(rank, best_rank):
                 best_rank = rank
-                best_items = [(i, c, ts) for i, c, ts, _ in items]
-        # S1.1: within the chosen run, keep the latest entry per job name (re-run attempts).
-        latest_in_run: dict[str, tuple[str, int, dict[str, Any]]] = {}
-        for i, c, ts in best_items:
-            name = str(c.get("name") or c.get("context") or f"__chk_{i}")
-            prev = latest_in_run.get(name)
-            if prev is None or (ts, i) >= (prev[0], prev[1]):
-                latest_in_run[name] = (ts, i, c)
-        kept.extend((i, c) for (_, i, c) in latest_in_run.values())
+                best_items = [(i, c) for i, c, _, _ in items]
+        kept.extend(best_items)
 
     kept.sort(key=lambda pair: pair[0])
     return [c for _, c in kept]
 
 
 def _run_newer(cand: tuple[str, int, int], best: tuple[str, int, int]) -> bool:
-    """Compare two runs: start time first when both started, else run id, else index."""
+    """Compare two runs: start time first when both started, else run id, else unstarted/index."""
     c_ts, c_rid, c_idx = cand
     b_ts, b_rid, b_idx = best
     if c_ts and b_ts:
         return (c_ts, c_rid, c_idx) > (b_ts, b_rid, b_idx)
     if c_rid and b_rid:
         return (c_rid, c_idx) > (b_rid, b_idx)
+    if not c_ts and b_ts:
+        return True
+    if c_ts and not b_ts:
+        return False
     return c_idx > b_idx
 
 
