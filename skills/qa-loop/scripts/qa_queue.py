@@ -34,7 +34,7 @@ from devloops_lib.forge.detect import get_forge
 from devloops_lib.gh import GhError, gh
 from devloops_lib import qa
 
-PR_FIELDS = "number,title,url,headRefOid,baseRefName,isDraft,mergeable,createdAt,comments,labels,state"
+PR_FIELDS = "number,title,url,headRefOid,baseRefName,isDraft,mergeable,createdAt,comments,labels,state,statusCheckRollup"
 
 
 def _view(number: int) -> dict:
@@ -89,7 +89,7 @@ def main(argv: list[str] | None = None) -> None:
                 print("VALID"); sys.exit(0)
             print(f"CHANGED: head {pr.get('headRefOid')}, state {pr.get('state')}"); sys.exit(1)
         elif args.cmd == "signoff":
-            result = qa.signoff(_view(args.number), _me())
+            result = qa.signoff(_view(args.number), _me(), config=cfg)
             _out(result)
             sys.exit(0 if result["mergeReady"] else 1)
         elif args.cmd == "merged":

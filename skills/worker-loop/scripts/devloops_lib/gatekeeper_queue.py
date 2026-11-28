@@ -659,6 +659,7 @@ def summarize(
         "createdAt": pr["createdAt"],
         "ciPending": pending,
         "ciFailing": failing,
+        "missingRequiredChecks": missing_req if is_dev_base(base, config=cfg) else [],
         "ciQueued": queued,
         "ciStalled": stalled,
         "queuedSince": queued_since,
