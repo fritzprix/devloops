@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import shlex
 import shutil
@@ -188,6 +189,107 @@ def init_config(template: Path, start_dir: Path | None = None) -> int:
     return 0
 
 
+STAMP_FILENAME = ".devloops-version.json"
+
+
+def get_package_version() -> str:
+    try:
+        from importlib.metadata import version
+        return version("devloops")
+    except Exception:
+        return "0.0.0"
+
+
+def _skill_rel_files(skill_dir: Path) -> list[str]:
+    out: list[str] = []
+    for path in sorted(p for p in skill_dir.rglob("*") if p.is_file()):
+        rel = path.relative_to(skill_dir)
+        parts = rel.parts
+        if any(p in ("__pycache__", ".git") or p.endswith(".egg-info") for p in parts):
+            continue
+        if path.name == STAMP_FILENAME or path.suffix in (".pyc", ".pyo"):
+            continue
+        out.append(rel.as_posix())
+    return out
+
+
+def compute_skill_digest(skill_dir: Path, only_files: Sequence[str] | None = None) -> str:
+    """SHA-256 over non-cache files in a skill directory (or a specified relative file list)."""
+    digest = hashlib.sha256()
+    rel_files = sorted(only_files) if only_files is not None else _skill_rel_files(skill_dir)
+    for rel_posix in rel_files:
+        path = skill_dir / rel_posix
+        digest.update(rel_posix.encode("utf-8") + b"\0")
+        if path.is_file():
+            digest.update(path.read_bytes().replace(b"\r\n", b"\n") + b"\0")
+        else:
+            digest.update(b"\0MISSING\0")
+    return digest.hexdigest()
+
+
+def read_skill_stamp(skill_dir: Path) -> dict | None:
+    stamp_path = skill_dir / STAMP_FILENAME
+    if not stamp_path.is_file():
+        return None
+    try:
+        data = json.loads(stamp_path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def write_skill_stamp(
+    skill_dir: Path,
+    version: str | None = None,
+    source_skill_dir: Path | None = None,
+) -> Path:
+    stamp_path = skill_dir / STAMP_FILENAME
+    files_dir = source_skill_dir if source_skill_dir is not None else skill_dir
+    rel_files = _skill_rel_files(files_dir)
+    payload = {
+        "version": version if version is not None else get_package_version(),
+        "digest": compute_skill_digest(skill_dir, only_files=rel_files),
+        "files": rel_files,
+    }
+    stamp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return stamp_path
+
+
+def find_skill_stamp_problems(skills_dir: Path, source_skills_dir: Path | None = None) -> list[str]:
+    """Return human-readable drift/mismatch errors for installed skills in skills_dir (#130)."""
+    problems: list[str] = []
+    skill_dirs = sorted(p.parent.parent for p in skills_dir.glob("*/scripts/devloops_lib"))
+    stamps_by_version: dict[str, list[str]] = {}
+    unstamped: list[str] = []
+    for sdir in skill_dirs:
+        stamp = read_skill_stamp(sdir)
+        if stamp is not None:
+            ver = str(stamp.get("version") or "")
+            stamps_by_version.setdefault(ver, []).append(sdir.name)
+            stamp_files = stamp.get("files") if isinstance(stamp.get("files"), list) else None
+            actual_digest = compute_skill_digest(sdir, only_files=stamp_files)
+            if stamp.get("digest") and actual_digest != stamp["digest"]:
+                problems.append(
+                    f"skill '{sdir.name}' files differ from its installed stamp ({STAMP_FILENAME})"
+                )
+        else:
+            unstamped.append(sdir.name)
+        if source_skills_dir is not None:
+            src_sdir = source_skills_dir / sdir.name
+            if src_sdir.is_dir():
+                src_files = _skill_rel_files(src_sdir)
+                if compute_skill_digest(sdir, only_files=src_files) != compute_skill_digest(src_sdir, only_files=src_files):
+                    problems.append(f"skill '{sdir.name}' differs from source release")
+    if len(stamps_by_version) > 1:
+        groups = "; ".join(f"{v or 'unknown'}: {', '.join(names)}" for v, names in sorted(stamps_by_version.items()))
+        problems.append(f"installed skills have mixed version stamps ({groups})")
+    if stamps_by_version and unstamped:
+        problems.append(
+            f"installed skills mix stamped and unstamped installs (unstamped: {', '.join(unstamped)})"
+        )
+    return problems
+
+
 def _lib_digest(lib_dir: Path) -> str:
     digest = hashlib.sha256()
     for path in sorted(lib_dir.glob("*.py")):
@@ -197,27 +299,67 @@ def _lib_digest(lib_dir: Path) -> str:
     return digest.hexdigest()
 
 
-def check_skill_libs(skills_dir: Path) -> bool:
-    """Check that every devloops skill in skills_dir ships the same devloops_lib.
+def check_skill_libs(skills_dir: Path, source_skills_dir: Path | None = None) -> bool:
+    """Check that every devloops skill in skills_dir ships the same devloops_lib and matches source/stamps.
 
     The loops share state and lock files, so skills from different releases must
     not run side by side. That happens when only some skills are updated.
     """
+    ok = True
     by_digest: dict[str, list[str]] = {}
     for lib_dir in sorted(skills_dir.glob("*/scripts/devloops_lib")):
         by_digest.setdefault(_lib_digest(lib_dir), []).append(lib_dir.parent.parent.name)
     if len(by_digest) <= 1:
         count = sum(len(names) for names in by_digest.values())
         print(f"  [OK] Skill libraries: {count} devloops skill(s) share one devloops_lib")
-        return True
-    groups = "; ".join(", ".join(names) for names in by_digest.values())
-    print(f"  [FAIL] Skill libraries differ between skills ({groups}): update all devloops skills together")
-    return False
+    else:
+        groups = "; ".join(", ".join(names) for names in by_digest.values())
+        print(f"  [FAIL] Skill libraries differ between skills ({groups}): run `devloops install --update`")
+        ok = False
+
+    if source_skills_dir is None:
+        in_source_repo = False
+        has_stamps = any((p.parent.parent / STAMP_FILENAME).is_file() for p in skills_dir.glob("*/scripts/devloops_lib"))
+        if has_stamps:
+            try:
+                from devloops_lib.cli import get_asset_paths
+                src_skills, _ = get_asset_paths()
+                if src_skills.resolve() != skills_dir.resolve():
+                    source_skills_dir = src_skills
+                else:
+                    in_source_repo = True
+            except Exception:
+                source_skills_dir = None
+        if source_skills_dir is None and not in_source_repo:
+            print(
+                "  [WARN] Skill source comparison not verified (no source release found; "
+                "run `devloops doctor` or pass `--source-skills`)"
+            )
+
+    problems = find_skill_stamp_problems(skills_dir, source_skills_dir=source_skills_dir)
+    if problems:
+        for msg in problems:
+            print(f"  [FAIL] Skill drift: {msg}. Run `devloops install --update` to update.")
+        ok = False
+
+    if source_skills_dir is not None:
+        for lib_dir in sorted(skills_dir.glob("*/scripts/devloops_lib")):
+            sdir = lib_dir.parent.parent
+            src_sdir = source_skills_dir / sdir.name
+            if src_sdir.is_dir():
+                extras = sorted(set(_skill_rel_files(sdir)) - set(_skill_rel_files(src_sdir)))
+                if extras:
+                    print(
+                        f"  [WARN] Skill '{sdir.name}' has extra file(s) not in release: "
+                        f"{', '.join(extras)}"
+                    )
+    return ok
 
 
 def main(argv: Sequence[str] = (), skill_dir: Path | None = None) -> int:
     parser = argparse.ArgumentParser(prog="doctor.py", description="Check devloops prerequisites.")
     parser.add_argument("--init", action="store_true", help=f"Create {CONFIG_NAME} from the template and exit")
+    parser.add_argument("--source-skills", type=Path, default=None, help="Source skills directory to compare against")
     args = parser.parse_args(list(argv))
     if args.init:
         return init_config(config_template(skill_dir))
@@ -228,7 +370,7 @@ def main(argv: Sequence[str] = (), skill_dir: Path | None = None) -> int:
     if find_config_file() is None:
         print(f"  [WARN] No {CONFIG_NAME} found; defaults apply. Create one with `doctor.py --init`.")
     if skill_dir is not None:
-        all_ok &= check_skill_libs(skill_dir.parent)
+        all_ok &= check_skill_libs(skill_dir.parent, source_skills_dir=args.source_skills)
 
     # 1. Python version
     py_ok = sys.version_info >= (3, 8)

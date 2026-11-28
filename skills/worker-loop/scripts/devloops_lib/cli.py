@@ -55,10 +55,17 @@ def get_asset_paths() -> tuple[Path, Path]:
     )
 
 
-def copy_tree_safe(src: Path, dest: Path, exclude_names: set[str] | None = None) -> list[tuple[str, Path]]:
-    """Copy files from src to dest preserving existing files.
+def copy_tree_safe(
+    src: Path,
+    dest: Path,
+    exclude_names: set[str] | None = None,
+    *,
+    update: bool = False,
+) -> list[tuple[str, Path]]:
+    """Copy files from src to dest preserving existing files (or replacing changed files when update=True).
 
-    Returns list of (status, dest_path) where status is 'installed' or 'skipped (already exists)'.
+    Returns list of (status, dest_path) where status is 'installed', 'updated',
+    'unchanged', or 'skipped (already exists)'.
     """
     results: list[tuple[str, Path]] = []
     excludes = exclude_names if exclude_names is not None else {"__pycache__", ".git"}
@@ -76,7 +83,14 @@ def copy_tree_safe(src: Path, dest: Path, exclude_names: set[str] | None = None)
             dest_file = target_dir / f
 
             if dest_file.exists():
-                results.append(("skipped (already exists)", dest_file))
+                if update:
+                    if src_file.read_bytes() != dest_file.read_bytes():
+                        shutil.copy2(src_file, dest_file)
+                        results.append(("updated", dest_file))
+                    else:
+                        results.append(("unchanged", dest_file))
+                else:
+                    results.append(("skipped (already exists)", dest_file))
             else:
                 shutil.copy2(src_file, dest_file)
                 results.append(("installed", dest_file))
@@ -84,8 +98,16 @@ def copy_tree_safe(src: Path, dest: Path, exclude_names: set[str] | None = None)
     return results
 
 
-def install_command(target_dir: Path) -> int:
+def install_command(target_dir: Path, *, update: bool = False) -> int:
     """Install devloops skills (each with its own devloops_lib) and config into target_dir."""
+    from devloops_lib.doctor import (
+        STAMP_FILENAME,
+        _skill_rel_files,
+        compute_skill_digest,
+        read_skill_stamp,
+        write_skill_stamp,
+    )
+
     try:
         skills_src, templates_src = get_asset_paths()
     except RuntimeError as e:
@@ -112,10 +134,58 @@ def install_command(target_dir: Path) -> int:
 
     log_entries: list[tuple[str, Path]] = []
 
-    # 1. Install skills (skills can contain their own assets/ dir; exclude only cache/git)
-    log_entries.extend(copy_tree_safe(skills_src, skills_dest, exclude_names={"__pycache__", ".git"}))
+    # 1. Install or update skills (skills can contain their own assets/ dir; exclude only cache/git)
+    log_entries.extend(
+        copy_tree_safe(skills_src, skills_dest, exclude_names={"__pycache__", ".git"}, update=update)
+    )
 
-    # 2. Install config (root config copied only if absent)
+    # 1b. On --update, remove obsolete files that were recorded in the previous stamp (G1.3, G2.1),
+    # and report any remaining files not in the release (G3.1).
+    if update:
+        for s in required_skills:
+            dest_skill = skills_dest / s
+            src_skill = skills_src / s
+            dest_root = dest_skill.resolve()
+            prev_stamp = read_skill_stamp(dest_skill)
+            if prev_stamp and isinstance(prev_stamp.get("files"), list):
+                for rel_posix in prev_stamp["files"]:
+                    if not isinstance(rel_posix, str) or not rel_posix:
+                        continue
+                    if Path(rel_posix).is_absolute():
+                        continue
+                    target_path = dest_skill / rel_posix
+                    resolved = target_path.resolve()
+                    try:
+                        resolved.relative_to(dest_root)
+                    except ValueError:
+                        continue
+                    if resolved == dest_root:
+                        continue
+                    if not (src_skill / rel_posix).is_file() and (target_path.is_symlink() or target_path.is_file()):
+                        target_path.unlink()
+                        log_entries.append(("removed", target_path))
+            src_rel = set(_skill_rel_files(src_skill))
+            for rel_posix in _skill_rel_files(dest_skill):
+                if rel_posix not in src_rel:
+                    log_entries.append(("kept (not in release)", dest_skill / rel_posix))
+
+    # 1c. Write version stamp in each installed skill directory (#130).
+    # Without --update, stamp only when files match source so stale installs are never hidden (G1.2).
+    for s in required_skills:
+        dest_skill = skills_dest / s
+        src_skill = skills_src / s
+        stamp_path = dest_skill / STAMP_FILENAME
+        if update:
+            write_skill_stamp(dest_skill, source_skill_dir=src_skill)
+            log_entries.append(("updated", stamp_path))
+        elif not stamp_path.exists():
+            if compute_skill_digest(dest_skill) == compute_skill_digest(src_skill):
+                write_skill_stamp(dest_skill, source_skill_dir=src_skill)
+                log_entries.append(("installed", stamp_path))
+            else:
+                log_entries.append(("skipped (differs from source)", stamp_path))
+
+    # 2. Install config (root config copied only if absent, even with --update)
     if config_dest.exists():
         log_entries.append(("skipped (already exists)", config_dest))
     else:
@@ -339,6 +409,19 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("."),
         help="Target project directory (default: current directory)"
     )
+    install_parser.add_argument(
+        "--update",
+        action="store_true",
+        help="Replace installed skill files that differ from the source release (preserves config and state)"
+    )
+
+    doctor_parser = subparsers.add_parser("doctor", help="Check prerequisites and compare installed skills against source release")
+    doctor_parser.add_argument(
+        "--target",
+        type=Path,
+        default=Path("."),
+        help="Target project directory (default: current directory)"
+    )
 
     tick_parser = subparsers.add_parser("tick", help="Run preflight gate, lock, execute agent command, and unlock safely")
     tick_parser.add_argument(
@@ -366,7 +449,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.subcommand == "install":
-        return install_command(args.target)
+        return install_command(args.target, update=args.update)
+    if args.subcommand == "doctor":
+        from devloops_lib import doctor
+        try:
+            src_skills, _ = get_asset_paths()
+        except RuntimeError:
+            src_skills = None
+        skill_dir = args.target.resolve() / ".agents" / "skills" / "worker-loop"
+        argv_doc = ["--source-skills", str(src_skills)] if src_skills else []
+        return doctor.main(argv_doc, skill_dir=skill_dir if skill_dir.is_dir() else None)
     if args.subcommand == "tick":
         return run_tick(args.loop, args)
     if args.subcommand == "forge":
