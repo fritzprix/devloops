@@ -433,5 +433,126 @@ class PendingPrCommentAckTest(unittest.TestCase):
         self.assertNotIn("committedDate", src)
 
 
+class WorkerRebaseNoteAndRecheckTest(unittest.TestCase):
+    """Issue #132: rebase actions post a note marker and re-check pr_status in the same tick."""
+
+    def _summarize(self, *, head="sha2", mergeable="MERGEABLE", comments=None):
+        import json
+        from unittest import mock
+
+        pr_payload = {
+            "number": 96,
+            "title": "feat: example",
+            "body": "Summary",
+            "url": "https://example.invalid/pr/96",
+            "headRefName": "feat/example-96",
+            "headRefOid": head,
+            "baseRefName": "main",
+            "isDraft": False,
+            "mergeable": mergeable,
+            "mergeStateStatus": "CLEAN" if mergeable == "MERGEABLE" else "DIRTY",
+            "reviewDecision": "",
+            "statusCheckRollup": [],
+            "commits": [{"committedDate": "2026-11-28T10:00:00Z"}],
+            "comments": comments or [],
+            "labels": [],
+        }
+
+        def fake_gh(*args, **kwargs):
+            if args and args[0] == "api":
+                return json.dumps({"data": {}})
+            return json.dumps(pr_payload)
+
+        with mock.patch.object(pr_status, "gh", side_effect=fake_gh), \
+             mock.patch.object(pr_status, "duplicate_commits", return_value=[]), \
+             mock.patch.object(pr_status, "parent_pr_merged", return_value=None):
+            return pr_status.summarize(96, "owner", "repo", "me", default_base="main", merged_prs=[])
+
+    def test_conflict_plus_owner_comment_becomes_triage_comments_after_rebase_note(self):
+        owner_comment = {
+            "id": "5001",
+            "author": {"login": "owner"},
+            "createdAt": "2026-11-28T09:00:00Z",
+            "body": "Please fix edge case Z.",
+            "url": "https://example.invalid/pr/96#issuecomment-5001",
+        }
+        before = self._summarize(head="sha1", mergeable="CONFLICTING", comments=[owner_comment])
+        self.assertEqual(before["nextAction"], "resolve-conflict")
+
+        note_body = pr_status.format_rebase_note("resolve-conflict", "sha1", "sha2", "main")
+        note_comment = {
+            "id": "5002",
+            "author": {"login": "me"},
+            "createdAt": "2026-11-28T09:05:00Z",
+            "body": note_body,
+            "url": "https://example.invalid/pr/96#issuecomment-5002",
+        }
+        after = self._summarize(head="sha2", mergeable="MERGEABLE", comments=[owner_comment, note_comment])
+        self.assertEqual(after["nextAction"], "triage-comments")
+        self.assertEqual([c["id"] for c in after["newComments"]], ["5001"])
+
+    def test_conflict_plus_changes_requested_at_old_head_requeues_gatekeeper_on_new_head(self):
+        from devloops_lib import gatekeeper_queue
+
+        verdict = {
+            "id": "6001",
+            "author": {"login": "me"},
+            "createdAt": "2026-11-28T09:00:00Z",
+            "body": "<!-- gatekeeper-loop: round=1 verdict=changes-requested head=sha1 base=main -->\nFix G1.1.",
+            "url": "https://example.invalid/pr/96#issuecomment-6001",
+        }
+        note_body = pr_status.format_rebase_note("resolve-conflict", "sha1", "sha2", "main")
+        note_comment = {
+            "id": "6002",
+            "author": {"login": "me"},
+            "createdAt": "2026-11-28T09:05:00Z",
+            "body": note_body,
+            "url": "https://example.invalid/pr/96#issuecomment-6002",
+        }
+        status, _, _ = gatekeeper_queue.classify(
+            mergeable="MERGEABLE",
+            head="sha2",
+            base="main",
+            last_verdict={"verdict": "changes-requested", "head": "sha1", "base": "main", "round": 1},
+            worker_response=None,
+            total_verdicts=1,
+            state_reviewed_head="sha1",
+            state_pending_ci=False,
+            has_open_findings=True,
+            pending_checks=[],
+            failing_checks=[],
+            reviewed_base="main",
+            rebased=True,
+        )
+        self.assertEqual(status, "review")
+        after = self._summarize(head="sha2", mergeable="MERGEABLE", comments=[verdict, note_comment])
+        self.assertEqual(after["nextAction"], "none")
+
+    def test_resolve_conflict_alone_posts_note_with_both_heads_and_ends_none(self):
+        from devloops_lib import contract
+
+        note_body = pr_status.format_rebase_note("resolve-conflict", "aaaa111", "bbbb222", "main")
+        parsed = contract.parse_marker(note_body)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed[0], "worker-loop")
+        self.assertEqual(parsed[1]["kind"], "note")
+        self.assertEqual(parsed[1]["oldHead"], "aaaa111")
+        self.assertEqual(parsed[1]["newHead"], "bbbb222")
+        self.assertEqual(parsed[1]["base"], "main")
+        after = self._summarize(
+            head="bbbb222",
+            mergeable="MERGEABLE",
+            comments=[{"id": "7001", "author": {"login": "me"}, "createdAt": "2026-11-28T09:05:00Z", "body": note_body}],
+        )
+        self.assertEqual(after["nextAction"], "none")
+
+    def test_worker_skill_names_note_and_recheck_for_rebase_actions(self):
+        skill_path = Path(__file__).resolve().parent.parent / "skills" / "worker-loop" / "SKILL.md"
+        text = skill_path.read_text(encoding="utf-8")
+        for action in ("retarget", "resolve-conflict", "restack"):
+            self.assertIn(f"action={action}", text)
+        self.assertIn("pr_status.py --pr N", text)
+
+
 if __name__ == "__main__":
     unittest.main()
