@@ -213,13 +213,17 @@ def _skill_rel_files(skill_dir: Path) -> list[str]:
     return out
 
 
-def compute_skill_digest(skill_dir: Path) -> str:
-    """SHA-256 over all non-cache files in a skill directory (excluding the stamp file)."""
+def compute_skill_digest(skill_dir: Path, only_files: Sequence[str] | None = None) -> str:
+    """SHA-256 over non-cache files in a skill directory (or a specified relative file list)."""
     digest = hashlib.sha256()
-    for rel_posix in _skill_rel_files(skill_dir):
+    rel_files = sorted(only_files) if only_files is not None else _skill_rel_files(skill_dir)
+    for rel_posix in rel_files:
         path = skill_dir / rel_posix
         digest.update(rel_posix.encode("utf-8") + b"\0")
-        digest.update(path.read_bytes().replace(b"\r\n", b"\n") + b"\0")
+        if path.is_file():
+            digest.update(path.read_bytes().replace(b"\r\n", b"\n") + b"\0")
+        else:
+            digest.update(b"\0MISSING\0")
     return digest.hexdigest()
 
 
@@ -241,10 +245,11 @@ def write_skill_stamp(
 ) -> Path:
     stamp_path = skill_dir / STAMP_FILENAME
     files_dir = source_skill_dir if source_skill_dir is not None else skill_dir
+    rel_files = _skill_rel_files(files_dir)
     payload = {
         "version": version if version is not None else get_package_version(),
-        "digest": compute_skill_digest(skill_dir),
-        "files": _skill_rel_files(files_dir),
+        "digest": compute_skill_digest(skill_dir, only_files=rel_files),
+        "files": rel_files,
     }
     stamp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return stamp_path
@@ -261,7 +266,8 @@ def find_skill_stamp_problems(skills_dir: Path, source_skills_dir: Path | None =
         if stamp is not None:
             ver = str(stamp.get("version") or "")
             stamps_by_version.setdefault(ver, []).append(sdir.name)
-            actual_digest = compute_skill_digest(sdir)
+            stamp_files = stamp.get("files") if isinstance(stamp.get("files"), list) else None
+            actual_digest = compute_skill_digest(sdir, only_files=stamp_files)
             if stamp.get("digest") and actual_digest != stamp["digest"]:
                 problems.append(
                     f"skill '{sdir.name}' files differ from its installed stamp ({STAMP_FILENAME})"
@@ -271,7 +277,8 @@ def find_skill_stamp_problems(skills_dir: Path, source_skills_dir: Path | None =
         if source_skills_dir is not None:
             src_sdir = source_skills_dir / sdir.name
             if src_sdir.is_dir():
-                if compute_skill_digest(sdir) != compute_skill_digest(src_sdir):
+                src_files = _skill_rel_files(src_sdir)
+                if compute_skill_digest(sdir, only_files=src_files) != compute_skill_digest(src_sdir, only_files=src_files):
                     problems.append(f"skill '{sdir.name}' differs from source release")
     if len(stamps_by_version) > 1:
         groups = "; ".join(f"{v or 'unknown'}: {', '.join(names)}" for v, names in sorted(stamps_by_version.items()))
@@ -334,6 +341,18 @@ def check_skill_libs(skills_dir: Path, source_skills_dir: Path | None = None) ->
         for msg in problems:
             print(f"  [FAIL] Skill drift: {msg}. Run `devloops install --update` to update.")
         ok = False
+
+    if source_skills_dir is not None:
+        for lib_dir in sorted(skills_dir.glob("*/scripts/devloops_lib")):
+            sdir = lib_dir.parent.parent
+            src_sdir = source_skills_dir / sdir.name
+            if src_sdir.is_dir():
+                extras = sorted(set(_skill_rel_files(sdir)) - set(_skill_rel_files(src_sdir)))
+                if extras:
+                    print(
+                        f"  [WARN] Skill '{sdir.name}' has extra file(s) not in release: "
+                        f"{', '.join(extras)}"
+                    )
     return ok
 
 

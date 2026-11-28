@@ -102,6 +102,7 @@ def install_command(target_dir: Path, *, update: bool = False) -> int:
     """Install devloops skills (each with its own devloops_lib) and config into target_dir."""
     from devloops_lib.doctor import (
         STAMP_FILENAME,
+        _skill_rel_files,
         compute_skill_digest,
         read_skill_stamp,
         write_skill_stamp,
@@ -138,7 +139,8 @@ def install_command(target_dir: Path, *, update: bool = False) -> int:
         copy_tree_safe(skills_src, skills_dest, exclude_names={"__pycache__", ".git"}, update=update)
     )
 
-    # 1b. On --update, remove obsolete files that were recorded in the previous stamp (G1.3, G2.1).
+    # 1b. On --update, remove obsolete files that were recorded in the previous stamp (G1.3, G2.1),
+    # and report any remaining files not in the release (G3.1).
     if update:
         for s in required_skills:
             dest_skill = skills_dest / s
@@ -151,16 +153,21 @@ def install_command(target_dir: Path, *, update: bool = False) -> int:
                         continue
                     if Path(rel_posix).is_absolute():
                         continue
-                    obsolete = (dest_skill / rel_posix).resolve()
+                    target_path = dest_skill / rel_posix
+                    resolved = target_path.resolve()
                     try:
-                        obsolete.relative_to(dest_root)
+                        resolved.relative_to(dest_root)
                     except ValueError:
                         continue
-                    if obsolete == dest_root:
+                    if resolved == dest_root:
                         continue
-                    if not (src_skill / rel_posix).is_file() and obsolete.is_file():
-                        obsolete.unlink()
-                        log_entries.append(("removed", obsolete))
+                    if not (src_skill / rel_posix).is_file() and (target_path.is_symlink() or target_path.is_file()):
+                        target_path.unlink()
+                        log_entries.append(("removed", target_path))
+            src_rel = set(_skill_rel_files(src_skill))
+            for rel_posix in _skill_rel_files(dest_skill):
+                if rel_posix not in src_rel:
+                    log_entries.append(("kept (not in release)", dest_skill / rel_posix))
 
     # 1c. Write version stamp in each installed skill directory (#130).
     # Without --update, stamp only when files match source so stale installs are never hidden (G1.2).

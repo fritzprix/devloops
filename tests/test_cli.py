@@ -431,18 +431,54 @@ class InstallUpdateAndDriftTest(unittest.TestCase):
         ])
         stamp_path.write_text(json.dumps(stamp), encoding="utf-8")
 
-        # First --update: removes obsolete, keeps user_file and outside files, and does not list user_file.
-        self.assertEqual(cli.install_command(self.proj, update=True), 0)
+        # First --update: removes obsolete, keeps user_file and outside files, prints kept extra file,
+        # and does not list user_file in the stamp.
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(cli.install_command(self.proj, update=True), 0)
         self.assertFalse(obsolete.exists())
         self.assertTrue(user_file.is_file())
         self.assertTrue(outside_rel.is_file())
         self.assertTrue(outside_abs.is_file())
+        self.assertIn("kept (not in release)", buf.getvalue())
+        self.assertIn("my_hook.py", buf.getvalue())
         updated_stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
         self.assertNotIn("scripts/my_hook.py", updated_stamp["files"])
 
-        # Second --update: user_file still survives.
+        # Second --update: user_file still survives, and doctor passes while warning about the extra file.
         self.assertEqual(cli.install_command(self.proj, update=True), 0)
         self.assertTrue(user_file.is_file())
+        doc_buf = io.StringIO()
+        with contextlib.redirect_stdout(doc_buf):
+            self.assertTrue(doctor.check_skill_libs(self.proj / ".agents" / "skills"))
+        self.assertIn("[WARN]", doc_buf.getvalue())
+        self.assertIn("scripts/my_hook.py", doc_buf.getvalue())
+        self.assertNotIn("install --update", doc_buf.getvalue())
+
+    def test_unstamped_install_with_extra_file_updates_cleanly_and_warns_in_doctor(self):
+        # G3.1(b): an unstamped install containing an extra/obsolete file not in the release
+        # prints it as kept during --update, and doctor passes while naming it in a warning.
+        from devloops_lib import doctor
+
+        self.assertEqual(cli.install_command(self.proj), 0)
+        skills_dir = self.proj / ".agents" / "skills"
+        for stamp in skills_dir.glob(f"*/{doctor.STAMP_FILENAME}"):
+            stamp.unlink()
+        legacy = skills_dir / "worker-loop" / "scripts" / "legacy_dropped.py"
+        legacy.write_text("# dropped in newer release\n", encoding="utf-8")
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(cli.install_command(self.proj, update=True), 0)
+        self.assertIn("kept (not in release)", buf.getvalue())
+        self.assertIn("legacy_dropped.py", buf.getvalue())
+
+        doc_buf = io.StringIO()
+        with contextlib.redirect_stdout(doc_buf):
+            self.assertTrue(doctor.check_skill_libs(skills_dir))
+        self.assertIn("[WARN]", doc_buf.getvalue())
+        self.assertIn("scripts/legacy_dropped.py", doc_buf.getvalue())
+        self.assertNotIn("install --update", doc_buf.getvalue())
 
     def test_unstamped_install_warns_without_source_and_mixed_stamps_fail_tick_gate(self):
         # G2.2: unstamped install still prints the "not verified" warning when no source is compared,
