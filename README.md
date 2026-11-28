@@ -68,7 +68,7 @@ human ───────────► merge
   tools in `qa.tools`. A PR is merge-ready only when `gatekeeper:approved` and
   `qa:accepted` are both on the current head (`qa_queue.py signoff N`). After merges,
   qa builds and tests the base branch locally and files issues for failures.
-- The gatekeeper **always reviews** every PR in the first tick that sees it; it never opens PRs. Missing prerequisites (CI workflows, review rubrics, fixtures) become gap **issues** instead of blocking review — ambiguous criteria carry a concrete draft with `needs-owner`. `gatekeeper:needs-human` remains only as the "human merges this" signal for loop-skill edits. Sensitive-looking paths are read and get stricter review from the gatekeeper, not a human gate.
+- The gatekeeper **always reviews** every PR in the first tick that sees it; it never opens PRs. Missing prerequisites (CI workflows, review rubrics, fixtures) become gap **issues** instead of blocking review — ambiguous criteria carry a concrete draft with `needs-owner`. Once a PR has `gatekeeper:approved`, `qa:accepted`, and all required checks green at the same head (and is not a draft, conflicting, or `blocked:owner`), the gatekeeper merges it using the repository's configured default merge method. Sensitive-looking paths are read and get stricter review from the gatekeeper, not a human gate.
 
 ### Tick gate
 
@@ -263,7 +263,7 @@ See [`scheduling.md`](skills/worker-loop/references/scheduling.md) (installed at
 | `validated` / `rejected` | gatekeeper | The issue matches / does not match the code |
 | `approved` | **human only** | Scope accepted; the worker can take a producer issue |
 | `gatekeeper:changes-requested` | gatekeeper | The worker must answer the findings |
-| `gatekeeper:approved` | gatekeeper | Ready for a human merge |
+| `gatekeeper:approved` | gatekeeper | Approved at current head; gatekeeper merges once `qa:accepted` and required checks are green (using the repository's default merge method) |
 | `gatekeeper:escalated` | gatekeeper | Review round limit or unresolved product/security/data owner decision; owner removes the label to resume |
 | `gatekeeper:needs-human` | gatekeeper | "Human merges this" signal (loop-skill edits). Never blocks review or approval; never set from a path-name match |
 

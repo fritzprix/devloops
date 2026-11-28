@@ -634,12 +634,17 @@ def summarize(
     else:
         review_mode = "range-diff" if rebased else "incremental"
 
+    from devloops_lib import qa as qa_mod
+    signoff_res = qa_mod.signoff(pr, me, config=cfg)
+
     # Place review state first so the model and operator see review status before CI details.
     return {
         "number": pr["number"],
         "status": status,
         "reason": reason,
         "priority": priority,
+        "mergeReady": signoff_res["mergeReady"],
+        "mergeBlockers": signoff_res["blockers"],
         "reviewMode": review_mode,
         "round": len(verdicts) + (1 if status in ("review", "await-ci") else 0),
         "title": pr["title"],
@@ -690,12 +695,51 @@ def check_head(number: int, head: str, base: str | None) -> int:
     return 1
 
 
+def try_merge_pr(pr: dict, me: str, forge, config: dict | None = None) -> dict:
+    """Merge PR via forge only when gatekeeper, qa, and required checks all pass at head X (#109).
+
+    Passes expected_head_sha=X to forge.merge_pr. If the head moved or merge fails,
+    returns merged=False so the PR returns to the queue on the next tick.
+    """
+    from devloops_lib import qa as qa_mod
+    from devloops_lib.forge.base import ForgeError
+
+    check = qa_mod.signoff(pr, me, config=config)
+    head = check["headSha"]
+    if not check["mergeReady"]:
+        return {
+            "merged": False,
+            "number": pr["number"],
+            "headSha": head,
+            "blockers": check["blockers"],
+            "reason": "not-merge-ready",
+        }
+    try:
+        forge.merge_pr(pr["number"], head)
+    except ForgeError as exc:
+        return {
+            "merged": False,
+            "number": pr["number"],
+            "headSha": head,
+            "blockers": [str(exc)],
+            "reason": "merge-failed",
+        }
+    return {
+        "merged": True,
+        "number": pr["number"],
+        "headSha": head,
+        "blockers": [],
+        "reason": "merged",
+    }
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pr", type=int, help="Only this PR number")
     parser.add_argument("--state-file", type=Path, default=None, help="Path to state.json")
     add_agent_id_argument(parser)
     parser.add_argument("--check-head", type=int, metavar="N", help="Re-check PR N before posting a verdict; needs --head")
+    parser.add_argument("--merge-pr", type=int, metavar="N", help="Merge PR N if gatekeeper, qa, and CI all pass at current head")
     parser.add_argument("--head", help="The full head SHA that was reviewed")
     parser.add_argument("--base", help="The base branch that was reviewed")
     args = parser.parse_args(argv)
@@ -704,6 +748,24 @@ def main(argv: list[str] | None = None) -> None:
         if not args.head:
             parser.error("--check-head needs --head")
         sys.exit(check_head(args.check_head, args.head, args.base))
+
+    if args.merge_pr is not None:
+        try:
+            from devloops_lib.forge.detect import get_forge
+
+            state = load_state(args.state_file)
+            cfg = load_config()
+            me = gh("api", "user", "--jq", ".login").strip()
+            pr = json.loads(
+                gh("pr", "view", str(args.merge_pr), "--json",
+                   "number,title,url,headRefName,headRefOid,baseRefName,isDraft,mergeable,createdAt,"
+                   "statusCheckRollup,comments,labels,files")
+            )
+            result = try_merge_pr(pr, me, get_forge(cfg, state=state), config=cfg)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            sys.exit(0 if result["merged"] else 1)
+        except GhError as e:
+            sys.exit(f"gh error: {e}")
 
     try:
         state = load_state(args.state_file)

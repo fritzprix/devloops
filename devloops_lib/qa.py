@@ -2,7 +2,7 @@
 
 qa-loop is the second reviewer next to gatekeeper-loop. The gatekeeper asks
 "is this change correct?"; qa asks "can this change be tested with the tools
-that qa-loop has?". A PR is ready for a human merge only when both agree at the
+that qa-loop has?". A PR is ready for gatekeeper merge only when both agree at the
 same head. After a merge, qa-loop builds and tests the integrated base branch
 and files issues for failures.
 

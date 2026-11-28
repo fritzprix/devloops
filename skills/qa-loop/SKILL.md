@@ -1,6 +1,6 @@
 ---
 name: qa-loop
-description: 'QA reviewer loop paired with gatekeeper-loop and worker-loop. Each tick it (1) challenges the testability of open PRs and posts a qa verdict, (2) finds PRs merged since the last tick, and (3) builds and tests the merged base branch locally and files issues for failures. A PR is ready for a human merge only when both gatekeeper and qa sign off at the same head. Never merges. Use when the user types "/qa-loop", "/qa-loop 30m", "qa loop", or asks for a loop that checks if PR changes can be tested and tests merged PRs.'
+description: 'QA reviewer loop paired with gatekeeper-loop and worker-loop. Each tick it (1) challenges the testability of open PRs and posts a qa verdict, (2) finds PRs merged since the last tick, and (3) builds and tests the merged base branch locally and files issues for failures. A PR is ready for gatekeeper merge only when both gatekeeper and qa sign off at the same head. Never merges. Use when the user types "/qa-loop", "/qa-loop 30m", "qa loop", or asks for a loop that checks if PR changes can be tested and tests merged PRs.'
 ---
 
 # QA Loop
@@ -12,13 +12,13 @@ The second reviewer next to `gatekeeper-loop`. The two reviewers ask different q
 | gatekeeper | Is the change correct? (diff, design, acceptance criteria, CI) |
 | qa | Can the change be tested with the tools that qa has? If yes, how? |
 
-A PR is ready for a human merge **only when both sign off at the current head**. qa also owns the post-merge check: after PRs merge, qa builds the base branch locally, tests it, and files issues for failures.
+A PR is ready for gatekeeper merge **only when both sign off at the current head**. qa also owns the post-merge check: after PRs merge, qa builds the base branch locally, tests it, and files issues for failures.
 
 ```
 worker opens PR ─┬─► gatekeeper verdict ──► gatekeeper:approved ─┐
-                 └─► qa verdict ─────────► qa:accepted ──────────┴─► human merges
-                                                                        │
-qa next tick: detect merge ─► local build + tests ─► pass / issue ◄─────┘
+                 └─► qa verdict ─────────► qa:accepted ──────────┴─► gatekeeper merges
+                                                                         │
+qa next tick: detect merge ─► local build + tests ─► pass / issue ◄──────┘
 ```
 
 `$SKILL_DIR` is the directory of this SKILL.md. Read [references/comment-format.md](references/comment-format.md) before the first verdict, [references/testability.md](references/testability.md) before the first testability review, and [references/post-merge.md](references/post-merge.md) before the first post-merge run.
@@ -138,7 +138,7 @@ One line per PR judged (link, verdict, `Q` count), one line per merged PR tested
 
 ## Sign-off rule (merge gate)
 
-A PR is ready for a human merge only when all of these are true at the current head:
+A PR is ready for gatekeeper merge only when all of these are true at the current head:
 
 - label `gatekeeper:approved` and a gatekeeper `verdict=approve` marker for this head;
 - label `qa:accepted` and a qa `verdict=accepted` marker for this head;

@@ -31,7 +31,7 @@ GATEKEEPER_ESCALATED = "gatekeeper:escalated"
 # gatekeeper:review-clean marks a PR whose code review is clean while CI runs
 # (issue #101). Separate from the exactly-one verdict labels (like needs-human).
 GATEKEEPER_REVIEW_CLEAN = "gatekeeper:review-clean"
-# gatekeeper:needs-human means one thing: a human merges this PR (it changes
+# gatekeeper:needs-human marks PRs that change loop-skill files for extra visibility.
 # loop skill files, or the review criteria are ambiguous). It never blocks
 # review or approval. There is no marker kind "needs-human"; markers that ask a
 # human for attention use kind=needs-owner.
