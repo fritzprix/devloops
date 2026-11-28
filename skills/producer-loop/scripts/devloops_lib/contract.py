@@ -38,16 +38,13 @@ GATEKEEPER_REVIEW_CLEAN = "gatekeeper:review-clean"
 GATEKEEPER_NEEDS_HUMAN = "gatekeeper:needs-human"
 QA_ACCEPTED = "qa:accepted"
 QA_CHANGES_REQUESTED = "qa:changes-requested"
-# Transitional until issue #67 replaces the qa needs-human verdict with
-# needs-owner; until then it stays defined here and nowhere else.
-QA_NEEDS_HUMAN = "qa:needs-human"
 
 GATEKEEPER_VERDICT_LABELS = (
     GATEKEEPER_APPROVED,
     GATEKEEPER_CHANGES_REQUESTED,
     GATEKEEPER_ESCALATED,
 )
-QA_VERDICT_LABELS = (QA_ACCEPTED, QA_CHANGES_REQUESTED, QA_NEEDS_HUMAN)
+QA_VERDICT_LABELS = (QA_ACCEPTED, QA_CHANGES_REQUESTED)
 
 
 def issue_label(config: dict, key: str) -> str:
@@ -99,11 +96,63 @@ def first_state(
 
 
 def open_blockers(forge: Any, number: int) -> List[int]:
-    """Sorted numbers of the still-open blockers of issue/PR `number`.
+    """Sorted numbers of the still-open blockers of issue `number`.
 
     `forge` is any object with the `Forge.blocked_by` operation.
     """
     return sorted(int(b.number) for b in forge.blocked_by(number) if str(b.state).lower() == "open")
+
+
+def blocker_numbers(forge: Any, number: int) -> List[int]:
+    """Sorted numbers of every blocker link on issue `number` (open or closed)."""
+    return sorted(int(b.number) for b in forge.blocked_by(number))
+
+
+CLOSES_ISSUE_RE = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b", re.I)
+
+
+def closed_issue_numbers(text: str) -> List[int]:
+    """Return sorted unique issue numbers referenced by closing keywords in a PR title/body."""
+    return sorted({int(m.group(1)) for m in CLOSES_ISSUE_RE.finditer(text or "")})
+
+
+def pr_blocker_numbers(forge: Any, pr_text: str) -> List[int]:
+    """Sorted blocker numbers (open or closed) across all issues closed by a PR.
+
+    Dependencies exist only between issues (owner decision G1.3 / #68); never
+    query PR-level dependencies.
+    """
+    seen: set[int] = set()
+    for issue_num in closed_issue_numbers(pr_text):
+        seen.update(blocker_numbers(forge, issue_num))
+    return sorted(seen)
+
+
+def pr_open_blockers(forge: Any, pr_text: str) -> List[int]:
+    """Sorted still-open blocker numbers across all issues closed by a PR."""
+    seen: set[int] = set()
+    for issue_num in closed_issue_numbers(pr_text):
+        seen.update(open_blockers(forge, issue_num))
+    return sorted(seen)
+
+
+def needs_blocker_rebase(
+    *,
+    blocker_links: Iterable[Any],
+    open_blocker_numbers: Iterable[int],
+    head: str,
+    clean_head: Optional[str],
+) -> bool:
+    """True when the worker should rebase a parked PR after its blockers closed (issue #68).
+
+    Requires at least one blocker link, no open blockers, and a gatekeeper ``clean``
+    marker whose ``head`` still matches the PR head.
+    """
+    if not list(blocker_links):
+        return False
+    if list(open_blocker_numbers):
+        return False
+    return bool(clean_head) and clean_head == head
 
 
 # --- Marker grammar --------------------------------------------------------------
@@ -116,13 +165,10 @@ MARKER = re.compile(r"^(?:\ufeff)?\s*<!--\s*(gatekeeper-loop|worker-loop|qa-loop
 # response, and not an owner comment. kind "needs-human" does not exist; the
 # human-attention marker kind is needs-owner.
 GATEKEEPER_VERDICTS = ("changes-requested", "approve", "clean", "escalate")
-GATEKEEPER_KINDS = ("needs-owner",)
+GATEKEEPER_KINDS = ("needs-owner", "note")
 WORKER_KINDS = ("response", "qa-response", "note", "needs-owner")
 QA_KINDS = ("verdict", "post-merge", "needs-owner")
-# qa verdict values. "needs-human" is transitional until issue #67.
-QA_VERDICTS = ("accepted", "changes-requested", "needs-human")
-# `clean` accepts one optional field: blocked-by=#N.
-BLOCKED_BY = re.compile(r"#\d+\Z")
+QA_VERDICTS = ("accepted", "changes-requested")
 
 
 def is_marker(body: str) -> bool:
@@ -161,7 +207,7 @@ def parse_marker(body: str) -> Optional[tuple[str, dict]]:
                 return None
         elif verdict not in GATEKEEPER_VERDICTS:
             return None
-        if verdict == "clean" and not BLOCKED_BY.match(fields.get("blocked-by", "#0")):
+        if verdict == "clean" and "blocked-by" in fields:
             return None
     elif loop == "worker-loop":
         if kind not in WORKER_KINDS:
@@ -195,3 +241,92 @@ def parse_markers(comments: list[dict], me: str, loop: Optional[str] = None) -> 
         found.append({**fields, "loop": name, "createdAt": c.get("createdAt", ""), "url": c.get("url")})
     found.sort(key=lambda f: f["createdAt"])
     return found
+
+
+# --- needs-owner protocol (issue #67) ------------------------------------------
+
+# Association values that mark a comment author as acting for the repository.
+OWNER_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+
+# Informational kind=needs-owner markers: merge stays human; they never park.
+# Normalized forms of "changes loop skill files", "changes-loop-skill-files",
+# and qa’s short reason "loop-skill".
+_NEEDS_OWNER_NOTICE_REASONS = frozenset({
+    "changes-loop-skill-files",
+    "loop-skill",
+})
+
+
+def _normalize_reason(reason: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (reason or "").lower()).strip("-")
+
+
+def is_needs_owner_ask(fields: dict) -> bool:
+    """True when marker fields are a real needs-owner ask (not a notice)."""
+    if (fields or {}).get("kind") != NEEDS_OWNER:
+        return False
+    return _normalize_reason(str(fields.get("reason") or "")) not in _NEEDS_OWNER_NOTICE_REASONS
+
+
+def author_login(comment: dict) -> str:
+    author = comment.get("author") or {}
+    if isinstance(author, dict):
+        return str(author.get("login") or "")
+    return str(author or "")
+
+
+def author_association(comment: dict) -> str:
+    """Author association of a comment, upper-cased, or "" when the forge does not report it."""
+    value = comment.get("authorAssociation") or comment.get("author_association") or ""
+    return str(value).upper()
+
+
+def first_owner_reply(comments: list[dict], me: str, since: str) -> Optional[dict]:
+    """First owner answer after `since` (ISO time), or None.
+
+    An owner answer is the first comment posted after `since` that carries no
+    loop marker and was written by a repository owner, member, or collaborator,
+    or by the shared account `me` itself.
+    """
+    for c in sorted(comments or [], key=lambda c: c.get("createdAt", "")):
+        if is_marker(c.get("body") or ""):
+            continue
+        if c.get("createdAt", "") <= since:
+            continue
+        login = author_login(c)
+        if login == me or author_association(c) in OWNER_ASSOCIATIONS:
+            return {
+                "author": login,
+                "createdAt": c.get("createdAt", ""),
+                "url": c.get("url"),
+            }
+    return None
+
+
+def latest_needs_owner_ask_at(comments: list[dict]) -> Optional[str]:
+    """CreatedAt of the latest real needs-owner ask (any loop), or None.
+
+    Loop-skill notices are ignored so they cannot re-park after an answer.
+    """
+    asks: list[str] = []
+    for c in comments or []:
+        parsed = parse_marker(c.get("body") or "")
+        if parsed is not None and is_needs_owner_ask(parsed[1]):
+            asks.append(c.get("createdAt", ""))
+    return max(asks) if asks else None
+
+
+def needs_owner_parked(comments: list[dict], me: str, *, labeled: bool = True) -> bool:
+    """True while a needs-owner ask is unresolved, so no loop may act.
+
+    The ask is the latest real ``kind=needs-owner`` marker (any loop; notices
+    excluded). It is resolved by ``first_owner_reply`` after that ask.
+
+    When there is no findable ask: return ``labeled`` (default True so callers
+    that already checked the ``needs-owner`` label keep fail-closed behaviour).
+    Pass ``labeled=False`` when only markers are in play (e.g. qa classify).
+    """
+    ask_at = latest_needs_owner_ask_at(comments)
+    if ask_at is None:
+        return bool(labeled)
+    return first_owner_reply(comments or [], me, ask_at) is None

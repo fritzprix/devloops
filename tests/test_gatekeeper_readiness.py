@@ -46,15 +46,16 @@ class GatekeeperReadinessTest(unittest.TestCase):
         out = gr.assess_rubric(self.root, {})
         self.assertEqual(out["status"], "present")
 
-    def test_ambiguous_rubric_files_needs_owner_issue(self):
+    def test_ambiguous_rubric_is_not_decided_here(self):
+        # Owner rescope (#102): ambiguous review criteria is deferred to the
+        # scaffolding interview and is not decided by assess_rubric.
         (self.root / "REVIEW_RUBRIC.md").write_text(
             "# Rubric\nCriteria TBD — owner must decide what counts as done.\n" * 5,
             encoding="utf-8",
         )
         out = gr.assess_rubric(self.root, {})
-        self.assertEqual(out["status"], "ambiguous")
-        self.assertEqual(out["action"], "open_issue")
-        self.assertIn("needs-owner", out["goal"])
+        self.assertNotEqual(out["status"], "ambiguous")
+        self.assertNotIn("needs-owner", out.get("goal") or "")
 
     def test_assess_readiness_lists_gaps_without_autonomous_prs(self):
         cfg = {"commands": {"test": "pytest", "lint": "ruff check"}}

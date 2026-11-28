@@ -161,6 +161,7 @@ class TickGateTest(unittest.TestCase):
                 issue(103, ["approved"], ["someone"]),         # assigned to other -> skip
                 issue(104, ["enhancement"]),                   # not approved -> skip
                 issue(105, ["approved"], ["me"]),              # assigned to @me only -> actionable
+                issue(106, ["approved", "needs-owner"]),       # parked (#67) -> skip
             ],
         }
         # Without a forge, open blockers are not consulted; approved + assignee
@@ -935,3 +936,41 @@ class LockPublicationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FindRebasePrsTest(unittest.TestCase):
+    def test_counts_only_clean_at_head_with_closed_blockers(self):
+        from devloops_lib.forge.models import Blocker
+        queried = []
+        class Forge:
+            def blocked_by(self, number):
+                queried.append(number)
+                return [Blocker(9, "closed")] if number == 10 else []
+        gate = {"prs": [
+            {"number": 1, "headRefOid": "aaa", "isDraft": False, "author": {"login": "me"}, "bodyText": "Fixes #10"},
+            {"number": 2, "headRefOid": "bbb", "isDraft": False, "author": {"login": "me"}, "bodyText": "Fixes #10"},
+            {"number": 3, "headRefOid": "ccc", "isDraft": False, "author": {"login": "other"}, "bodyText": "Fixes #10"},
+        ]}
+        def comments(number):
+            if number == 1:
+                return [{"author": {"login": "me"}, "createdAt": "t",
+                         "body": "<!-- gatekeeper-loop: verdict=clean head=aaa base=main -->"}]
+            if number == 2:
+                return [{"author": {"login": "me"}, "createdAt": "t",
+                         "body": "<!-- gatekeeper-loop: verdict=clean head=old base=main -->"}]
+            return []
+        found = tick_gate.find_rebase_prs(gate, "me", forge=Forge(), comments_fn=comments)
+        self.assertEqual(found, [1])
+        self.assertTrue(all(n == 10 for n in queried))
+
+    def test_find_rebase_prs_fails_closed_on_forge_error(self):
+        # G2.1: forge error while reading blockers must fail closed (never wake rebase).
+        class BrokenForge:
+            def blocked_by(self, number):
+                raise RuntimeError("forge unavailable")
+        gate = {"prs": [
+            {"number": 1, "headRefOid": "aaa", "isDraft": False, "author": {"login": "me"}, "bodyText": "Fixes #10"},
+        ]}
+        comments = lambda _n: [{"author": {"login": "me"}, "createdAt": "t",
+                                "body": "<!-- gatekeeper-loop: verdict=clean head=aaa base=main -->"}]
+        self.assertEqual(tick_gate.find_rebase_prs(gate, "me", forge=BrokenForge(), comments_fn=comments), [])

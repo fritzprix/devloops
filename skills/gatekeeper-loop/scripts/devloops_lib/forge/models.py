@@ -100,6 +100,7 @@ class PrComment:
     created_at: str
     body: str
     url: Optional[str] = None
+    association: str = ""
 
 
 @dataclass

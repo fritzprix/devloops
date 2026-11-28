@@ -30,6 +30,9 @@ status values:
                round limit of 5 is reached. Only the owner removing the label
                resumes review, and the round count then restarts at 1; a bare
                owner comment does not end an escalation (issue #70).
+  blocked    - open forge blocker link (issue #68); parked until blockers close.
+               No review comment while blocked.
+  wait-owner - needs-owner ask (label or real ask marker) with no owner answer.
 
 No status skips review (issue #81): every reviewable PR gets a full review at
 the first tick that sees it, whatever CI or repo-readiness looks like. Gaps
@@ -38,7 +41,7 @@ issues the gatekeeper files; they never hold back a review verdict.
 
 PRs that change loop skill files get the same statuses as any other PR; they are
 reviewed and can be approved. They additionally carry `gatekeeper:needs-human`
-(reason `changes loop skill files`) to signal that the merge itself stays with a
+(reason `changes-loop-skill-files`) to signal that the merge itself stays with a
 human; the label never blocks review or approval.
 
 The list is sorted by priority (worker response / new head / owner comment
@@ -281,32 +284,11 @@ def _check_run_ts(c: dict) -> str:
 
 
 def effective_checks(checks: list[dict], config: dict | None = None) -> list[dict]:
-    """For required check names, keep only the latest run; keep all runs for other checks."""
-    required = ((config or {}).get("gatekeeper") or {}).get("required_checks") or []
-    req_set = set(required)
-    if not req_set:
-        return list(checks)
-    latest_req: dict[str, tuple[str, int, dict]] = {}
-    for idx, c in enumerate(checks):
-        name = c.get("name") or c.get("context")
-        if not name or name not in req_set:
-            continue
-        ts = _check_run_ts(c)
-        key = (ts, idx)
-        prev = latest_req.get(name)
-        if prev is None or key >= (prev[0], prev[1]):
-            latest_req[name] = (ts, idx, c)
-    out: list[dict] = []
-    seen_req: set[str] = set()
-    for c in checks:
-        name = c.get("name") or c.get("context")
-        if name and name in req_set:
-            if name not in seen_req:
-                seen_req.add(name)
-                out.append(latest_req[name][2])
-        else:
-            out.append(c)
-    return out
+    """Keep only the latest non-skipped run of each workflow (issue #116)."""
+    del config  # unused; kept for call-site compatibility
+    from devloops_lib.ci_checks import effective_checks as _effective_checks
+
+    return _effective_checks(checks)
 
 
 def missing_required_checks(checks: list[dict], config: dict | None = None) -> list[str]:
@@ -368,6 +350,9 @@ def classify(
     repo_has_ci: bool = True,
     stalled: list[str] | None = None,
     missing_required_checks: list[str] | None = None,
+    needs_owner: bool = False,
+    open_blocker_numbers: list[int] | None = None,
+    forge_error: str | None = None,
 ) -> tuple[str, str, int]:
     """Return (status, one-line reason, priority). Lower priority number is handled first."""
     ci_applies = is_dev_base(base, config=config)
@@ -375,6 +360,18 @@ def classify(
 
     if escalated:
         return "escalate", "parked by gatekeeper:escalated; only the owner removing the label resumes review", 9
+    # Issue #67: a parked needs-owner ask gets no work from any loop.
+    if needs_owner:
+        return "wait-owner", "needs-owner ask awaiting owner answer", 9
+
+    # Fail closed (#68 G1.2): cannot read blockers → park, never "no blockers".
+    if forge_error:
+        return "blocked", f"forge unavailable for blocker check: {forge_error}", 9
+
+    # Issue #68 / overlap: open-blocker parks before merge-conflict and verdicts.
+    blockers = sorted({int(n) for n in (open_blocker_numbers or [])})
+    if blockers:
+        return "blocked", f"open blocker #{', #'.join(str(n) for n in blockers)}", 9
 
     if mergeable == "CONFLICTING":
         return "wait-worker", "merge conflict; worker must rebase", 9
@@ -456,23 +453,26 @@ def needs_human_guidance(
     own_skill: bool,
     labels: list[str],
     needs_comment_present: bool,
+    status: str | None = None,
 ) -> dict | None:
     """What the gatekeeper should post/keep for human attention, or None.
 
-    Issue #81: the merge decision is the only gate reserved to a human. Loop-skill PRs
-    are reviewed and approved like any other PR; `changes loop skill files`
-    signals only that the merge stays with a human. There is no status-based
-    reason: ambiguous review criteria is filed as an issue (carrying
-    `needs-owner`), never a review skip.
+    Issue #67/#81: the merge decision is the only gate reserved to a human.
+    Loop-skill PRs are reviewed and approved like any other PR;
+    ``changes-loop-skill-files`` signals only that the merge stays with a human.
+    Ambiguous review criteria is filed as an issue (carrying ``needs-owner``),
+    never a review skip.
 
     Idempotency lives here: `commentPresent`/`labelPresent` tell the tick to skip
     work it already did. `staleLabel` marks a `gatekeeper:needs-human` label whose
     reason no longer applies; labels this loop did not add are never removed.
     Path-name matches (`sensitiveCandidates`) are deliberately not a reason: the
     gatekeeper reads those files and applies stricter review itself.
+    ``status`` is accepted for call-site compatibility and ignored.
     """
+    del status  # unused; kept for callers that still pass it
     label_present = "gatekeeper:needs-human" in labels
-    reason = "changes loop skill files" if own_skill else None
+    reason = "changes-loop-skill-files" if own_skill else None
     if reason is None:
         if not label_present:
             return None
@@ -491,7 +491,7 @@ def summarize(
 ) -> dict:
     pr = json.loads(
         gh("pr", "view", str(number), "--json",
-           "number,title,url,headRefName,headRefOid,baseRefName,isDraft,mergeable,createdAt,"
+           "number,title,body,url,headRefName,headRefOid,baseRefName,isDraft,mergeable,createdAt,"
            "statusCheckRollup,comments,labels,files")
     )
     cfg = config or load_config()
@@ -555,13 +555,19 @@ def summarize(
                        capture_output=True)
     rebased = is_rebased(reviewed_head, head, git_is_ancestor)
 
-    last_marker_at = max((m["createdAt"] for m in [*markers, *responses]), default=None)
+    last_marker_at = max(
+        (m["createdAt"] for m in [*markers, *responses] if m.get("kind") != "note"),
+        default=None,
+    )
     owner = owner_comments_after(comments, me, last_marker_at)
 
     paths = [f["path"] for f in pr.get("files") or []]
     own_skill = any(p.startswith(PROTECTED_SKILL_PREFIXES) for p in paths)
     protected_config_paths = tuple(cfg.get("protected_paths", []))
     candidates = sensitive_candidates(paths, protected_config_paths)
+    parked = contract.needs_owner_parked(
+        comments, me, labeled=contract.NEEDS_OWNER in labels,
+    )
 
     missing_req = missing_required_checks(checks, cfg)
     stale_review_clean = bool(
@@ -582,6 +588,18 @@ def summarize(
                 stale_review_clean = False
         except Exception:
             pass
+
+    open_blocker_nums: list[int] = []
+    forge_error: str | None = None
+    if not parked:
+        try:
+            from devloops_lib.forge.detect import get_forge
+
+            forge_obj = get_forge(cfg, state=state)
+            pr_text = f"{pr.get('title') or ''} {pr.get('body') or ''}"
+            open_blocker_nums = contract.pr_open_blockers(forge_obj, pr_text)
+        except Exception as exc:
+            forge_error = str(exc) or exc.__class__.__name__
 
     status, reason, priority = classify(
         mergeable=pr.get("mergeable"),
@@ -605,6 +623,9 @@ def summarize(
         repo_has_ci=repo_has_ci,
         stalled=stalled,
         missing_required_checks=missing_req,
+        needs_owner=parked,
+        open_blocker_numbers=open_blocker_nums,
+        forge_error=forge_error,
     )
     # Loop-skill PRs keep their normal status; own_skill only drives needsHuman below.
     needs_at_head = next((m for m in reversed(needs) if m.get("head") == head), None)

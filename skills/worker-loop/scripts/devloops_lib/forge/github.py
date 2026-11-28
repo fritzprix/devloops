@@ -427,17 +427,32 @@ class GitHubForge:
             cursor = page_info.get("endCursor")
         return threads
 
-    def list_pr_comments(self, number: int) -> List[PrComment]:
-        data = json.loads(self._call("pr", "view", str(number), "--json", "comments"))
-        out: List[PrComment] = []
-        for c in data.get("comments") or []:
-            out.append(PrComment(
-                author=_login(c.get("author")),
-                created_at=c.get("createdAt") or "",
+    def list_comments(self, number: int) -> List[PrComment]:
+        """Comments of an issue OR a pull request (issue #67).
+
+        GitHub's issue-comments endpoint answers for pull requests too, so one
+        read works for both item kinds and carries author_association for the
+        needs-owner protocol.
+        """
+        owner, repo = self._owner_repo()
+        out = json.loads(self._api(
+            "api", f"repos/{owner}/{repo}/issues/{number}/comments", "--paginate"
+        ) or "[]")
+        if isinstance(out, dict):
+            out = out.get("comments") or []
+        items: List[PrComment] = []
+        for c in out if isinstance(out, list) else []:
+            items.append(PrComment(
+                author=_login(c.get("user")),
+                created_at=c.get("created_at") or "",
                 body=c.get("body") or "",
-                url=c.get("url"),
+                url=c.get("html_url"),
+                association=str(c.get("author_association") or ""),
             ))
-        return out
+        return items
+
+    def list_pr_comments(self, number: int) -> List[PrComment]:
+        return self.list_comments(number)
 
     def post_pr_comment(self, number: int, body: str) -> None:
         self._call("pr", "comment", str(number), "--body", body)
@@ -454,11 +469,10 @@ class GitHubForge:
             if owner and name:
                 return owner, name
             raise ForgeError(f"GitHubForge: cannot split owner/repo from {self._repo!r}")
-        full = self.repo_ref().full_name
-        owner, _, name = full.partition("/")
-        if not owner or not name:
+        ref = self.repo_ref()
+        if not ref.owner or not ref.name:
             raise ForgeError("GitHubForge: cannot resolve owner/repo for dependency operations")
-        return owner, name
+        return ref.owner, ref.name
 
     def list_sub_issues(self, number: int) -> List[int]:
         """Child issue numbers via ``GET .../issues/{n}/sub_issues`` (issue #74)."""

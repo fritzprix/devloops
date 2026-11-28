@@ -698,7 +698,11 @@ class GiteaForge:
                 )
         return threads
 
-    def list_pr_comments(self, number: int) -> List[PrComment]:
+    def list_comments(self, number: int) -> List[PrComment]:
+        """Comments of an issue OR a pull request (issue #67).
+
+        Gitea and Forgejo answer /issues/{n}/comments for pull requests too.
+        """
         items = self._paginate(f"{self._repo_prefix}/issues/{number}/comments", limit=200)
         return [
             PrComment(
@@ -706,11 +710,19 @@ class GiteaForge:
                 created_at=str(c.get("created_at") or ""),
                 body=str(c.get("body") or ""),
                 url=c.get("html_url") or c.get("url"),
+                association=str(c.get("author_association") or ""),
             )
             for c in items
         ]
 
+    def list_pr_comments(self, number: int) -> List[PrComment]:
+        return self.list_comments(number)
+
     def post_pr_comment(self, number: int, body: str) -> None:
+        self._http_call("POST", f"{self._repo_prefix}/issues/{number}/comments", body={"body": body})
+
+    def post_issue_comment(self, number: int, body: str) -> None:
+        # Gitea/Forgejo answer the same endpoint for issues (issue #67).
         self._http_call("POST", f"{self._repo_prefix}/issues/{number}/comments", body={"body": body})
 
     def update_branch(self, number: int) -> None:

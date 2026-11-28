@@ -25,7 +25,7 @@ Typical tool kinds. The project declares which of them it has:
 4. **Controllable input.** Time, randomness, network, and model output must be fixed or faked. If not, demand a test hook.
 5. **No live paid services.** A check that needs a real external account or paid API is not a qa path. Demand a fake or a mock.
 6. **Isolation.** App runs use an isolated data directory and scratch workspace. Never the user's default profile.
-7. **Blocked tools.** If the only path needs a blocked tool, the verdict is `needs-human` with reason `tool-blocked`. It is not the worker's fault.
+7. **Blocked tools.** If the only path needs a blocked tool, post a `kind=needs-owner` ask with reason `tool-blocked`. It is not the worker's fault.
 8. **Size.** A docs-only or comment-only change has no behavior to test: accept it with "no behavior change" in `### Checked`.
 
 ## Demands (most preferred first)
@@ -35,6 +35,6 @@ Typical tool kinds. The project declares which of them it has:
 | Logic with no test | A unit or integration test that fails without the change. |
 | Behavior is not observable | A test hook: API field, event, log marker, or transcript entry. |
 | Input is not controllable | A seam: fake provider, mock server URL setting, fixed clock or seed. |
-| Only a human can check it | A `## Manual verification` section in the PR body. qa then posts `needs-human`. |
+| Only a human can check it | A `## Manual verification` section in the PR body. qa then posts a `kind=needs-owner` ask. |
 
 Write each demand as a `Q` item: the criterion, why no path exists, and the exact thing to add. Do not write a patch.

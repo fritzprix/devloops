@@ -233,7 +233,10 @@ def find_merged_via_parent_issues(
 # The pr_status priority order. wait-ci and none need no work now.
 # Canonical list shared by the worker plan (skills/worker-loop/scripts/plan_tick.py)
 # and the PM pipeline counter prsNeedingWorker (devloops_lib.pm_pipeline, issue #71).
-WORKER_PR_ACTIONS = ["retarget", "resolve-conflict", "restack", "address-gatekeeper", "address-qa", "triage-comments", "fix-ci"]
+WORKER_PR_ACTIONS = [
+    "retarget", "resolve-conflict", "rebase", "restack",
+    "address-gatekeeper", "address-qa", "triage-comments", "fix-ci",
+]
 
 
 def select_next_action(
@@ -247,15 +250,25 @@ def select_next_action(
     failing: list[str],
     pending: list[str],
     escalated: bool = False,
+    needs_owner: bool = False,
+    open_blockers: bool = False,
+    rebase_after_blockers: bool = False,
 ) -> str:
+    # Issue #67: an item parked with needs-owner and no owner answer gets no
+    # work from any loop, whatever else applies to it.
     # Issue #70: a PR parked with gatekeeper:escalated is the owner's turn.
     # The worker must not rebase, fix CI, triage, or answer reviews on it.
-    if escalated:
+    if needs_owner or escalated:
         return "none"
+    # Issue #68 / overlap: open-blocker parks the PR (wait-blocker) until cleared.
+    if open_blockers:
+        return "wait-blocker"
     if retarget:
         return "retarget"
     if conflicting:
         return "resolve-conflict"
+    if rebase_after_blockers:
+        return "rebase"
     if duplicates:
         return "restack"
     if gatekeeper and gatekeeper["awaitingWorker"]:
@@ -271,6 +284,15 @@ def select_next_action(
     return "none"
 
 
+def latest_clean_marker(comments: list[dict], me: str) -> dict | None:
+    """Latest gatekeeper ``clean`` marker from @me, or None."""
+    clean = None
+    for marker in contract.parse_markers(comments, me):
+        if marker["loop"] == "gatekeeper-loop" and marker.get("verdict") == "clean":
+            clean = marker
+    return clean
+
+
 def summarize(
     number: int,
     owner: str,
@@ -284,15 +306,16 @@ def summarize(
     pr = json.loads(
         gh(
             "pr", "view", str(number), "--json",
-            "number,title,url,headRefName,headRefOid,baseRefName,isDraft,mergeable,"
+            "number,title,body,url,headRefName,headRefOid,baseRefName,isDraft,mergeable,"
             "mergeStateStatus,reviewDecision,statusCheckRollup,commits,comments,labels",
         )
     )
     gatekeeper = gatekeeper_state(pr.get("comments") or [], me, pr["headRefOid"])
     qa = qa_state(pr.get("comments") or [], me, pr["headRefOid"])
     checks = pr.get("statusCheckRollup") or []
-    failing = [c.get("name") or c.get("context") for c in checks if check_state(c) in FAILED]
-    pending = [c.get("name") or c.get("context") for c in checks if check_state(c) in PENDING]
+    from devloops_lib.ci_checks import summarize_checks
+
+    failing, pending = summarize_checks(checks)
     labels: list[str] = []
     for item in pr.get("labels") or []:
         name = item.get("name") if isinstance(item, dict) else item
@@ -300,6 +323,27 @@ def summarize(
             labels.append(str(name))
     labels = sorted(labels)
     escalated = contract.GATEKEEPER_ESCALATED in labels
+    # Issue #67: the needs-owner ask parks the PR until an owner answer. The
+    # issue-comments API carries author_association, so the answer check uses
+    # it when reachable and the pr-view comments otherwise.
+    needs_owner_parked = False
+    if contract.NEEDS_OWNER in labels:
+        try:
+            raw = json.loads(gh(
+                "api", f"repos/{owner}/{name}/issues/{number}/comments", "--paginate"
+            ) or "[]")
+            if isinstance(raw, dict):
+                raw = raw.get("comments") or []
+            ask_comments = [
+                {"author": {"login": c.get("user", {}).get("login") or ""},
+                 "createdAt": c.get("created_at") or "",
+                 "body": c.get("body") or "",
+                 "authorAssociation": c.get("author_association") or ""}
+                for c in raw if isinstance(c, dict)
+            ]
+        except Exception:
+            ask_comments = pr.get("comments") or []
+        needs_owner_parked = contract.needs_owner_parked(ask_comments, me)
 
     threads = []
     cursor = None
@@ -333,15 +377,22 @@ def summarize(
 
     commits = pr.get("commits") or []
     last_commit_at = commits[-1]["committedDate"] if commits else ""
-    # Filter comments: keep non-bot comments posted after the latest commit that do NOT
-    # carry loop markers. This includes human owner comments even when the owner shares login @me.
+    worker_replies = [
+        m.get("createdAt", "")
+        for m in contract.parse_markers(pr.get("comments") or [], me, loop="worker-loop")
+        if m.get("kind") in ("response", "note")
+    ]
+    comment_cutoff = max([last_commit_at, *worker_replies])
+    # Filter comments: keep non-bot comments posted after the latest commit and
+    # after the latest worker response/note marker that do NOT carry loop markers.
+    # This includes human owner comments even when the owner shares login @me.
     new_comments = []
     for c in pr.get("comments") or []:
         author_login = (c.get("author") or {}).get("login") or ""
         body = c.get("body") or ""
         if author_login.endswith("[bot]") or contract.is_marker(body):
             continue
-        if c.get("createdAt", "") > last_commit_at:
+        if c.get("createdAt", "") > comment_cutoff:
             new_comments.append({
                 "author": author_login,
                 "createdAt": c["createdAt"],
@@ -359,6 +410,34 @@ def summarize(
     )
     retarget_base = resolved_default if merged_parent else None
 
+    # Issue #68: blocker links park the PR (wait-blocker) or clear into rebase.
+    # Fail closed (#66/#68 G1.2): forge/blocker read errors park the PR; never
+    # treat "could not read blockers" as "no blockers".
+    open_blocker_nums: list[int] = []
+    all_blocker_nums: list[int] = []
+    forge_error: str | None = None
+    clean_marker = latest_clean_marker(pr.get("comments") or [], me)
+    if not needs_owner_parked:
+        try:
+            from devloops_lib.forge.detect import get_forge
+
+            forge_obj = get_forge(load_config())
+            pr_text = f"{pr.get('title') or ''} {pr.get('body') or ''}"
+            all_blocker_nums = contract.pr_blocker_numbers(forge_obj, pr_text)
+            open_blocker_nums = contract.pr_open_blockers(forge_obj, pr_text)
+        except Exception as exc:
+            forge_error = str(exc) or exc.__class__.__name__
+    rebase_after = (
+        False
+        if forge_error
+        else contract.needs_blocker_rebase(
+            blocker_links=all_blocker_nums,
+            open_blocker_numbers=open_blocker_nums,
+            head=pr["headRefOid"],
+            clean_head=(clean_marker or {}).get("head"),
+        )
+    )
+
     next_action = select_next_action(
         retarget=bool(merged_parent),
         conflicting=pr.get("mergeable") == "CONFLICTING",
@@ -369,6 +448,9 @@ def summarize(
         failing=failing,
         pending=pending,
         escalated=escalated,
+        needs_owner=needs_owner_parked,
+        open_blockers=bool(open_blocker_nums) or bool(forge_error),
+        rebase_after_blockers=rebase_after,
     )
 
     return {
@@ -389,6 +471,9 @@ def summarize(
         "gatekeeper": gatekeeper,
         "qa": qa,
         "labels": labels,
+        "needsOwner": needs_owner_parked,
+        "openBlockers": open_blocker_nums,
+        "forgeError": forge_error,
         "duplicateCommits": duplicates,
         "mergedParent": merged_parent,
         "retargetBase": retarget_base,

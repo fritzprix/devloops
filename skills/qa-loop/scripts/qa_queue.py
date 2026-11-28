@@ -80,7 +80,7 @@ def main(argv: list[str] | None = None) -> None:
                 listed = json.loads(gh("pr", "list", "--state", "open", "--json", "number,isDraft"))
                 numbers = [x["number"] for x in listed if not x["isDraft"]]
             rows = [qa.classify_pr(_view(n), me) for n in numbers]
-            order = {"review": 0, "wait-worker": 1, "needs-human": 2, "accepted": 3}
+            order = {"review": 0, "wait-worker": 1, "wait-owner": 2, "accepted": 3}
             rows.sort(key=lambda r: (order.get(r["status"], 9), r.get("createdAt") or ""))
             _out({"prs": rows})
         elif args.cmd == "check-head":

@@ -86,6 +86,33 @@ class SelectNextActionTest(unittest.TestCase):
     def action(self, **overrides):
         return pr_status.select_next_action(**{**self.base, **overrides})
 
+    def test_needs_owner_park_overrides_everything(self):
+        # Issue #67: a parked needs-owner item gets no work from any loop.
+        everything = dict(
+            retarget=True, conflicting=True, duplicates=["abc"], gatekeeper={"awaitingWorker": True},
+            qa={"awaitingWorker": True},
+            has_comments=True, failing=["ci"], pending=["ci"], needs_owner=True,
+        )
+        self.assertEqual(pr_status.select_next_action(**everything), "none")
+
+
+    def test_open_blockers_wait_blocker(self):
+        self.assertEqual(self.action(open_blockers=True), "wait-blocker")
+
+    def test_needs_owner_outranks_open_blockers(self):
+        self.assertEqual(self.action(needs_owner=True, open_blockers=True, failing=["CI"]), "none")
+
+    def test_rebase_after_blockers(self):
+        self.assertEqual(self.action(rebase_after_blockers=True), "rebase")
+
+    def test_open_blockers_outrank_rebase(self):
+        self.assertEqual(self.action(open_blockers=True, rebase_after_blockers=True), "wait-blocker")
+
+
+    def test_needs_owner_defaults_to_false(self):
+        # Callers that do not pass needs_owner keep their previous behaviour.
+        self.assertEqual(self.action(conflicting=True), "resolve-conflict")
+
     def test_priority_order(self):
         everything = dict(
             retarget=True, conflicting=True, duplicates=["abc"], gatekeeper={"awaitingWorker": True},
@@ -332,6 +359,158 @@ class QaStateTest(unittest.TestCase):
             qa=qa, has_comments=False, failing=[], pending=[],
         )
         self.assertEqual(action, "address-gatekeeper")
+
+
+class SummarizePrFailClosedTest(unittest.TestCase):
+    def test_blocker_forge_error_fails_closed_to_wait_blocker(self):
+        # G2.1: forge error while reading blockers in summarize_pr must park as wait-blocker.
+        import json
+        from unittest import mock
+
+        pr_payload = {
+            "number": 99,
+            "title": "feat: example (Fixes #10)",
+            "body": "Fixes #10",
+            "url": "https://example.invalid/pr/99",
+            "headRefName": "feat/example-10",
+            "headRefOid": "sha1",
+            "baseRefName": "main",
+            "isDraft": False,
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "CLEAN",
+            "reviewDecision": "",
+            "statusCheckRollup": [],
+            "comments": [],
+            "labels": [],
+        }
+
+        def fake_gh(*args, **kwargs):
+            if args and args[0] == "api":
+                return json.dumps({"data": {}})
+            return json.dumps(pr_payload)
+
+        with mock.patch.object(pr_status, "gh", side_effect=fake_gh), \
+             mock.patch.object(pr_status, "duplicate_commits", return_value=[]), \
+             mock.patch.object(pr_status, "parent_pr_merged", return_value=None), \
+             mock.patch("devloops_lib.forge.detect.get_forge", side_effect=RuntimeError("forge unavailable")):
+            summary = pr_status.summarize(99, "owner", "repo", "me", default_base="main", merged_prs=[])
+        self.assertEqual(summary["nextAction"], "wait-blocker")
+
+
+class AnsweredPrCommentTest(unittest.TestCase):
+    """Issue #115: worker response/note markers clear answered PR comments."""
+
+    def _summarize(self, comments, checks=None):
+        import json
+        from unittest import mock
+
+        pr_payload = {
+            "number": 42,
+            "title": "feat: example",
+            "body": "Summary",
+            "url": "https://example.invalid/pr/42",
+            "headRefName": "feat/example-42",
+            "headRefOid": "sha1",
+            "baseRefName": "main",
+            "isDraft": False,
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "CLEAN",
+            "reviewDecision": "",
+            "statusCheckRollup": checks or [],
+            "commits": [{"committedDate": "2026-11-27T10:00:00Z"}],
+            "comments": comments,
+            "labels": [],
+        }
+
+        def fake_gh(*args, **kwargs):
+            if args and args[0] == "api":
+                return json.dumps({"data": {}})
+            return json.dumps(pr_payload)
+
+        with mock.patch.object(pr_status, "gh", side_effect=fake_gh), \
+             mock.patch.object(pr_status, "duplicate_commits", return_value=[]), \
+             mock.patch.object(pr_status, "parent_pr_merged", return_value=None):
+            return pr_status.summarize(42, "owner", "repo", "me", default_base="main", merged_prs=[])
+
+    def _comment(self, body, created_at, author="me"):
+        return {
+            "author": {"login": author},
+            "createdAt": created_at,
+            "body": body,
+            "url": f"https://example.invalid/pr/42#c-{created_at}",
+        }
+
+    def test_owner_comment_without_worker_reply_triggers_triage(self):
+        summary = self._summarize([
+            self._comment("FYI this looks fine", "2026-11-27T11:00:00Z", author="owner"),
+        ])
+        self.assertEqual(summary["nextAction"], "triage-comments")
+        self.assertEqual(len(summary["newComments"]), 1)
+
+    def test_worker_response_clears_comment_to_next_action(self):
+        for marker in (
+            "<!-- worker-loop: response -->\nNoted, no code change needed.",
+            "<!-- worker-loop: note -->\nNoted, no code change needed.",
+        ):
+            with self.subTest(marker=marker):
+                summary = self._summarize([
+                    self._comment("FYI this looks fine", "2026-11-27T11:00:00Z", author="owner"),
+                    self._comment(marker, "2026-11-27T11:05:00Z", author="me"),
+                ])
+                self.assertEqual(summary["newComments"], [])
+                self.assertEqual(summary["nextAction"], "none")
+
+    def test_second_owner_comment_after_response_triggers_triage_again(self):
+        summary = self._summarize([
+            self._comment("First note", "2026-11-27T11:00:00Z", author="owner"),
+            self._comment("<!-- worker-loop: response -->\nAcknowledged.", "2026-11-27T11:05:00Z", author="me"),
+            self._comment("Follow-up question", "2026-11-27T11:10:00Z", author="owner"),
+        ])
+        self.assertEqual(summary["nextAction"], "triage-comments")
+        self.assertEqual(len(summary["newComments"]), 1)
+        self.assertIn("Follow-up", summary["newComments"][0]["body"])
+
+    def test_answered_comment_allows_issue_in_plan(self):
+        import importlib.util
+
+        plan_path = Path(__file__).resolve().parent.parent / "skills" / "worker-loop" / "scripts" / "plan_tick.py"
+        spec = importlib.util.spec_from_file_location("worker_plan_tick_115", plan_path)
+        plan_tick = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(plan_tick)
+
+        summary = self._summarize([
+            self._comment("Informational note", "2026-11-27T11:00:00Z", author="owner"),
+            self._comment("<!-- worker-loop: response -->\nThanks!", "2026-11-27T11:05:00Z", author="me"),
+        ])
+        candidates = {
+            "openPRLimit": {"unapproved": 1, "limit": 5, "reached": False},
+            "candidates": [{
+                "number": 1,
+                "title": "Approved issue",
+                "updatedAt": "2026-11-27T10:00:00Z",
+                "dependency": {"status": "none", "dependsOn": [], "open": [], "stackOn": None},
+            }],
+            "excluded": [],
+        }
+        plan = plan_tick.build_plan([summary], candidates, {}, 1)
+        self.assertEqual([(i["kind"], i["number"]) for i in plan["items"]], [("issue", 1)])
+
+    def test_answered_comment_with_failing_check_falls_through_to_fix_ci(self):
+        failing_check = {
+            "__typename": "CheckRun",
+            "name": "pytest",
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+        }
+        summary = self._summarize(
+            [
+                self._comment("Informational note", "2026-11-27T11:00:00Z", author="owner"),
+                self._comment("<!-- worker-loop: response -->\nNoted.", "2026-11-27T11:05:00Z", author="me"),
+            ],
+            checks=[failing_check],
+        )
+        self.assertEqual(summary["newComments"], [])
+        self.assertEqual(summary["nextAction"], "fix-ci")
 
 
 if __name__ == "__main__":

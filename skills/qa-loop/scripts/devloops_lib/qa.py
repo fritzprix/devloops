@@ -22,16 +22,14 @@ from devloops_lib.gh import gh
 # Label names and the marker vocabulary live in devloops_lib.contract (issue #65).
 QA_ACCEPTED_LABEL = contract.QA_ACCEPTED
 QA_CHANGES_LABEL = contract.QA_CHANGES_REQUESTED
-QA_NEEDS_HUMAN_LABEL = contract.QA_NEEDS_HUMAN
 QA_LABELS = contract.QA_VERDICT_LABELS
 QA_VERDICTS = contract.QA_VERDICTS
 VERDICT_LABEL = {
     "accepted": QA_ACCEPTED_LABEL,
     "changes-requested": QA_CHANGES_LABEL,
-    "needs-human": QA_NEEDS_HUMAN_LABEL,
 }
 
-OWNER_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+OWNER_ASSOCIATIONS = contract.OWNER_ASSOCIATIONS
 
 
 def _author(comment: dict) -> str:
@@ -55,7 +53,7 @@ def last_qa_verdict(comments: list[dict], me: str) -> Optional[dict]:
 
 
 def last_gatekeeper_verdict(comments: list[dict], me: str) -> Optional[dict]:
-    """Latest gatekeeper round verdict marker by `me` (clean and needs-human markers excluded)."""
+    """Latest gatekeeper round verdict marker by `me` (clean and needs-owner markers excluded)."""
     verdicts = [m for m in parse_markers(comments, me, loop="gatekeeper-loop")
                 if "round" in m and m.get("verdict")]
     return verdicts[-1] if verdicts else None
@@ -80,7 +78,7 @@ def classify_pr(pr: dict, me: str) -> dict:
     status:
       review       - no qa verdict at the current head, or an owner comment after it.
       wait-worker  - qa requested changes at the current head; the worker must answer.
-      needs-human  - qa cannot decide at the current head; a human must answer.
+      wait-owner   - qa asked the owner (kind=needs-owner) and no answer came yet.
       accepted     - qa accepted the current head.
     """
     head = pr["headRefOid"]
@@ -94,7 +92,11 @@ def classify_pr(pr: dict, me: str) -> dict:
         if m.get("kind") == "qa-response"
     )
 
-    if last is None:
+    # Issue #67 / G1: any loop's unanswered ask parks; loop-skill notices do not.
+    labeled = contract.NEEDS_OWNER in labels
+    if contract.needs_owner_parked(comments, me, labeled=labeled):
+        status, reason = "wait-owner", "needs-owner ask awaiting owner answer"
+    elif last is None:
         status, reason = "review", "never reviewed by qa"
     elif last.get("head") != head:
         status, reason = "review", "new head since the last qa verdict"
@@ -104,8 +106,6 @@ def classify_pr(pr: dict, me: str) -> dict:
         status, reason = "review", "worker response after qa changes-requested"
     elif last["verdict"] == "changes-requested":
         status, reason = "wait-worker", "qa requested changes at this head"
-    elif last["verdict"] == "needs-human":
-        status, reason = "needs-human", "qa asked a human to decide at this head"
     else:
         status, reason = "accepted", "qa accepted this head"
 

@@ -45,6 +45,43 @@ def base_args(**over):
 
 
 class DetermineStatusTests(unittest.TestCase):
+    def test_needs_owner_is_wait_owner(self) -> None:
+        # G1.2: parked needs-owner items get no gatekeeper work.
+        status, reason, _prio = classify(**base_args(needs_owner=True))
+        self.assertEqual(status, "wait-owner")
+        self.assertIn("needs-owner", reason)
+
+
+    def test_open_blocker_is_blocked(self) -> None:
+        status, reason, prio = classify(**base_args(open_blocker_numbers=[12, 3]))
+        self.assertEqual(status, "blocked")
+        self.assertIn("#3", reason)
+        self.assertIn("#12", reason)
+        self.assertEqual(prio, 9)
+
+
+    def test_forge_error_is_blocked(self) -> None:
+        status, reason, prio = classify(**base_args(forge_error="boom"))
+        self.assertEqual(status, "blocked")
+        self.assertIn("forge unavailable", reason)
+        self.assertIn("boom", reason)
+        self.assertEqual(prio, 9)
+
+
+    def test_needs_owner_outranks_open_blocker(self) -> None:
+        status, _, _ = classify(**base_args(needs_owner=True, open_blocker_numbers=[12]))
+        self.assertEqual(status, "wait-owner")
+
+    def test_open_blocker_outranks_merge_conflict(self) -> None:
+        status, _, _ = classify(**base_args(
+            mergeable="CONFLICTING", open_blocker_numbers=[9]))
+        self.assertEqual(status, "blocked")
+
+
+    def test_loop_skill_notice_flag_false_still_reviews(self) -> None:
+        status = determine_status(**base_args(needs_owner=False))
+        self.assertEqual(status, "review")
+
     def test_conflict_is_wait_worker(self) -> None:
         status = determine_status(
             mergeable="CONFLICTING",
@@ -505,7 +542,7 @@ class Issue14NeedsHumanTests(unittest.TestCase):
         # no longer even looks at status — the status itself is never overridden.
         guidance = needs_human_guidance(own_skill=True,
                                         labels=["gatekeeper:needs-human"], needs_comment_present=True)
-        self.assertEqual(guidance["reason"], "changes loop skill files")
+        self.assertEqual(guidance["reason"], "changes-loop-skill-files")
         self.assertTrue(guidance["labelPresent"])
         self.assertTrue(guidance["commentPresent"])
         self.assertFalse(guidance["staleLabel"])
@@ -513,7 +550,7 @@ class Issue14NeedsHumanTests(unittest.TestCase):
     def test_own_skill_without_label_asks_to_add(self) -> None:
         guidance = needs_human_guidance(own_skill=True,
                                         labels=[], needs_comment_present=False)
-        self.assertEqual(guidance["reason"], "changes loop skill files")
+        self.assertEqual(guidance["reason"], "changes-loop-skill-files")
         self.assertFalse(guidance["labelPresent"])
         self.assertFalse(guidance["commentPresent"])
 
@@ -597,7 +634,7 @@ class Issue81AlwaysReviewTests(unittest.TestCase):
         for status in ("review", "await-ci", "approved", "wait-worker"):
             guidance = needs_human_guidance(own_skill=True, labels=["gatekeeper:needs-human"],
                                             needs_comment_present=True)
-            self.assertEqual(guidance["reason"], "changes loop skill files", status)
+            self.assertEqual(guidance["reason"], "changes-loop-skill-files", status)
             self.assertFalse(guidance["staleLabel"], status)
 
     def test_queued_not_started_excludes_in_progress(self) -> None:
