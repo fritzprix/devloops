@@ -432,6 +432,31 @@ class PendingPrCommentAckTest(unittest.TestCase):
         src = Path(pr_status.__file__).read_text(encoding="utf-8")
         self.assertNotIn("committedDate", src)
 
+    def test_worker_skill_documents_comment_ack_reference_and_reply_from_new_comments(self):
+        # G1.1: SKILL.md tells the worker to include the id/url from newComments in its reply.
+        skill_path = Path(__file__).resolve().parent.parent / "skills" / "worker-loop" / "SKILL.md"
+        text = skill_path.read_text(encoding="utf-8")
+        self.assertIn("newComments", text)
+        self.assertIn("acks=", text)
+
+        pending = self._summarize([
+            self._comment(2001, "Please clarify X.", "2026-11-28T09:00:00Z"),
+        ])
+        self.assertEqual(pending["nextAction"], "triage-comments")
+        ack_id = pending["newComments"][0]["id"]
+        reply = self._comment(
+            2002,
+            f"<!-- worker-loop: response acks={ack_id} -->\nClarified X.",
+            "2026-11-28T09:05:00Z",
+            author="me",
+        )
+        cleared = self._summarize([
+            self._comment(2001, "Please clarify X.", "2026-11-28T09:00:00Z"),
+            reply,
+        ])
+        self.assertEqual(cleared["newComments"], [])
+        self.assertEqual(cleared["nextAction"], "none")
+
 
 if __name__ == "__main__":
     unittest.main()
