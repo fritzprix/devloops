@@ -188,5 +188,72 @@ class WorktreeGuardTest(unittest.TestCase):
             self.assertEqual((code, out.getvalue().strip()), (EXIT_RUN, "OWNED"))
 
 
+class _FakeForge:
+    def __init__(self, prs):
+        self._prs = prs
+
+    def list_prs(self, state="open", author=None, limit=100):
+        return list(self._prs)
+
+
+class DuplicatePrGuardTest(GuardTestCase):
+    def _run_pr_create(self, repo: Path, token: str, issue: int, fake_forge: _FakeForge, marker: Path):
+        out = io.StringIO()
+        cmd = [
+            "run", "--token", token, "--issue", str(issue), "--repo", str(repo), "--",
+            sys.executable, "-c", f"open({str(marker)!r}, 'w').close()", "pr", "create",
+        ]
+        with patch.dict(os.environ, {}), contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            code = guard.main(cmd, forge=fake_forge)
+        return code, out.getvalue()
+
+    def test_open_closing_pr_blocks_creation_and_releases_claim(self):
+        _, (repo,) = make_remote(self.root, "a")
+        token = self.token()
+        claims.claim_issue(repo, 117, "origin/main", "default", 3600)
+        marker = self.root / "created"
+        fake = _FakeForge([{"number": 201, "state": "open", "title": "Fix dup", "body": "Fixes #117", "headRefName": "fix/dup"}])
+        code, text = self._run_pr_create(repo, token, 117, fake, marker)
+        self.assertEqual(code, guard.EXIT_DUPLICATE)
+        self.assertIn("#201", text)
+        self.assertFalse(marker.exists())
+        self.assertEqual(claims.read_issue_claim(repo, 117).state, "released")
+
+    def test_no_open_pr_allows_creation(self):
+        _, (repo,) = make_remote(self.root, "a")
+        token = self.token()
+        claims.claim_issue(repo, 117, "origin/main", "default", 3600)
+        marker = self.root / "created"
+        fake = _FakeForge([{"number": 202, "state": "open", "title": "Other", "body": "Fixes #999", "headRefName": "fix/other"}])
+        code, _ = self._run_pr_create(repo, token, 117, fake, marker)
+        self.assertEqual(code, 0)
+        self.assertTrue(marker.exists())
+
+    def test_closed_or_merged_pr_does_not_block_creation(self):
+        _, (repo,) = make_remote(self.root, "a")
+        token = self.token()
+        claims.claim_issue(repo, 117, "origin/main", "default", 3600)
+        marker = self.root / "created"
+        fake = _FakeForge([
+            {"number": 203, "state": "closed", "title": "Old", "body": "Fixes #117", "headRefName": "fix/old-117"},
+            {"number": 204, "state": "merged", "title": "Merged", "body": "Fixes #117", "headRefName": "fix/merged-117"},
+        ])
+        code, _ = self._run_pr_create(repo, token, 117, fake, marker)
+        self.assertEqual(code, 0)
+        self.assertTrue(marker.exists())
+
+    def test_same_worker_existing_pr_after_restart_is_reported_not_duplicated(self):
+        _, (repo,) = make_remote(self.root, "a")
+        token = self.token()
+        claims.claim_issue(repo, 117, "origin/main", "default", 3600, branch="fix/dup-117")
+        marker = self.root / "created"
+        fake = _FakeForge([{"number": 205, "state": "open", "title": "My PR", "body": "Refs #117", "headRefName": "fix/dup-117"}])
+        code, text = self._run_pr_create(repo, token, 117, fake, marker)
+        self.assertEqual(code, guard.EXIT_DUPLICATE)
+        self.assertIn("#205", text)
+        self.assertFalse(marker.exists())
+        self.assertEqual(claims.read_issue_claim(repo, 117).state, "released")
+
+
 if __name__ == "__main__":
     unittest.main()
