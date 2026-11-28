@@ -209,5 +209,58 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(cfg["post_merge"], {"build": "make"})
 
 
+class SignoffGateHardeningTest(unittest.TestCase):
+    """Issue #110 deliverable 1: signoff checks CI, parked labels, and post-approve owner comments."""
+
+    def _base_pr(self, *, checks=None, extra_labels=None, extra_comments=None):
+        labels = [{"name": "gatekeeper:approved"}, {"name": "qa:accepted"}]
+        for lbl in extra_labels or []:
+            labels.append({"name": lbl})
+        comments = [
+            {"author": {"login": "me"}, "createdAt": "2026-11-27T01:00:00Z",
+             "body": "<!-- gatekeeper-loop: round=1 verdict=approve head=sha1 base=main -->"},
+            {"author": {"login": "me"}, "createdAt": "2026-11-27T01:01:00Z",
+             "body": "<!-- qa-loop: kind=verdict verdict=accepted head=sha1 base=main -->"},
+        ]
+        comments.extend(extra_comments or [])
+        return {
+            "number": 42,
+            "headRefOid": "sha1",
+            "isDraft": False,
+            "mergeable": "MERGEABLE",
+            "labels": labels,
+            "comments": comments,
+            "statusCheckRollup": checks or [],
+        }
+
+    def test_failing_ci_blocks_signoff_and_names_check(self):
+        pr = self._base_pr(checks=[{"name": "pytest", "status": "COMPLETED", "conclusion": "FAILURE"}])
+        res = qa.signoff(pr, "me")
+        self.assertFalse(res["mergeReady"])
+        self.assertTrue(any("pytest" in b for b in res["blockers"]), res["blockers"])
+
+    def test_pending_ci_blocks_signoff_and_names_check(self):
+        pr = self._base_pr(checks=[{"name": "macos", "status": "IN_PROGRESS", "conclusion": ""}])
+        res = qa.signoff(pr, "me")
+        self.assertFalse(res["mergeReady"])
+        self.assertTrue(any("macos" in b for b in res["blockers"]), res["blockers"])
+
+    def test_owner_comment_after_approve_blocks_signoff(self):
+        pr = self._base_pr(extra_comments=[
+            {"author": {"login": "me"}, "createdAt": "2026-11-27T02:00:00Z", "body": "Hold on, check X."},
+        ])
+        res = qa.signoff(pr, "me")
+        self.assertFalse(res["mergeReady"])
+        self.assertTrue(any("owner" in b for b in res["blockers"]), res["blockers"])
+
+    def test_parked_labels_block_signoff(self):
+        for lbl in ("blocked:owner", "gatekeeper:escalated", "needs-owner"):
+            with self.subTest(label=lbl):
+                pr = self._base_pr(extra_labels=[lbl])
+                res = qa.signoff(pr, "me")
+                self.assertFalse(res["mergeReady"])
+                self.assertTrue(any(lbl in b for b in res["blockers"]), res["blockers"])
+
+
 if __name__ == "__main__":
     unittest.main()
