@@ -234,12 +234,17 @@ def read_skill_stamp(skill_dir: Path) -> dict | None:
         return None
 
 
-def write_skill_stamp(skill_dir: Path, version: str | None = None) -> Path:
+def write_skill_stamp(
+    skill_dir: Path,
+    version: str | None = None,
+    source_skill_dir: Path | None = None,
+) -> Path:
     stamp_path = skill_dir / STAMP_FILENAME
+    files_dir = source_skill_dir if source_skill_dir is not None else skill_dir
     payload = {
         "version": version if version is not None else get_package_version(),
         "digest": compute_skill_digest(skill_dir),
-        "files": _skill_rel_files(skill_dir),
+        "files": _skill_rel_files(files_dir),
     }
     stamp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return stamp_path
@@ -250,6 +255,7 @@ def find_skill_stamp_problems(skills_dir: Path, source_skills_dir: Path | None =
     problems: list[str] = []
     skill_dirs = sorted(p.parent.parent for p in skills_dir.glob("*/scripts/devloops_lib"))
     stamps_by_version: dict[str, list[str]] = {}
+    unstamped: list[str] = []
     for sdir in skill_dirs:
         stamp = read_skill_stamp(sdir)
         if stamp is not None:
@@ -260,6 +266,8 @@ def find_skill_stamp_problems(skills_dir: Path, source_skills_dir: Path | None =
                 problems.append(
                     f"skill '{sdir.name}' files differ from its installed stamp ({STAMP_FILENAME})"
                 )
+        else:
+            unstamped.append(sdir.name)
         if source_skills_dir is not None:
             src_sdir = source_skills_dir / sdir.name
             if src_sdir.is_dir():
@@ -268,6 +276,10 @@ def find_skill_stamp_problems(skills_dir: Path, source_skills_dir: Path | None =
     if len(stamps_by_version) > 1:
         groups = "; ".join(f"{v or 'unknown'}: {', '.join(names)}" for v, names in sorted(stamps_by_version.items()))
         problems.append(f"installed skills have mixed version stamps ({groups})")
+    if stamps_by_version and unstamped:
+        problems.append(
+            f"installed skills mix stamped and unstamped installs (unstamped: {', '.join(unstamped)})"
+        )
     return problems
 
 
@@ -299,6 +311,7 @@ def check_skill_libs(skills_dir: Path, source_skills_dir: Path | None = None) ->
         ok = False
 
     if source_skills_dir is None:
+        in_source_repo = False
         has_stamps = any((p.parent.parent / STAMP_FILENAME).is_file() for p in skills_dir.glob("*/scripts/devloops_lib"))
         if has_stamps:
             try:
@@ -306,13 +319,15 @@ def check_skill_libs(skills_dir: Path, source_skills_dir: Path | None = None) ->
                 src_skills, _ = get_asset_paths()
                 if src_skills.resolve() != skills_dir.resolve():
                     source_skills_dir = src_skills
+                else:
+                    in_source_repo = True
             except Exception:
                 source_skills_dir = None
-            if source_skills_dir is None:
-                print(
-                    "  [WARN] Skill source comparison not verified (no source release found; "
-                    "run `devloops doctor` or pass `--source-skills`)"
-                )
+        if source_skills_dir is None and not in_source_repo:
+            print(
+                "  [WARN] Skill source comparison not verified (no source release found; "
+                "run `devloops doctor` or pass `--source-skills`)"
+            )
 
     problems = find_skill_stamp_problems(skills_dir, source_skills_dir=source_skills_dir)
     if problems:

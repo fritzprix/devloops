@@ -406,7 +406,8 @@ class InstallUpdateAndDriftTest(unittest.TestCase):
         self.assertFalse(doctor.check_skill_libs(self.proj / ".agents" / "skills", source_skills_dir=src_skills))
 
     def test_install_update_removes_obsolete_stamped_files_and_keeps_user_files(self):
-        # G1.3: --update removes obsolete files recorded in the previous stamp so drift clears.
+        # G1.3 & G2.1: --update removes obsolete source files, keeps user-added files across
+        # multiple updates (never recording them in the stamp), and refuses escaping paths.
         import json
         from devloops_lib import doctor
 
@@ -414,14 +415,65 @@ class InstallUpdateAndDriftTest(unittest.TestCase):
         worker_dir = self.proj / ".agents" / "skills" / "worker-loop"
         obsolete = worker_dir / "scripts" / "old_removed_script.py"
         obsolete.write_text("# removed in new release\n", encoding="utf-8")
+        user_file = worker_dir / "scripts" / "my_hook.py"
+        user_file.write_text("# user custom hook\n", encoding="utf-8")
+        outside_rel = self.proj / "outside_rel.txt"
+        outside_rel.write_text("keep-rel\n", encoding="utf-8")
+        outside_abs = self.proj / "outside_abs.txt"
+        outside_abs.write_text("keep-abs\n", encoding="utf-8")
+
         stamp_path = worker_dir / doctor.STAMP_FILENAME
         stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
-        stamp["files"].append("scripts/old_removed_script.py")
+        stamp["files"].extend([
+            "scripts/old_removed_script.py",
+            "../../../outside_rel.txt",
+            str(outside_abs.resolve()),
+        ])
         stamp_path.write_text(json.dumps(stamp), encoding="utf-8")
 
+        # First --update: removes obsolete, keeps user_file and outside files, and does not list user_file.
         self.assertEqual(cli.install_command(self.proj, update=True), 0)
         self.assertFalse(obsolete.exists())
-        self.assertTrue(doctor.check_skill_libs(self.proj / ".agents" / "skills"))
+        self.assertTrue(user_file.is_file())
+        self.assertTrue(outside_rel.is_file())
+        self.assertTrue(outside_abs.is_file())
+        updated_stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
+        self.assertNotIn("scripts/my_hook.py", updated_stamp["files"])
+
+        # Second --update: user_file still survives.
+        self.assertEqual(cli.install_command(self.proj, update=True), 0)
+        self.assertTrue(user_file.is_file())
+
+    def test_unstamped_install_warns_without_source_and_mixed_stamps_fail_tick_gate(self):
+        # G2.2: unstamped install still prints the "not verified" warning when no source is compared,
+        # and a mix of stamped and unstamped skills fails tick_gate --lock.
+        import subprocess
+        from unittest import mock
+        from devloops_lib import doctor, tick_gate
+
+        self.assertEqual(cli.install_command(self.proj), 0)
+        skills_dir = self.proj / ".agents" / "skills"
+        for stamp in skills_dir.glob(f"*/{doctor.STAMP_FILENAME}"):
+            stamp.unlink()
+
+        installed_doctor = skills_dir / "worker-loop" / "scripts" / "doctor.py"
+        r_no_src = subprocess.run(
+            [sys.executable, str(installed_doctor)],
+            cwd=self.proj, capture_output=True, text=True,
+        )
+        self.assertIn("not verified", r_no_src.stdout)
+
+        # Re-stamp one skill so the install mixes stamped and unstamped skills.
+        doctor.write_skill_stamp(skills_dir / "worker-loop")
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {}, clear=False), \
+             mock.patch("devloops_lib.config.find_project_root", return_value=self.proj), \
+             mock.patch.object(sys, "argv", ["tick_gate.py", "--lock", "--agent-id", "t2"]), \
+             contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit) as cm:
+                tick_gate.main()
+        self.assertEqual(cm.exception.code, tick_gate.EXIT_ERROR)
+        self.assertIn("unstamped", err.getvalue().lower())
 
 
 if __name__ == "__main__":

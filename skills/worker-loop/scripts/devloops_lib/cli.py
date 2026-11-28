@@ -138,19 +138,29 @@ def install_command(target_dir: Path, *, update: bool = False) -> int:
         copy_tree_safe(skills_src, skills_dest, exclude_names={"__pycache__", ".git"}, update=update)
     )
 
-    # 1b. On --update, remove obsolete files that were recorded in the previous stamp (G1.3).
+    # 1b. On --update, remove obsolete files that were recorded in the previous stamp (G1.3, G2.1).
     if update:
         for s in required_skills:
             dest_skill = skills_dest / s
             src_skill = skills_src / s
+            dest_root = dest_skill.resolve()
             prev_stamp = read_skill_stamp(dest_skill)
             if prev_stamp and isinstance(prev_stamp.get("files"), list):
                 for rel_posix in prev_stamp["files"]:
-                    if not (src_skill / rel_posix).is_file():
-                        obsolete = dest_skill / rel_posix
-                        if obsolete.is_file():
-                            obsolete.unlink()
-                            log_entries.append(("removed", obsolete))
+                    if not isinstance(rel_posix, str) or not rel_posix:
+                        continue
+                    if Path(rel_posix).is_absolute():
+                        continue
+                    obsolete = (dest_skill / rel_posix).resolve()
+                    try:
+                        obsolete.relative_to(dest_root)
+                    except ValueError:
+                        continue
+                    if obsolete == dest_root:
+                        continue
+                    if not (src_skill / rel_posix).is_file() and obsolete.is_file():
+                        obsolete.unlink()
+                        log_entries.append(("removed", obsolete))
 
     # 1c. Write version stamp in each installed skill directory (#130).
     # Without --update, stamp only when files match source so stale installs are never hidden (G1.2).
@@ -159,11 +169,11 @@ def install_command(target_dir: Path, *, update: bool = False) -> int:
         src_skill = skills_src / s
         stamp_path = dest_skill / STAMP_FILENAME
         if update:
-            write_skill_stamp(dest_skill)
+            write_skill_stamp(dest_skill, source_skill_dir=src_skill)
             log_entries.append(("updated", stamp_path))
         elif not stamp_path.exists():
             if compute_skill_digest(dest_skill) == compute_skill_digest(src_skill):
-                write_skill_stamp(dest_skill)
+                write_skill_stamp(dest_skill, source_skill_dir=src_skill)
                 log_entries.append(("installed", stamp_path))
             else:
                 log_entries.append(("skipped (differs from source)", stamp_path))
