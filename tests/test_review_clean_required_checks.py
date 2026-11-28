@@ -520,6 +520,83 @@ class ApproveRequiresGreenChecksTest(unittest.TestCase):
         self.assertNotEqual(self._classify_approved(checks, head="sha2")[0], "approved")
         self.assertFalse(self._signoff_pr(checks, head="sha2")["mergeReady"])
 
+    def test_qa_queue_signoff_cli_enforces_required_checks(self):
+        # G1.1: qa_queue.main(["signoff", N]) fetches statusCheckRollup and passes config to qa.signoff.
+        import contextlib
+        import importlib.util
+        import io
+        import json
+
+        qa_queue_path = Path(__file__).resolve().parent.parent / "skills" / "qa-loop" / "scripts" / "qa_queue.py"
+        spec = importlib.util.spec_from_file_location("qa_queue_cli_111", qa_queue_path)
+        qa_queue = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(qa_queue)
+        self.assertIn("statusCheckRollup", qa_queue.PR_FIELDS)
+
+        for conclusion, expected_exit, expected_ready in (
+            ("SUCCESS", 0, True),
+            ("SKIPPED", 1, False),
+        ):
+            with self.subTest(conclusion=conclusion):
+                pr_payload = {
+                    "number": 10,
+                    "headRefOid": "sha2",
+                    "baseRefName": "main",
+                    "isDraft": False,
+                    "mergeable": "MERGEABLE",
+                    "state": "OPEN",
+                    "labels": [{"name": "gatekeeper:approved"}, {"name": "qa:accepted"}],
+                    "comments": [
+                        {"author": {"login": "me"}, "createdAt": "2026-11-27T01:00:00Z",
+                         "body": "<!-- gatekeeper-loop: round=1 verdict=approve head=sha2 base=main -->"},
+                        {"author": {"login": "me"}, "createdAt": "2026-11-27T01:01:00Z",
+                         "body": "<!-- qa-loop: kind=verdict verdict=accepted head=sha2 base=main -->"},
+                    ],
+                    "statusCheckRollup": [{"name": "macos", "status": "COMPLETED", "conclusion": conclusion}],
+                }
+                buf = io.StringIO()
+                with mock.patch.object(qa_queue, "load_config", return_value=self.CFG), \
+                     mock.patch.object(qa_queue, "_view", return_value=pr_payload), \
+                     mock.patch.object(qa_queue, "_me", return_value="me"), \
+                     contextlib.redirect_stdout(buf):
+                    with self.assertRaises(SystemExit) as cm:
+                        qa_queue.main(["signoff", "10"])
+                self.assertEqual(cm.exception.code, expected_exit)
+                data = json.loads(buf.getvalue())
+                self.assertEqual(data["mergeReady"], expected_ready)
+
+    def test_summarize_exposes_missing_required_checks_on_first_review(self):
+        # G1.2: summarize returns missingRequiredChecks on a never-reviewed PR (and [] on stacked PRs).
+        import json
+
+        for base, checks, expected_missing in (
+            ("main", [{"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS"}], ["macos"]),
+            ("main", [{"name": "macos", "status": "COMPLETED", "conclusion": "SKIPPED"}], ["macos"]),
+            ("feat/parent", [{"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS"}], []),
+        ):
+            with self.subTest(base=base, checks=checks):
+                pr_payload = {
+                    "number": 11,
+                    "title": "feat: first review",
+                    "body": "Summary",
+                    "url": "https://example.invalid/pr/11",
+                    "headRefName": "feat/first-11",
+                    "headRefOid": "sha1",
+                    "baseRefName": base,
+                    "isDraft": False,
+                    "mergeable": "MERGEABLE",
+                    "createdAt": "2026-11-27T01:00:00Z",
+                    "statusCheckRollup": checks,
+                    "comments": [],
+                    "labels": [],
+                    "files": [],
+                }
+                cfg = {"project": {"base_branch": "main"}, "gatekeeper": {"required_checks": ["macos"]}}
+                with mock.patch.object(gq, "gh", return_value=json.dumps(pr_payload)):
+                    entry = gq.summarize(11, "me", state={}, config=cfg, readiness={"ci": {"present": True}})
+                self.assertEqual(entry["status"], "review")
+                self.assertEqual(entry["missingRequiredChecks"], expected_missing)
+
 
 if __name__ == "__main__":
     unittest.main()
