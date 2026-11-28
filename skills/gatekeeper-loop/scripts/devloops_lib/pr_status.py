@@ -64,6 +64,14 @@ def short(text: str | None, limit: int = 240) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def format_rebase_note(action: str, old_head: str, new_head: str, base: str) -> str:
+    """Format the worker-loop note marker posted after retarget, resolve-conflict, or restack (#132)."""
+    return (
+        f"<!-- worker-loop: note action={action} oldHead={old_head} newHead={new_head} base={base} -->\n\n"
+        f"{action}: `{old_head[:7]}` -> `{new_head[:7]}` onto `{base}`."
+    )
+
+
 def check_state(check: dict) -> str:
     return (check.get("conclusion") or check.get("state") or check.get("status") or "").upper()
 
