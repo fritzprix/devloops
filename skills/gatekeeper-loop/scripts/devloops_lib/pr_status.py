@@ -331,18 +331,49 @@ def summarize(
             break
         cursor = page_info.get("endCursor")
 
-    commits = pr.get("commits") or []
-    last_commit_at = commits[-1]["committedDate"] if commits else ""
-    # Filter comments: keep non-bot comments posted after the latest commit that do NOT
-    # carry loop markers. This includes human owner comments even when the owner shares login @me.
+    # Filter comments (issue #129): a non-bot, non-marker comment stays pending
+    # regardless of pushes/rebases until a worker marker comment (response,
+    # qa-response, or note) authored by `me` references its id or URL.
+    all_comments = pr.get("comments") or []
+    worker_ack_comments: list[tuple[str, str]] = []
+    for wc in all_comments:
+        if (wc.get("author") or {}).get("login") != me:
+            continue
+        wc_body = wc.get("body") or ""
+        parsed = contract.parse_marker(wc_body)
+        if parsed and parsed[0] == "worker-loop" and parsed[1].get("kind") in ("response", "qa-response", "note"):
+            worker_ack_comments.append((wc.get("createdAt") or "", wc_body))
+
+    def _comment_id(comment: dict) -> str:
+        cid = str(comment.get("id") or "").strip()
+        if cid:
+            return cid
+        url = str(comment.get("url") or "")
+        m = re.search(r"#issuecomment-(\d+)\b", url)
+        return m.group(1) if m else ""
+
+    def _is_acknowledged(comment: dict) -> bool:
+        c_at = comment.get("createdAt") or ""
+        c_id = _comment_id(comment)
+        c_url = str(comment.get("url") or "").strip()
+        for ack_at, ack_body in worker_ack_comments:
+            if ack_at and c_at and ack_at < c_at:
+                continue
+            if c_url and c_url in ack_body:
+                return True
+            if c_id and re.search(rf"(?<![A-Za-z0-9_]){re.escape(c_id)}(?![A-Za-z0-9_])", ack_body):
+                return True
+        return False
+
     new_comments = []
-    for c in pr.get("comments") or []:
+    for c in all_comments:
         author_login = (c.get("author") or {}).get("login") or ""
         body = c.get("body") or ""
         if author_login.endswith("[bot]") or contract.is_marker(body):
             continue
-        if c.get("createdAt", "") > last_commit_at:
+        if not _is_acknowledged(c):
             new_comments.append({
+                "id": _comment_id(c),
                 "author": author_login,
                 "createdAt": c["createdAt"],
                 "body": short(body),

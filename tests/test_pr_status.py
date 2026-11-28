@@ -334,5 +334,104 @@ class QaStateTest(unittest.TestCase):
         self.assertEqual(action, "address-gatekeeper")
 
 
+class PendingPrCommentAckTest(unittest.TestCase):
+    """Issue #129: owner PR comments stay pending across rebases until acknowledged by id/URL."""
+
+    def _summarize(self, comments, *, last_commit_at="2026-11-28T10:00:00Z"):
+        import json
+        from unittest import mock
+
+        pr_payload = {
+            "number": 96,
+            "title": "feat: example",
+            "body": "Summary",
+            "url": "https://example.invalid/pr/96",
+            "headRefName": "feat/example-96",
+            "headRefOid": "sha2",
+            "baseRefName": "main",
+            "isDraft": False,
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "CLEAN",
+            "reviewDecision": "",
+            "statusCheckRollup": [],
+            "commits": [{"committedDate": last_commit_at}],
+            "comments": comments,
+            "labels": [],
+        }
+
+        def fake_gh(*args, **kwargs):
+            if args and args[0] == "api":
+                return json.dumps({"data": {}})
+            return json.dumps(pr_payload)
+
+        with mock.patch.object(pr_status, "gh", side_effect=fake_gh), \
+             mock.patch.object(pr_status, "duplicate_commits", return_value=[]), \
+             mock.patch.object(pr_status, "parent_pr_merged", return_value=None):
+            return pr_status.summarize(96, "owner", "repo", "me", default_base="main", merged_prs=[])
+
+    def _comment(self, cid, body, created_at, author="owner"):
+        return {
+            "id": str(cid),
+            "author": {"login": author},
+            "createdAt": created_at,
+            "body": body,
+            "url": f"https://example.invalid/pr/96#issuecomment-{cid}",
+        }
+
+    def test_rebase_push_does_not_clear_owner_comment(self):
+        # Owner comment posted before a rebase push (last_commit_at is newer) stays pending.
+        summary = self._summarize(
+            [self._comment(1001, "Please fix edge case X.", "2026-11-28T09:00:00Z")],
+            last_commit_at="2026-11-28T10:00:00Z",
+        )
+        self.assertEqual(len(summary["newComments"]), 1)
+        self.assertEqual(summary["newComments"][0]["id"], "1001")
+        self.assertEqual(summary["nextAction"], "triage-comments")
+
+    def test_worker_marker_referencing_comment_id_clears_it(self):
+        summary = self._summarize([
+            self._comment(1001, "Please fix edge case X.", "2026-11-28T09:00:00Z"),
+            self._comment(
+                1002,
+                "<!-- worker-loop: response acks=1001 -->\nAddressed comment 1001.",
+                "2026-11-28T09:05:00Z",
+                author="me",
+            ),
+        ])
+        self.assertEqual(summary["newComments"], [])
+        self.assertEqual(summary["nextAction"], "none")
+
+    def test_worker_marker_without_reference_does_not_clear_comment(self):
+        summary = self._summarize([
+            self._comment(1001, "Please fix edge case X.", "2026-11-28T09:00:00Z"),
+            self._comment(
+                1002,
+                "<!-- worker-loop: response round=1 head=sha2 -->\nAddressed gatekeeper round 1.",
+                "2026-11-28T09:05:00Z",
+                author="me",
+            ),
+        ])
+        self.assertEqual(len(summary["newComments"]), 1)
+        self.assertEqual(summary["nextAction"], "triage-comments")
+
+    def test_second_owner_comment_after_marker_is_pending(self):
+        summary = self._summarize([
+            self._comment(1001, "First ask.", "2026-11-28T09:00:00Z"),
+            self._comment(
+                1002,
+                "<!-- worker-loop: note acks=1001 -->\nHandled 1001.",
+                "2026-11-28T09:05:00Z",
+                author="me",
+            ),
+            self._comment(1003, "Second ask.", "2026-11-28T09:10:00Z"),
+        ])
+        self.assertEqual([c["id"] for c in summary["newComments"]], ["1003"])
+        self.assertEqual(summary["nextAction"], "triage-comments")
+
+    def test_pr_status_does_not_read_committed_date(self):
+        src = Path(pr_status.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("committedDate", src)
+
+
 if __name__ == "__main__":
     unittest.main()
