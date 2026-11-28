@@ -357,11 +357,23 @@ class RequiredChecksTests(unittest.TestCase):
             {"name": "macos", "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-11-27T01:05:00Z"},
         ]
         self.assertEqual(gq.missing_required_checks(checks_rerun_ok, cfg), [])
-        # Older SUCCESS followed by newer SKIPPED -> missing
-        checks_latest_skipped = [
+        # Older SUCCESS followed by newer all-SKIPPED run -> all-SKIPPED run is ignored (#116)
+        checks_all_skipped_later = [
             {"name": "ubuntu", "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-11-27T01:00:00Z"},
             {"name": "macos", "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-11-27T01:00:00Z"},
             {"name": "macos", "status": "COMPLETED", "conclusion": "SKIPPED", "completedAt": "2026-11-27T01:05:00Z"},
+        ]
+        self.assertEqual(gq.missing_required_checks(checks_all_skipped_later, cfg), [])
+        # Newer non-all-skipped run where macos is SKIPPED -> missing
+        checks_latest_skipped = [
+            {"name": "ubuntu", "workflowName": "CI", "detailsUrl": "https://github.com/a/b/actions/runs/1/job/1",
+             "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-11-27T01:00:00Z"},
+            {"name": "macos", "workflowName": "CI", "detailsUrl": "https://github.com/a/b/actions/runs/1/job/2",
+             "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-11-27T01:00:00Z"},
+            {"name": "ubuntu", "workflowName": "CI", "detailsUrl": "https://github.com/a/b/actions/runs/2/job/1",
+             "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-11-27T01:05:00Z"},
+            {"name": "macos", "workflowName": "CI", "detailsUrl": "https://github.com/a/b/actions/runs/2/job/2",
+             "status": "COMPLETED", "conclusion": "SKIPPED", "completedAt": "2026-11-27T01:05:00Z"},
         ]
         self.assertEqual(gq.missing_required_checks(checks_latest_skipped, cfg), ["macos"])
         checks_failed = [

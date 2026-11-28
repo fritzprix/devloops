@@ -284,32 +284,11 @@ def _check_run_ts(c: dict) -> str:
 
 
 def effective_checks(checks: list[dict], config: dict | None = None) -> list[dict]:
-    """For required check names, keep only the latest run; keep all runs for other checks."""
-    required = ((config or {}).get("gatekeeper") or {}).get("required_checks") or []
-    req_set = set(required)
-    if not req_set:
-        return list(checks)
-    latest_req: dict[str, tuple[str, int, dict]] = {}
-    for idx, c in enumerate(checks):
-        name = c.get("name") or c.get("context")
-        if not name or name not in req_set:
-            continue
-        ts = _check_run_ts(c)
-        key = (ts, idx)
-        prev = latest_req.get(name)
-        if prev is None or key >= (prev[0], prev[1]):
-            latest_req[name] = (ts, idx, c)
-    out: list[dict] = []
-    seen_req: set[str] = set()
-    for c in checks:
-        name = c.get("name") or c.get("context")
-        if name and name in req_set:
-            if name not in seen_req:
-                seen_req.add(name)
-                out.append(latest_req[name][2])
-        else:
-            out.append(c)
-    return out
+    """Keep only the latest non-skipped run of each workflow (issue #116)."""
+    del config  # unused; kept for call-site compatibility
+    from devloops_lib.ci_checks import effective_checks as _effective_checks
+
+    return _effective_checks(checks)
 
 
 def missing_required_checks(checks: list[dict], config: dict | None = None) -> list[str]:
