@@ -10,4 +10,4 @@ The user sets the **total concurrent delegate cap** with `slots: N` on `/pm-loop
 
 - Do not assign two worker delegates to the same PR in one PM tick.
 - Do not start producer when the open-issue board is at capacity (`boardFull` in the pipeline JSON passed to `plan_tick.py`).
-- Prefer gatekeeper ticks when review is the bottleneck; prefer worker ticks when approved issues pile up; prefer base-branch CI follow-up before new feature work when CI is blocked on the base.
+- When slots are fewer than the roles with work, `cascade` rotates active roles round-robin (`gatekeeper-loop` → `worker-loop` → `qa-loop` → `producer-loop`) so no role starves; follow the order returned by `cascade`. When spare slots remain, extra slots go to worker ticks (prefer base-branch CI follow-up before new feature work when CI is blocked on the base).

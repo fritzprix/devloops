@@ -17,7 +17,7 @@ from devloops_lib.pm_induction import induction_required
 from devloops_lib.pm_pipeline import fetch_pipeline
 from devloops_lib.issue_close import closable_issues, resolve_definition_of_done
 from devloops_lib.pm_schedule import cascade_plan, exclusivity_report
-from devloops_lib.tick_gate import load_state
+from devloops_lib.tick_gate import load_state, save_state
 from devloops_lib.gh import GhError
 
 
@@ -87,6 +87,11 @@ def main(argv: list[str] | None = None) -> int:
                     definition_of_done=definition_of_done,
                 )
 
+    prev_last_role = state.get("lastCascadeRole")
+    cascade = cascade_plan(slots=int(slots), pipeline=pipeline, state=state)
+    if state.get("lastCascadeRole") != prev_last_role:
+        save_state(state_path, state)
+
     plan = {
         "budget": budget,
         "promptsNeeded": prompts_needed(get_budget(state)),
@@ -94,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         "inductionRequired": induction_required(state),
         "projectProfile": state.get("projectProfile"),
         "pipeline": pipeline,
-        "cascade": cascade_plan(slots=int(slots), pipeline=pipeline),
+        "cascade": cascade,
         "definitionOfDone": definition_of_done,
         "closableIssues": closable_issues_list,
         "constraints": {
