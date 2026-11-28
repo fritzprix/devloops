@@ -134,6 +134,37 @@ class EffectiveChecksTest(unittest.TestCase):
         self.assertNotEqual(summary["nextAction"], "fix-ci")
         self.assertEqual(summary["nextAction"], "none")
 
+    def test_newer_queued_run_without_start_time_supersedes_older_success(self):
+        # G1.1: queued runs have 0001-01-01, empty, or missing startedAt.
+        for started_val in ("0001-01-01T00:00:00Z", "", None):
+            with self.subTest(startedAt=started_val):
+                queued = _run("test", run_id=101, status="QUEUED", conclusion="")
+                if started_val is None:
+                    queued.pop("startedAt", None)
+                else:
+                    queued["startedAt"] = started_val
+                checks = [
+                    _run("test", run_id=100, started="2026-11-27T10:00:00Z", conclusion="SUCCESS"),
+                    queued,
+                ]
+                w_fail, w_pend = ci_checks.summarize_checks(checks)
+                gk_eff = gatekeeper_queue.effective_checks(checks)
+                gk_fail = [c.get("name") for c in gk_eff if gatekeeper_queue.check_state(c) in gatekeeper_queue.FAILED]
+                gk_pend = [c.get("name") for c in gk_eff if gatekeeper_queue.check_state(c) in gatekeeper_queue.PENDING]
+                self.assertEqual(w_fail, [])
+                self.assertEqual(w_pend, ["test"])
+                self.assertEqual((gk_fail, gk_pend), ([], ["test"]))
+
+    def test_rerun_attempt_within_same_run_keeps_latest_per_name(self):
+        # S1.1: two entries with the same job name in one run keep only the latest attempt.
+        checks = [
+            _run("test", run_id=100, started="2026-11-27T10:00:00Z", conclusion="FAILURE"),
+            _run("test", run_id=100, started="2026-11-27T10:05:00Z", conclusion="SUCCESS"),
+        ]
+        failing, pending = ci_checks.summarize_checks(checks)
+        self.assertEqual(failing, [])
+        self.assertEqual(pending, [])
+
 
 if __name__ == "__main__":
     unittest.main()
