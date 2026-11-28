@@ -127,11 +127,13 @@ def classify_pr(pr: dict, me: str) -> dict:
     }
 
 
-def signoff(pr: dict, me: str) -> dict:
+def signoff(pr: dict, me: str, config: dict | None = None) -> dict:
     """Two-party sign-off: gatekeeper approve AND qa accepted, both at the current head.
 
     Labels alone are not enough: a label can survive a push. Each party must
-    also have a marker comment for the current head.
+    also have a marker comment for the current head. When `config` lists
+    `gatekeeper.required_checks`, every required check must also be green at
+    the current head (issue #111).
     """
     head = pr["headRefOid"]
     comments = pr.get("comments") or []
@@ -153,6 +155,30 @@ def signoff(pr: dict, me: str) -> dict:
         blockers.append("qa: latest verdict is not accepted")
     elif qa.get("head") != head:
         blockers.append("qa: accepted is for an older head")
+
+    if gk and gk.get("verdict") == "approve" and gk.get("head") == head:
+        if owner_comments_after(comments, me, gk.get("createdAt")):
+            blockers.append("owner: unmarked owner comment after approve")
+
+    for parked_label in ("blocked:owner", "gatekeeper:escalated", "needs-owner"):
+        if parked_label in labels:
+            blockers.append(f"parked: label {parked_label} present")
+
+    checks = pr.get("statusCheckRollup") or []
+    if checks or config:
+        from devloops_lib import gatekeeper_queue
+
+        eff = gatekeeper_queue.effective_checks(checks, config)
+        failing = [c.get("name") or c.get("context") for c in eff if gatekeeper_queue.check_state(c) in gatekeeper_queue.FAILED]
+        pending = [c.get("name") or c.get("context") for c in eff if gatekeeper_queue.check_state(c) in gatekeeper_queue.PENDING]
+        if failing:
+            blockers.append(f"ci: failing checks ({', '.join(failing)})")
+        if pending:
+            blockers.append(f"ci: pending checks ({', '.join(pending)})")
+        if config:
+            missing_req = gatekeeper_queue.missing_required_checks(checks, config, head=head)
+            if missing_req:
+                blockers.append(f"ci: required checks not green at current head ({', '.join(missing_req)})")
 
     if pr.get("isDraft"):
         blockers.append("PR is a draft")
