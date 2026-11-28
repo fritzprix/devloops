@@ -365,6 +365,64 @@ class InstallUpdateAndDriftTest(unittest.TestCase):
         self.assertEqual(cm.exception.code, tick_gate.EXIT_ERROR)
         self.assertIn("devloops install --update", err.getvalue())
 
+    def test_installed_doctor_script_reports_unverified_without_source_and_fails_with_source(self):
+        # G1.1: running the installed doctor.py script directly cannot silently report [OK]
+        # when no source release is found, and fails when --source-skills points to a newer release.
+        import subprocess
+
+        self.assertEqual(cli.install_command(self.proj), 0)
+        installed_doctor = self.proj / ".agents" / "skills" / "worker-loop" / "scripts" / "doctor.py"
+        r_no_src = subprocess.run(
+            [sys.executable, str(installed_doctor)],
+            cwd=self.proj, capture_output=True, text=True,
+        )
+        self.assertIn("not verified", r_no_src.stdout)
+
+        # Modify a file and re-stamp to simulate a consistently stale older release.
+        from devloops_lib import doctor
+        plan = self.proj / ".agents" / "skills" / "worker-loop" / "scripts" / "plan_tick.py"
+        plan.write_text("# stale release\n", encoding="utf-8")
+        doctor.write_skill_stamp(self.proj / ".agents" / "skills" / "worker-loop")
+        src_skills, _ = cli.get_asset_paths()
+        r_with_src = subprocess.run(
+            [sys.executable, str(installed_doctor), "--source-skills", str(src_skills)],
+            cwd=self.proj, capture_output=True, text=True,
+        )
+        self.assertNotEqual(r_with_src.returncode, 0)
+        self.assertIn("differs from source release", r_with_src.stdout)
+
+    def test_plain_install_does_not_stamp_stale_unstamped_install(self):
+        # G1.2: plain install must not write a stamp over stale unstamped files.
+        from devloops_lib import doctor
+
+        self.assertEqual(cli.install_command(self.proj), 0)
+        worker_dir = self.proj / ".agents" / "skills" / "worker-loop"
+        (worker_dir / doctor.STAMP_FILENAME).unlink()
+        (worker_dir / "scripts" / "plan_tick.py").write_text("# old unstamped\n", encoding="utf-8")
+
+        self.assertEqual(cli.install_command(self.proj), 0)
+        self.assertFalse((worker_dir / doctor.STAMP_FILENAME).exists())
+        src_skills, _ = cli.get_asset_paths()
+        self.assertFalse(doctor.check_skill_libs(self.proj / ".agents" / "skills", source_skills_dir=src_skills))
+
+    def test_install_update_removes_obsolete_stamped_files_and_keeps_user_files(self):
+        # G1.3: --update removes obsolete files recorded in the previous stamp so drift clears.
+        import json
+        from devloops_lib import doctor
+
+        self.assertEqual(cli.install_command(self.proj), 0)
+        worker_dir = self.proj / ".agents" / "skills" / "worker-loop"
+        obsolete = worker_dir / "scripts" / "old_removed_script.py"
+        obsolete.write_text("# removed in new release\n", encoding="utf-8")
+        stamp_path = worker_dir / doctor.STAMP_FILENAME
+        stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
+        stamp["files"].append("scripts/old_removed_script.py")
+        stamp_path.write_text(json.dumps(stamp), encoding="utf-8")
+
+        self.assertEqual(cli.install_command(self.proj, update=True), 0)
+        self.assertFalse(obsolete.exists())
+        self.assertTrue(doctor.check_skill_libs(self.proj / ".agents" / "skills"))
+
 
 if __name__ == "__main__":
     unittest.main()

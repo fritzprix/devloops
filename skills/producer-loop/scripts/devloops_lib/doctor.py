@@ -200,9 +200,8 @@ def get_package_version() -> str:
         return "0.0.0"
 
 
-def compute_skill_digest(skill_dir: Path) -> str:
-    """SHA-256 over all non-cache files in a skill directory (excluding the stamp file)."""
-    digest = hashlib.sha256()
+def _skill_rel_files(skill_dir: Path) -> list[str]:
+    out: list[str] = []
     for path in sorted(p for p in skill_dir.rglob("*") if p.is_file()):
         rel = path.relative_to(skill_dir)
         parts = rel.parts
@@ -210,7 +209,16 @@ def compute_skill_digest(skill_dir: Path) -> str:
             continue
         if path.name == STAMP_FILENAME or path.suffix in (".pyc", ".pyo"):
             continue
-        digest.update(rel.as_posix().encode("utf-8") + b"\0")
+        out.append(rel.as_posix())
+    return out
+
+
+def compute_skill_digest(skill_dir: Path) -> str:
+    """SHA-256 over all non-cache files in a skill directory (excluding the stamp file)."""
+    digest = hashlib.sha256()
+    for rel_posix in _skill_rel_files(skill_dir):
+        path = skill_dir / rel_posix
+        digest.update(rel_posix.encode("utf-8") + b"\0")
         digest.update(path.read_bytes().replace(b"\r\n", b"\n") + b"\0")
     return digest.hexdigest()
 
@@ -231,6 +239,7 @@ def write_skill_stamp(skill_dir: Path, version: str | None = None) -> Path:
     payload = {
         "version": version if version is not None else get_package_version(),
         "digest": compute_skill_digest(skill_dir),
+        "files": _skill_rel_files(skill_dir),
     }
     stamp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return stamp_path
@@ -299,6 +308,11 @@ def check_skill_libs(skills_dir: Path, source_skills_dir: Path | None = None) ->
                     source_skills_dir = src_skills
             except Exception:
                 source_skills_dir = None
+            if source_skills_dir is None:
+                print(
+                    "  [WARN] Skill source comparison not verified (no source release found; "
+                    "run `devloops doctor` or pass `--source-skills`)"
+                )
 
     problems = find_skill_stamp_problems(skills_dir, source_skills_dir=source_skills_dir)
     if problems:
@@ -311,6 +325,7 @@ def check_skill_libs(skills_dir: Path, source_skills_dir: Path | None = None) ->
 def main(argv: Sequence[str] = (), skill_dir: Path | None = None) -> int:
     parser = argparse.ArgumentParser(prog="doctor.py", description="Check devloops prerequisites.")
     parser.add_argument("--init", action="store_true", help=f"Create {CONFIG_NAME} from the template and exit")
+    parser.add_argument("--source-skills", type=Path, default=None, help="Source skills directory to compare against")
     args = parser.parse_args(list(argv))
     if args.init:
         return init_config(config_template(skill_dir))
@@ -321,7 +336,7 @@ def main(argv: Sequence[str] = (), skill_dir: Path | None = None) -> int:
     if find_config_file() is None:
         print(f"  [WARN] No {CONFIG_NAME} found; defaults apply. Create one with `doctor.py --init`.")
     if skill_dir is not None:
-        all_ok &= check_skill_libs(skill_dir.parent)
+        all_ok &= check_skill_libs(skill_dir.parent, source_skills_dir=args.source_skills)
 
     # 1. Python version
     py_ok = sys.version_info >= (3, 8)

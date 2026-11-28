@@ -100,7 +100,12 @@ def copy_tree_safe(
 
 def install_command(target_dir: Path, *, update: bool = False) -> int:
     """Install devloops skills (each with its own devloops_lib) and config into target_dir."""
-    from devloops_lib.doctor import STAMP_FILENAME, write_skill_stamp
+    from devloops_lib.doctor import (
+        STAMP_FILENAME,
+        compute_skill_digest,
+        read_skill_stamp,
+        write_skill_stamp,
+    )
 
     try:
         skills_src, templates_src = get_asset_paths()
@@ -133,14 +138,35 @@ def install_command(target_dir: Path, *, update: bool = False) -> int:
         copy_tree_safe(skills_src, skills_dest, exclude_names={"__pycache__", ".git"}, update=update)
     )
 
-    # 1b. Write version stamp in each installed skill directory (#130).
-    # Without --update, never overwrite an existing stamp so drift stays visible.
+    # 1b. On --update, remove obsolete files that were recorded in the previous stamp (G1.3).
+    if update:
+        for s in required_skills:
+            dest_skill = skills_dest / s
+            src_skill = skills_src / s
+            prev_stamp = read_skill_stamp(dest_skill)
+            if prev_stamp and isinstance(prev_stamp.get("files"), list):
+                for rel_posix in prev_stamp["files"]:
+                    if not (src_skill / rel_posix).is_file():
+                        obsolete = dest_skill / rel_posix
+                        if obsolete.is_file():
+                            obsolete.unlink()
+                            log_entries.append(("removed", obsolete))
+
+    # 1c. Write version stamp in each installed skill directory (#130).
+    # Without --update, stamp only when files match source so stale installs are never hidden (G1.2).
     for s in required_skills:
         dest_skill = skills_dest / s
+        src_skill = skills_src / s
         stamp_path = dest_skill / STAMP_FILENAME
-        if update or not stamp_path.exists():
+        if update:
             write_skill_stamp(dest_skill)
-            log_entries.append(("updated" if update else "installed", stamp_path))
+            log_entries.append(("updated", stamp_path))
+        elif not stamp_path.exists():
+            if compute_skill_digest(dest_skill) == compute_skill_digest(src_skill):
+                write_skill_stamp(dest_skill)
+                log_entries.append(("installed", stamp_path))
+            else:
+                log_entries.append(("skipped (differs from source)", stamp_path))
 
     # 2. Install config (root config copied only if absent, even with --update)
     if config_dest.exists():
@@ -372,6 +398,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Replace installed skill files that differ from the source release (preserves config and state)"
     )
 
+    doctor_parser = subparsers.add_parser("doctor", help="Check prerequisites and compare installed skills against source release")
+    doctor_parser.add_argument(
+        "--target",
+        type=Path,
+        default=Path("."),
+        help="Target project directory (default: current directory)"
+    )
+
     tick_parser = subparsers.add_parser("tick", help="Run preflight gate, lock, execute agent command, and unlock safely")
     tick_parser.add_argument(
         "loop",
@@ -399,6 +433,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.subcommand == "install":
         return install_command(args.target, update=args.update)
+    if args.subcommand == "doctor":
+        from devloops_lib import doctor
+        try:
+            src_skills, _ = get_asset_paths()
+        except RuntimeError:
+            src_skills = None
+        skill_dir = args.target.resolve() / ".agents" / "skills" / "worker-loop"
+        argv_doc = ["--source-skills", str(src_skills)] if src_skills else []
+        return doctor.main(argv_doc, skill_dir=skill_dir if skill_dir.is_dir() else None)
     if args.subcommand == "tick":
         return run_tick(args.loop, args)
     if args.subcommand == "forge":
